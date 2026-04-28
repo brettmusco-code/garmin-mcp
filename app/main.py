@@ -27,6 +27,8 @@ if not BEARER:
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
+DAILY_METRIC_KEYS = sorted(garmin.DAILY_METHODS.keys())
+
 TOOLS = [
     {
         "name": "get_activities",
@@ -40,6 +42,34 @@ TOOLS = [
                 "start": {"type": "number", "description": "offset, default 0"},
                 "limit": {"type": "number", "description": "how many, default 10, max 50"},
             },
+        },
+    },
+    {
+        "name": "get_activities_in_range",
+        "description": (
+            "List all activities between two dates (inclusive). Max 90 days per call. "
+            "Optionally filter by activity_type (e.g., 'running', 'cycling', 'swimming')."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "startdate": {"type": "string", "description": "YYYY-MM-DD"},
+                "enddate": {"type": "string", "description": "YYYY-MM-DD"},
+                "activity_type": {"type": "string", "description": "optional filter"},
+            },
+            "required": ["startdate", "enddate"],
+        },
+    },
+    {
+        "name": "get_activity_details",
+        "description": (
+            "Get full details for a single activity: summary, splits, HR zones, "
+            "weather, gear. Use the activityId from get_activities*."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"activity_id": {"type": "string"}},
+            "required": ["activity_id"],
         },
     },
     {
@@ -70,6 +100,59 @@ TOOLS = [
         },
     },
     {
+        "name": "get_daily_summaries",
+        "description": (
+            "Bulk-fetch one or more per-day metrics across a date range (max 90 days). "
+            "Returns { metric: { date: data } }. Supported metrics: "
+            + ", ".join(DAILY_METRIC_KEYS)
+            + "."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "startdate": {"type": "string", "description": "YYYY-MM-DD"},
+                "enddate": {"type": "string", "description": "YYYY-MM-DD"},
+                "metrics": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": DAILY_METRIC_KEYS},
+                    "description": "list of metrics to fetch",
+                },
+            },
+            "required": ["startdate", "enddate", "metrics"],
+        },
+    },
+    {
+        "name": "get_body_battery_range",
+        "description": "Body battery values across a date range (max 90 days).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "startdate": {"type": "string", "description": "YYYY-MM-DD"},
+                "enddate": {"type": "string", "description": "YYYY-MM-DD"},
+            },
+            "required": ["startdate", "enddate"],
+        },
+    },
+    {
+        "name": "get_personal_records",
+        "description": "Personal records across all activity types (fastest mile, longest ride, etc.).",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "get_race_predictions",
+        "description": (
+            "Predicted race times (5K/10K/half/full). Optional date range for history; "
+            "otherwise returns latest."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "startdate": {"type": "string", "description": "YYYY-MM-DD (optional)"},
+                "enddate": {"type": "string", "description": "YYYY-MM-DD (optional)"},
+            },
+        },
+    },
+    {
         "name": "get_user_info",
         "description": "Get the authenticated Garmin user's profile.",
         "inputSchema": {"type": "object", "properties": {}},
@@ -84,17 +167,54 @@ def _require_date(args: dict) -> str:
     return d
 
 
+def _require(args: dict, key: str) -> str:
+    v = args.get(key)
+    if not isinstance(v, str) or not DATE_RE.match(v):
+        raise ValueError(f"`{key}` must be YYYY-MM-DD")
+    return v
+
+
 def _call_tool(name: str, args: dict) -> Any:
     if name == "get_activities":
         start = int(args.get("start", 0))
         limit = min(int(args.get("limit", 10)), 50)
         return garmin.get_activities(start, limit)
+    if name == "get_activities_in_range":
+        return garmin.get_activities_in_range(
+            _require(args, "startdate"),
+            _require(args, "enddate"),
+            args.get("activity_type"),
+        )
+    if name == "get_activity_details":
+        aid = args.get("activity_id")
+        if not aid:
+            raise ValueError("`activity_id` is required")
+        return garmin.get_activity_details(aid)
     if name == "get_steps":
         return garmin.get_steps(_require_date(args))
     if name == "get_sleep":
         return garmin.get_sleep(_require_date(args))
     if name == "get_heart_rate":
         return garmin.get_heart_rate(_require_date(args))
+    if name == "get_daily_summaries":
+        metrics = args.get("metrics")
+        if not isinstance(metrics, list) or not metrics:
+            raise ValueError("`metrics` must be a non-empty array")
+        return garmin.get_daily_summaries(
+            _require(args, "startdate"), _require(args, "enddate"), metrics
+        )
+    if name == "get_body_battery_range":
+        return garmin.get_body_battery_range(
+            _require(args, "startdate"), _require(args, "enddate")
+        )
+    if name == "get_personal_records":
+        return garmin.get_personal_records()
+    if name == "get_race_predictions":
+        s = args.get("startdate")
+        e = args.get("enddate")
+        if (s and not DATE_RE.match(s)) or (e and not DATE_RE.match(e)):
+            raise ValueError("dates must be YYYY-MM-DD")
+        return garmin.get_race_predictions(s, e)
     if name == "get_user_info":
         return garmin.get_user_info()
     raise ValueError(f"Unknown tool: {name}")
