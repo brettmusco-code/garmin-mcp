@@ -1,12 +1,21 @@
-"""MCP JSON-RPC 2.0 server over HTTP for Garmin Connect."""
+"""MCP JSON-RPC 2.0 server over HTTP for Garmin Connect.
+
+Includes a minimal OAuth 2.0 stub so claude.ai's Custom Connector can connect.
+Since this is a personal, single-tenant server, the OAuth flow is a rubber
+stamp: any client can register, authorize returns instantly, and the token
+endpoint always hands back the configured MCP_BEARER_TOKEN.
+"""
 from __future__ import annotations
 
+import json
 import os
 import re
+import secrets
 from typing import Any
+from urllib.parse import urlencode
 
-from fastapi import FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi import FastAPI, Form, Header, HTTPException, Request
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 
 from . import garmin
 
@@ -119,8 +128,6 @@ def _handle(req: dict) -> dict:
             name = params.get("name")
             args = params.get("arguments") or {}
             data = _call_tool(name, args)
-            import json
-
             return _ok(
                 rpc_id,
                 {"content": [{"type": "text", "text": json.dumps(data, default=str, indent=2)}]},
@@ -138,10 +145,128 @@ def health() -> PlainTextResponse:
     return PlainTextResponse("garmin-mcp ok")
 
 
+# ---------- OAuth 2.0 stub for claude.ai Custom Connectors ----------
+# Claude expects RFC 9728 (protected resource metadata) + RFC 8414 (auth
+# server metadata) + RFC 7591 (dynamic client registration) + RFC 7636 (PKCE).
+# We fake all of it and always return the same bearer token.
+
+
+def _base_url(request: Request) -> str:
+    # Honor the proxy's forwarded scheme/host so URLs are https on Render.
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    host = request.headers.get("x-forwarded-host", request.url.netloc)
+    return f"{proto}://{host}"
+
+
+@app.get("/.well-known/oauth-protected-resource")
+@app.get("/.well-known/oauth-protected-resource/mcp")
+def protected_resource_metadata(request: Request):
+    base = _base_url(request)
+    return JSONResponse(
+        {
+            "resource": f"{base}/mcp",
+            "authorization_servers": [base],
+            "bearer_methods_supported": ["header"],
+        }
+    )
+
+
+@app.get("/.well-known/oauth-authorization-server")
+@app.get("/.well-known/oauth-authorization-server/mcp")
+def auth_server_metadata(request: Request):
+    base = _base_url(request)
+    return JSONResponse(
+        {
+            "issuer": base,
+            "authorization_endpoint": f"{base}/authorize",
+            "token_endpoint": f"{base}/token",
+            "registration_endpoint": f"{base}/register",
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code"],
+            "code_challenge_methods_supported": ["S256", "plain"],
+            "token_endpoint_auth_methods_supported": ["none", "client_secret_post"],
+        }
+    )
+
+
+@app.post("/register")
+async def register(request: Request):
+    # Accept any registration request; echo a fixed client_id back.
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    return JSONResponse(
+        {
+            "client_id": "garmin-mcp-client",
+            "client_id_issued_at": 0,
+            "token_endpoint_auth_method": "none",
+            "redirect_uris": body.get("redirect_uris", []),
+            "grant_types": ["authorization_code"],
+            "response_types": ["code"],
+        },
+        status_code=201,
+    )
+
+
+@app.get("/authorize")
+def authorize(
+    redirect_uri: str,
+    state: str | None = None,
+    response_type: str | None = None,
+    client_id: str | None = None,
+    code_challenge: str | None = None,
+    code_challenge_method: str | None = None,
+    scope: str | None = None,
+):
+    # Rubber-stamp approval: mint a code and redirect straight back.
+    code = secrets.token_urlsafe(24)
+    params = {"code": code}
+    if state:
+        params["state"] = state
+    sep = "&" if "?" in redirect_uri else "?"
+    return RedirectResponse(url=f"{redirect_uri}{sep}{urlencode(params)}", status_code=302)
+
+
+@app.post("/token")
+async def token(
+    grant_type: str = Form(...),
+    code: str | None = Form(default=None),
+    redirect_uri: str | None = Form(default=None),
+    client_id: str | None = Form(default=None),
+    code_verifier: str | None = Form(default=None),
+    refresh_token: str | None = Form(default=None),
+):
+    if grant_type not in ("authorization_code", "refresh_token"):
+        raise HTTPException(status_code=400, detail="unsupported_grant_type")
+    return JSONResponse(
+        {
+            "access_token": BEARER,
+            "token_type": "Bearer",
+            "expires_in": 60 * 60 * 24 * 365,  # 1 year
+            "refresh_token": BEARER,
+            "scope": "mcp",
+        }
+    )
+
+
+# ---------- MCP endpoint ----------
+
+
 @app.post("/mcp")
 async def mcp(request: Request, authorization: str | None = Header(default=None)):
     if authorization != f"Bearer {BEARER}":
-        raise HTTPException(status_code=401, detail="Unauthorized")
+        # Per RFC 9728, point clients at the protected resource metadata.
+        base = _base_url(request)
+        return JSONResponse(
+            {"error": "invalid_token"},
+            status_code=401,
+            headers={
+                "WWW-Authenticate": (
+                    f'Bearer resource_metadata="{base}/.well-known/oauth-protected-resource"'
+                )
+            },
+        )
     body = await request.json()
     if isinstance(body, list):
         out = [_handle(b) for b in body]
