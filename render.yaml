@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: garmin-mcp
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: MCP_BEARER_TOKEN
+        sync: false
+      - key: GARTH_TOKENS_B64
+        sync: false
+      - key: PYTHON_VERSION
+        value: "3.11.9"
