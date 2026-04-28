@@ -45,6 +45,8 @@ DAILY_METHODS: dict[str, str] = {
     "floors": "get_floors",
     "intensity_minutes": "get_intensity_minutes_data",
     "heart_rates": "get_heart_rates",
+    "morning_readiness": "get_morning_training_readiness",
+    "fitness_age": "get_fitnessage_data",
 }
 
 
