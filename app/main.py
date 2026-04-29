@@ -508,10 +508,9 @@ def health() -> PlainTextResponse:
 
 
 @app.get("/cache/health")
-def cache_health(authorization: str | None = Header(default=None)) -> JSONResponse:
-    """Diagnose cache config — protected so credentials aren't readable publicly."""
-    if authorization != f"Bearer {BEARER}":
-        raise HTTPException(status_code=401, detail="unauthorized")
+def cache_health() -> JSONResponse:
+    """Diagnose cache config. Public — only exposes config values (no secrets)
+    and a roundtrip probe result. Useful for debugging R2/S3 setup."""
     info: dict[str, Any] = {
         "enabled": cache.enabled(),
         "bucket": cache.BUCKET,
