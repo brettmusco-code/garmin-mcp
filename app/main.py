@@ -519,6 +519,17 @@ def cache_list(tool: str | None = None, limit: int = 100) -> JSONResponse:
         )
 
 
+@app.get("/cache/count")
+def cache_count(tool: str | None = None) -> JSONResponse:
+    """Total count of cached keys (paginates beyond 1000)."""
+    try:
+        return JSONResponse({"count": cache.count_keys(tool)})
+    except Exception as ex:  # noqa: BLE001
+        return JSONResponse(
+            {"error": f"{type(ex).__name__}: {ex}"}, status_code=500
+        )
+
+
 @app.get("/cache/health")
 def cache_health() -> JSONResponse:
     """Diagnose cache config. Public — only exposes config values (no secrets)

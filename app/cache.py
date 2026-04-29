@@ -72,12 +72,51 @@ def get(tool: str, args: dict, ttl_seconds: int | None = None, raise_on_error: b
 
 
 def list_keys(tool_prefix: str | None = None, limit: int = 100) -> list[str]:
-    """List cached object keys under the configured prefix."""
+    """List cached object keys under the configured prefix. Paginates."""
     if not enabled():
         return []
     prefix = PREFIX + (tool_prefix.rstrip("/") + "/" if tool_prefix else "")
-    resp = _client().list_objects_v2(Bucket=BUCKET, Prefix=prefix, MaxKeys=limit)
-    return [obj["Key"] for obj in resp.get("Contents", [])]
+    keys: list[str] = []
+    continuation: str | None = None
+    c = _client()
+    while len(keys) < limit:
+        kwargs: dict[str, Any] = {
+            "Bucket": BUCKET,
+            "Prefix": prefix,
+            "MaxKeys": min(1000, limit - len(keys)),
+        }
+        if continuation:
+            kwargs["ContinuationToken"] = continuation
+        resp = c.list_objects_v2(**kwargs)
+        keys.extend(obj["Key"] for obj in resp.get("Contents", []))
+        if not resp.get("IsTruncated"):
+            break
+        continuation = resp.get("NextContinuationToken")
+        if not continuation:
+            break
+    return keys
+
+
+def count_keys(tool_prefix: str | None = None) -> int:
+    """Count cached object keys under the configured prefix (no size limit)."""
+    if not enabled():
+        return 0
+    prefix = PREFIX + (tool_prefix.rstrip("/") + "/" if tool_prefix else "")
+    total = 0
+    continuation: str | None = None
+    c = _client()
+    while True:
+        kwargs: dict[str, Any] = {"Bucket": BUCKET, "Prefix": prefix, "MaxKeys": 1000}
+        if continuation:
+            kwargs["ContinuationToken"] = continuation
+        resp = c.list_objects_v2(**kwargs)
+        total += resp.get("KeyCount", 0)
+        if not resp.get("IsTruncated"):
+            break
+        continuation = resp.get("NextContinuationToken")
+        if not continuation:
+            break
+    return total
 
 
 def put(tool: str, args: dict, data: Any, raise_on_error: bool = False) -> None:
