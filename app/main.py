@@ -17,7 +17,7 @@ from urllib.parse import urlencode
 from fastapi import FastAPI, Form, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 
-from . import garmin
+from . import cache, garmin
 
 app = FastAPI()
 
@@ -505,6 +505,41 @@ def _handle(req: dict) -> dict:
 @app.get("/health")
 def health() -> PlainTextResponse:
     return PlainTextResponse("garmin-mcp ok")
+
+
+@app.get("/cache/health")
+def cache_health(authorization: str | None = Header(default=None)) -> JSONResponse:
+    """Diagnose cache config — protected so credentials aren't readable publicly."""
+    if authorization != f"Bearer {BEARER}":
+        raise HTTPException(status_code=401, detail="unauthorized")
+    info: dict[str, Any] = {
+        "enabled": cache.enabled(),
+        "bucket": cache.BUCKET,
+        "endpoint_url": cache.ENDPOINT_URL,
+        "region": cache.REGION,
+        "prefix": cache.PREFIX,
+        "ttl_seconds": cache.DEFAULT_TTL_SECONDS,
+    }
+    if not cache.enabled():
+        info["status"] = "disabled (S3_CACHE_BUCKET not set)"
+        return JSONResponse(info)
+    probe_args = {"probe": "__cache_health__"}
+    try:
+        cache.put("__cache_health__", probe_args, {"ok": True}, raise_on_error=True)
+        info["probe_write"] = "ok"
+    except Exception as ex:  # noqa: BLE001
+        info["status"] = "write_failed"
+        info["error"] = f"{type(ex).__name__}: {ex}"
+        return JSONResponse(info, status_code=500)
+    try:
+        got = cache.get("__cache_health__", probe_args, raise_on_error=True)
+        info["probe_read"] = "ok" if got and got.get("ok") is True else f"unexpected: {got}"
+        info["status"] = "ok"
+    except Exception as ex:  # noqa: BLE001
+        info["status"] = "read_failed"
+        info["error"] = f"{type(ex).__name__}: {ex}"
+        return JSONResponse(info, status_code=500)
+    return JSONResponse(info)
 
 
 # ---------- OAuth 2.0 stub for claude.ai Custom Connectors ----------

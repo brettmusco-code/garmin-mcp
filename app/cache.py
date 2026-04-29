@@ -46,7 +46,7 @@ def _key(tool: str, args: dict) -> str:
     return f"{PREFIX}{tool}/{h}.json"
 
 
-def get(tool: str, args: dict, ttl_seconds: int | None = None) -> Any | None:
+def get(tool: str, args: dict, ttl_seconds: int | None = None, raise_on_error: bool = False) -> Any | None:
     if not enabled():
         return None
     key = _key(tool, args)
@@ -66,10 +66,12 @@ def get(tool: str, args: dict, ttl_seconds: int | None = None) -> Any | None:
         if "nosuchkey" in msg or "not found" in msg or "404" in msg:
             return None
         logger.warning("cache get failed: %s", ex)
+        if raise_on_error:
+            raise
         return None
 
 
-def put(tool: str, args: dict, data: Any) -> None:
+def put(tool: str, args: dict, data: Any, raise_on_error: bool = False) -> None:
     if not enabled():
         return
     key = _key(tool, args)
@@ -79,6 +81,8 @@ def put(tool: str, args: dict, data: Any) -> None:
         _client().put_object(Bucket=BUCKET, Key=key, Body=body, ContentType="application/json")
     except Exception as ex:  # noqa: BLE001
         logger.warning("cache put failed: %s", ex)
+        if raise_on_error:
+            raise
 
 
 def cached(tool: str, ttl_seconds: int | None = None) -> Callable:
