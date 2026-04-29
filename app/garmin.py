@@ -200,6 +200,7 @@ def get_activities_in_range(
         hit = cache.get("activities_in_range", args)
         if hit is not None:
             return hit
+    # Lazy client build — only pay the auth cost on cache miss.
     data = _call_with_backoff(
         get_client().get_activities_by_date,
         s.isoformat(),
@@ -400,7 +401,6 @@ def get_daily_summaries(
     s, e = _validate_range(startdate, enddate)
     dates = _daterange(s, e)
 
-    client = get_client()
     result: dict[str, dict[str, Any]] = {m: {} for m in metrics}
 
     tasks: list[tuple[str, str]] = []
@@ -413,6 +413,12 @@ def get_daily_summaries(
                     continue
             tasks.append((m, d))
 
+    if not tasks:
+        return result
+
+    # Only build the Garmin client if we actually need to fetch something.
+    client = get_client()
+
     def _one(metric: str, d: str) -> tuple[str, str, Any]:
         method = getattr(client, DAILY_METHODS[metric])
         try:
@@ -422,12 +428,11 @@ def get_daily_summaries(
         except Exception as ex:  # noqa: BLE001
             return metric, d, {"error": str(ex)}
 
-    if tasks:
-        with ThreadPoolExecutor(max_workers=FAN_OUT_WORKERS) as pool:
-            futures = [pool.submit(_one, m, d) for m, d in tasks]
-            for f in as_completed(futures):
-                m, d, data = f.result()
-                result[m][d] = data
+    with ThreadPoolExecutor(max_workers=FAN_OUT_WORKERS) as pool:
+        futures = [pool.submit(_one, m, d) for m, d in tasks]
+        for f in as_completed(futures):
+            m, d, data = f.result()
+            result[m][d] = data
 
     return result
 
