@@ -71,6 +71,15 @@ def get(tool: str, args: dict, ttl_seconds: int | None = None, raise_on_error: b
         return None
 
 
+def list_keys(tool_prefix: str | None = None, limit: int = 100) -> list[str]:
+    """List cached object keys under the configured prefix."""
+    if not enabled():
+        return []
+    prefix = PREFIX + (tool_prefix.rstrip("/") + "/" if tool_prefix else "")
+    resp = _client().list_objects_v2(Bucket=BUCKET, Prefix=prefix, MaxKeys=limit)
+    return [obj["Key"] for obj in resp.get("Contents", [])]
+
+
 def put(tool: str, args: dict, data: Any, raise_on_error: bool = False) -> None:
     if not enabled():
         return

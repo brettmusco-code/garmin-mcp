@@ -507,6 +507,18 @@ def health() -> PlainTextResponse:
     return PlainTextResponse("garmin-mcp ok")
 
 
+@app.get("/cache/list")
+def cache_list(tool: str | None = None, limit: int = 100) -> JSONResponse:
+    """List cached keys under the configured prefix (or under a tool subprefix)."""
+    try:
+        keys = cache.list_keys(tool, limit)
+        return JSONResponse({"count": len(keys), "keys": keys})
+    except Exception as ex:  # noqa: BLE001
+        return JSONResponse(
+            {"error": f"{type(ex).__name__}: {ex}"}, status_code=500
+        )
+
+
 @app.get("/cache/health")
 def cache_health() -> JSONResponse:
     """Diagnose cache config. Public — only exposes config values (no secrets)
