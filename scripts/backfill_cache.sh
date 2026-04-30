@@ -14,8 +14,8 @@ set -euo pipefail
 
 MCP_URL="${MCP_URL:-https://garmin-mcp-rnwu.onrender.com}"
 METRICS='["steps","sleep","stress","rhr","hrv","respiration","training_readiness","training_status","max_metrics","intensity_minutes","stats_and_body"]'
-CHUNK_TIMEOUT_SEC=900   # 15 min — Render free tier can be slow
-SLEEP_BETWEEN=60        # cool-down between chunks to avoid Garmin OAuth 429
+CHUNK_TIMEOUT_SEC=90    # Render free tier proxy cuts off at ~100s
+SLEEP_BETWEEN=20        # cool-down between chunks to avoid Garmin OAuth 429
 START_CHUNK="${1:-1}"
 
 # Fetch bearer from the rubber-stamp OAuth /token endpoint.
@@ -84,17 +84,19 @@ print(json.dumps({
   fi
 }
 
-# Chunks covering 2025-01-01 → 2026-04-29 (485 days, 60-day windows).
-chunks=(
-  "2025-01-01 2025-03-01"
-  "2025-03-02 2025-05-01"
-  "2025-05-02 2025-06-30"
-  "2025-07-01 2025-08-29"
-  "2025-08-30 2025-10-28"
-  "2025-10-29 2025-12-27"
-  "2025-12-28 2026-02-25"
-  "2026-02-26 2026-04-29"
-)
+# Build 10-day chunks from 2025-01-01 to today.
+# Each chunk = 10 days × 11 metrics = 110 Garmin requests, ~30-45s per call,
+# well under Render's free-tier proxy timeout.
+mapfile -t chunks < <(python3 -c "
+from datetime import date, timedelta
+start = date(2025, 1, 1)
+end = date.today()
+cur = start
+while cur <= end:
+    nxt = min(cur + timedelta(days=9), end)
+    print(f'{cur.isoformat()} {nxt.isoformat()}')
+    cur = nxt + timedelta(days=1)
+")
 
 echo "Starting at chunk $START_CHUNK of ${#chunks[@]}. Expected total when done: ~5,335"
 for i in "${!chunks[@]}"; do
