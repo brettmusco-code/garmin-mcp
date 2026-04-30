@@ -30,8 +30,17 @@ fi
 echo "Bearer acquired."
 
 count_cached() {
-  curl -s --max-time 30 "$MCP_URL/cache/count?tool=daily_summary" \
-    | python3 -c "import json,sys; print(json.load(sys.stdin).get('count', 0))"
+  # Print the count or "?" if the server is unreachable. Never fail the script.
+  local body
+  body=$(curl -s --max-time 30 "$MCP_URL/cache/count?tool=daily_summary" || echo "")
+  python3 -c "
+import json,sys
+s = '''$body'''
+try:
+    print(json.loads(s).get('count', '?'))
+except Exception:
+    print('?')
+"
 }
 
 call_chunk() {
@@ -63,7 +72,11 @@ print(json.dumps({
 
   local after
   after=$(count_cached) || after="?"
-  echo "cached after:  $after (delta: $((after - before)))"
+  if [[ "$before" =~ ^[0-9]+$ ]] && [[ "$after" =~ ^[0-9]+$ ]]; then
+    echo "cached after:  $after (delta: $((after - before)))"
+  else
+    echo "cached after:  $after (delta: n/a)"
+  fi
 
   if [ "$idx" -lt 8 ]; then
     echo "sleeping ${SLEEP_BETWEEN}s..."
