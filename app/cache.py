@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from functools import wraps
 from typing import Any, Callable
 
@@ -40,16 +41,39 @@ def enabled() -> bool:
     return bool(BUCKET)
 
 
-def _key(tool: str, args: dict) -> str:
+_SAFE_PART = re.compile(r"[^A-Za-z0-9_.-]+")
+
+
+def _safe(part: str) -> str:
+    """Make a string safe for an R2/S3 key segment."""
+    return _SAFE_PART.sub("_", str(part))
+
+
+def _key(tool: str, args: dict, key_parts: list[str] | None = None) -> str:
+    """Build an R2 key.
+
+    - If `key_parts` is given, construct a readable path:
+          PREFIX/tool/part1/part2/...json
+    - Otherwise, fall back to a 16-char SHA of args (legacy behavior).
+    """
+    if key_parts:
+        safe = "/".join(_safe(p) for p in key_parts if p is not None and p != "")
+        return f"{PREFIX}{tool}/{safe}.json"
     payload = json.dumps(args, sort_keys=True, default=str).encode()
     h = hashlib.sha256(payload).hexdigest()[:16]
     return f"{PREFIX}{tool}/{h}.json"
 
 
-def get(tool: str, args: dict, ttl_seconds: int | None = None, raise_on_error: bool = False) -> Any | None:
+def get(
+    tool: str,
+    args: dict,
+    ttl_seconds: int | None = None,
+    raise_on_error: bool = False,
+    key_parts: list[str] | None = None,
+) -> Any | None:
     if not enabled():
         return None
-    key = _key(tool, args)
+    key = _key(tool, args, key_parts)
     ttl = ttl_seconds if ttl_seconds is not None else DEFAULT_TTL_SECONDS
     try:
         obj = _client().get_object(Bucket=BUCKET, Key=key)
@@ -149,10 +173,16 @@ def count_keys(tool_prefix: str | None = None) -> int:
     return total
 
 
-def put(tool: str, args: dict, data: Any, raise_on_error: bool = False) -> None:
+def put(
+    tool: str,
+    args: dict,
+    data: Any,
+    raise_on_error: bool = False,
+    key_parts: list[str] | None = None,
+) -> None:
     if not enabled():
         return
-    key = _key(tool, args)
+    key = _key(tool, args, key_parts)
     from time import time
     body = json.dumps({"_age_check": time(), "data": data}, default=str).encode()
     try:

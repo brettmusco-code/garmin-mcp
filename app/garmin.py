@@ -204,8 +204,9 @@ def _fetch_activities_month(year: int, month: int, force_refresh: bool = False) 
     month in place — past months are frozen until explicitly force-refreshed.
     """
     args = {"year": year, "month": month}
+    key_parts = [f"{year:04d}-{month:02d}"]
     if not force_refresh:
-        hit = cache.get("activities_month", args)
+        hit = cache.get("activities_month", args, key_parts=key_parts)
         if hit is not None:
             return hit
     start, end = _month_bounds(year, month)
@@ -215,7 +216,7 @@ def _fetch_activities_month(year: int, month: int, force_refresh: bool = False) 
         end.isoformat(),
         None,
     ) or []
-    cache.put("activities_month", args, data)
+    cache.put("activities_month", args, data, key_parts=key_parts)
     return data
 
 
@@ -264,8 +265,10 @@ def get_activities_in_range(
 
 def get_activity_details(activity_id: str | int, force_refresh: bool = False) -> dict[str, Any]:
     aid = str(activity_id)
+    args = {"activity_id": aid}
+    key_parts = [aid]
     if not force_refresh:
-        hit = cache.get("activity_details", {"activity_id": aid})
+        hit = cache.get("activity_details", args, key_parts=key_parts)
         if hit is not None:
             return hit
     c = get_client()
@@ -282,7 +285,7 @@ def get_activity_details(activity_id: str | int, force_refresh: bool = False) ->
             out[key] = _call_with_backoff(call)
         except Exception as ex:  # noqa: BLE001
             out[key] = {"error": str(ex)}
-    cache.put("activity_details", {"activity_id": aid}, out)
+    cache.put("activity_details", args, out, key_parts=key_parts)
     return out
 
 
@@ -458,7 +461,11 @@ def get_daily_summaries(
     for m in metrics:
         for d in dates:
             if not force_refresh:
-                hit = cache.get("daily_summary", {"metric": m, "date": d})
+                hit = cache.get(
+                    "daily_summary",
+                    {"metric": m, "date": d},
+                    key_parts=[m, d],
+                )
                 if hit is not None:
                     result[m][d] = hit
                     continue
@@ -474,7 +481,12 @@ def get_daily_summaries(
         method = getattr(client, DAILY_METHODS[metric])
         try:
             data = _call_with_backoff(method, d)
-            cache.put("daily_summary", {"metric": metric, "date": d}, data)
+            cache.put(
+                "daily_summary",
+                {"metric": metric, "date": d},
+                data,
+                key_parts=[metric, d],
+            )
             return metric, d, data
         except Exception as ex:  # noqa: BLE001
             return metric, d, {"error": str(ex)}
