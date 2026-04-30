@@ -4,9 +4,9 @@ name: daily-refresh
 
 on:
   schedule:
-    # 10:00 UTC = 06:00 ET (EDT) / 05:00 ET (EST). Early enough that Garmin
-    # has finished syncing overnight, late enough that timezones have settled.
-    - cron: '0 10 * * *'
+    # 07:00 UTC = 03:00 ET (EDT) / 02:00 ET (EST). GitHub Actions cron is
+    # always UTC and doesn't honor DST, so the ET hour shifts by 1 in winter.
+    - cron: '0 7 * * *'
   workflow_dispatch:  # manual trigger from the Actions tab
 
 jobs:
