@@ -19,8 +19,11 @@ set -euo pipefail
 MCP_URL="${MCP_URL:-https://garmin-mcp-rnwu.onrender.com}"
 METRICS='["steps","sleep","stress","rhr","hrv","respiration","training_readiness","training_status","max_metrics","intensity_minutes","stats_and_body"]'
 DAILY_LOOKBACK_DAYS=7
+FORCE_REFRESH_DAYS=2       # re-fetch the last N days to catch late Garmin syncs
 ACTIVITIES_LOOKBACK_DAYS=2
-REQ_TIMEOUT_SEC=600
+# Render free-tier proxy cuts requests off around ~100s. Keep per-call scope
+# small so each HTTP request stays under that budget.
+REQ_TIMEOUT_SEC=90
 
 today=$(python3 -c "from datetime import date; print(date.today().isoformat())")
 daily_start=$(python3 -c "from datetime import date, timedelta; print((date.today() - timedelta(days=$DAILY_LOOKBACK_DAYS)).isoformat())")
@@ -38,7 +41,7 @@ if [ -z "$MCP_BEARER" ]; then
 fi
 
 call_mcp() {
-  local name="$1" args="$2"
+  local label="$1" name="$2" args="$3"
   local payload
   payload=$(python3 -c "
 import json
@@ -46,19 +49,26 @@ print(json.dumps({
   'jsonrpc':'2.0','id':1,'method':'tools/call',
   'params':{'name':'$name','arguments':$args}
 }))")
+  local outfile="/tmp/mcp_refresh_${label}.json"
   local http
-  http=$(curl -s --max-time $REQ_TIMEOUT_SEC -o /tmp/mcp_refresh_${name}.json \
+  http=$(curl -s --max-time $REQ_TIMEOUT_SEC -o "$outfile" \
     -w "%{http_code}" -X POST "$MCP_URL/mcp" \
     -H "Authorization: Bearer $MCP_BEARER" \
     -H "Content-Type: application/json" \
     -d "$payload" || echo "000")
-  echo "  http=$http, bytes=$(wc -c < /tmp/mcp_refresh_${name}.json 2>/dev/null || echo 0)"
+  local bytes
+  bytes=$(wc -c < "$outfile" 2>/dev/null || echo 0)
+  echo "  http=$http, bytes=$bytes"
+  if [ "$http" != "200" ]; then
+    echo "  ERROR: non-200 response" >&2
+    return 1
+  fi
   # Surface errors from the MCP envelope so CI logs catch them.
   local err
   err=$(python3 -c "
 import json
 try:
-    d = json.load(open('/tmp/mcp_refresh_${name}.json'))
+    d = json.load(open('$outfile'))
     if 'error' in d:
         print(d['error'].get('message','unknown error'))
 except Exception as ex:
@@ -74,12 +84,28 @@ echo "=== daily_refresh $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
 echo "Target: $MCP_URL"
 echo
 
-echo "[1/2] get_daily_summaries $daily_start -> $today"
-call_mcp get_daily_summaries "{\"startdate\":\"$daily_start\",\"enddate\":\"$today\",\"metrics\":$METRICS}"
+# Per-day fan-out: one HTTP call per (date). Keeps each request small
+# enough for Render's free-tier proxy timeout. Cache hits return fast.
+echo "[1/2] get_daily_summaries — $DAILY_LOOKBACK_DAYS days ending $today"
+failed_days=0
+for i in $(seq 0 $DAILY_LOOKBACK_DAYS); do
+  d=$(python3 -c "from datetime import date, timedelta; print((date.today() - timedelta(days=$i)).isoformat())")
+  force="false"
+  if [ "$i" -lt "$FORCE_REFRESH_DAYS" ]; then force="true"; fi
+  echo "  day $d (force_refresh=$force)"
+  if ! call_mcp "daily_${d}" get_daily_summaries \
+    "{\"startdate\":\"$d\",\"enddate\":\"$d\",\"metrics\":$METRICS,\"force_refresh\":$force}"; then
+    failed_days=$((failed_days + 1))
+  fi
+done
+if [ "$failed_days" -gt 0 ]; then
+  echo "  WARNING: $failed_days day(s) failed — run again to retry" >&2
+fi
 
 echo
 echo "[2/2] get_activities $acts_start -> $today (force_refresh to catch late edits)"
-call_mcp get_activities "{\"startdate\":\"$acts_start\",\"enddate\":\"$today\",\"force_refresh\":true}"
+call_mcp activities get_activities \
+  "{\"startdate\":\"$acts_start\",\"enddate\":\"$today\",\"force_refresh\":true}"
 
 echo
 echo "Cache totals:"
