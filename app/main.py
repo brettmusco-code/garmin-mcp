@@ -530,6 +530,23 @@ def cache_count(tool: str | None = None) -> JSONResponse:
         )
 
 
+@app.post("/cache/delete")
+def cache_delete(
+    tool: str,
+    authorization: str | None = Header(default=None),
+) -> JSONResponse:
+    """Delete all cached objects for a given tool prefix. Auth required."""
+    if authorization != f"Bearer {BEARER}":
+        raise HTTPException(status_code=401, detail="unauthorized")
+    try:
+        deleted = cache.delete_prefix(tool)
+        return JSONResponse({"tool": tool, "deleted": deleted})
+    except Exception as ex:  # noqa: BLE001
+        return JSONResponse(
+            {"error": f"{type(ex).__name__}: {ex}"}, status_code=500
+        )
+
+
 @app.get("/cache/health")
 def cache_health() -> JSONResponse:
     """Diagnose cache config. Public — only exposes config values (no secrets)

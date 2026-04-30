@@ -97,6 +97,36 @@ def list_keys(tool_prefix: str | None = None, limit: int = 100) -> list[str]:
     return keys
 
 
+def delete_prefix(tool_prefix: str) -> int:
+    """Delete all cached objects under a tool subprefix. Returns count deleted."""
+    if not enabled():
+        return 0
+    if not tool_prefix:
+        raise ValueError("refusing to delete without a tool prefix")
+    prefix = PREFIX + tool_prefix.rstrip("/") + "/"
+    c = _client()
+    deleted = 0
+    continuation: str | None = None
+    while True:
+        kwargs: dict[str, Any] = {"Bucket": BUCKET, "Prefix": prefix, "MaxKeys": 1000}
+        if continuation:
+            kwargs["ContinuationToken"] = continuation
+        resp = c.list_objects_v2(**kwargs)
+        contents = resp.get("Contents", [])
+        if contents:
+            c.delete_objects(
+                Bucket=BUCKET,
+                Delete={"Objects": [{"Key": obj["Key"]} for obj in contents]},
+            )
+            deleted += len(contents)
+        if not resp.get("IsTruncated"):
+            break
+        continuation = resp.get("NextContinuationToken")
+        if not continuation:
+            break
+    return deleted
+
+
 def count_keys(tool_prefix: str | None = None) -> int:
     """Count cached object keys under the configured prefix (no size limit)."""
     if not enabled():

@@ -188,27 +188,78 @@ def get_activities(start: int = 0, limit: int = 10):
 # ---------- bulk / historical ----------
 
 
+def _month_bounds(year: int, month: int) -> tuple[date, date]:
+    first = date(year, month, 1)
+    if month == 12:
+        next_first = date(year + 1, 1, 1)
+    else:
+        next_first = date(year, month + 1, 1)
+    return first, next_first - timedelta(days=1)
+
+
+def _fetch_activities_month(year: int, month: int, force_refresh: bool = False) -> list[dict]:
+    """Fetch (and cache) one calendar month of activities, unfiltered.
+
+    Cache key is (year, month). Nightly refresh rewrites only the current
+    month in place — past months are frozen until explicitly force-refreshed.
+    """
+    args = {"year": year, "month": month}
+    if not force_refresh:
+        hit = cache.get("activities_month", args)
+        if hit is not None:
+            return hit
+    start, end = _month_bounds(year, month)
+    data = _call_with_backoff(
+        get_client().get_activities_by_date,
+        start.isoformat(),
+        end.isoformat(),
+        None,
+    ) or []
+    cache.put("activities_month", args, data)
+    return data
+
+
 def get_activities_in_range(
     startdate: str | date,
     enddate: str | date,
     activity_type: str | None = None,
     force_refresh: bool = False,
 ):
+    """Return activities between startdate and enddate (inclusive).
+
+    Internally cached per-month so that sliding-window queries (e.g. "last 7
+    days") don't accumulate duplicate cache entries. Only fetches from Garmin
+    when a covering month hasn't been cached yet.
+    """
     s, e = _validate_range(startdate, enddate)
-    args = {"start": s.isoformat(), "end": e.isoformat(), "type": activity_type}
-    if not force_refresh:
-        hit = cache.get("activities_in_range", args)
-        if hit is not None:
-            return hit
-    # Lazy client build — only pay the auth cost on cache miss.
-    data = _call_with_backoff(
-        get_client().get_activities_by_date,
-        s.isoformat(),
-        e.isoformat(),
-        activity_type,
-    )
-    cache.put("activities_in_range", args, data)
-    return data
+
+    # Enumerate all (year, month) buckets covering [s, e].
+    months: list[tuple[int, int]] = []
+    cur = date(s.year, s.month, 1)
+    while cur <= e:
+        months.append((cur.year, cur.month))
+        cur = date(cur.year + (1 if cur.month == 12 else 0), 1 if cur.month == 12 else cur.month + 1, 1)
+
+    out: list[dict] = []
+    for year, month in months:
+        monthly = _fetch_activities_month(year, month, force_refresh=force_refresh)
+        out.extend(monthly)
+
+    # Filter to requested window + optional type.
+    def _in_range(a: dict) -> bool:
+        start_ts = a.get("startTimeLocal") or a.get("startTimeGMT") or ""
+        try:
+            d = datetime.fromisoformat(str(start_ts).replace("Z", "+00:00")).date()
+        except ValueError:
+            return False
+        return s <= d <= e
+
+    out = [a for a in out if _in_range(a)]
+    if activity_type:
+        out = [a for a in out if (a.get("activityType") or {}).get("typeKey") == activity_type]
+    # Newest-first to match Garmin's default ordering.
+    out.sort(key=lambda a: a.get("startTimeLocal") or "", reverse=True)
+    return out
 
 
 def get_activity_details(activity_id: str | int, force_refresh: bool = False) -> dict[str, Any]:

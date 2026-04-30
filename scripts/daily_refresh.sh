@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # Keep the R2 cache current with recent Garmin data.
 #
-# - Daily summaries: pulls the last 7 days for 11 metrics. Per-(metric, date)
-#   cache means repeated days are free; only new days hit Garmin.
-# - Activities: pulls the last 2 days. These cache as one R2 object per range,
-#   so the daily increment is 1 small entry.
+# - Daily summaries: pulls the last DAILY_LOOKBACK_DAYS days for 11 metrics.
+#   Per-(metric, date) cache means repeated days are free; only new days hit
+#   Garmin. Most-recent FORCE_REFRESH_DAYS days bypass cache to catch late
+#   Garmin syncs.
+# - Activities: force-refreshes the current calendar month (and previous
+#   month for the first 3 days of a new month). Activities cache as one R2
+#   object per (year, month), so sliding-window queries don't pile up keys.
 #
 # Idempotent. Safe to run multiple times per day.
 #
@@ -20,14 +23,26 @@ MCP_URL="${MCP_URL:-https://garmin-mcp-rnwu.onrender.com}"
 METRICS='["steps","sleep","stress","rhr","hrv","respiration","training_readiness","training_status","max_metrics","intensity_minutes","stats_and_body"]'
 DAILY_LOOKBACK_DAYS=3
 FORCE_REFRESH_DAYS=2       # re-fetch the last N days to catch late Garmin syncs
-ACTIVITIES_LOOKBACK_DAYS=2
 # Render free-tier proxy cuts requests off around ~100s. Keep per-call scope
 # small so each HTTP request stays under that budget.
 REQ_TIMEOUT_SEC=90
 
 today=$(python3 -c "from datetime import date; print(date.today().isoformat())")
 daily_start=$(python3 -c "from datetime import date, timedelta; print((date.today() - timedelta(days=$DAILY_LOOKBACK_DAYS)).isoformat())")
-acts_start=$(python3 -c "from datetime import date, timedelta; print((date.today() - timedelta(days=$ACTIVITIES_LOOKBACK_DAYS)).isoformat())")
+
+# Activity refresh: force-refresh the current month's cache (and previous
+# month for the first 3 days of a new month, to catch late syncs). Activities
+# are cached per-calendar-month in R2 so sliding windows don't duplicate keys.
+months_to_refresh=$(python3 -c "
+from datetime import date
+t = date.today()
+months = [(t.year, t.month)]
+if t.day <= 3:
+    prev_month = 12 if t.month == 1 else t.month - 1
+    prev_year = t.year - 1 if t.month == 1 else t.year
+    months.insert(0, (prev_year, prev_month))
+print(' '.join(f'{y}-{m:02d}' for y, m in months))
+")
 
 if [ -z "${MCP_BEARER:-}" ]; then
   echo "Fetching bearer via /token..."
@@ -103,16 +118,32 @@ if [ "$failed_days" -gt 0 ]; then
 fi
 
 echo
-echo "[2/2] get_activities $acts_start -> $today (force_refresh to catch late edits)"
-call_mcp activities get_activities \
-  "{\"startdate\":\"$acts_start\",\"enddate\":\"$today\",\"force_refresh\":true}"
+echo "[2/2] get_activities — force_refresh month(s): $months_to_refresh"
+for ym in $months_to_refresh; do
+  year=$(echo "$ym" | cut -d- -f1)
+  month=$(echo "$ym" | cut -d- -f2)
+  start=$(python3 -c "print('$year-$month-01')")
+  end=$(python3 -c "
+from calendar import monthrange
+from datetime import date
+last = monthrange($year, $month)[1]
+print(date($year, $month, last).isoformat())
+")
+  # Don't ask Garmin for dates beyond today.
+  if [ "$end" \> "$today" ]; then end="$today"; fi
+  echo "  $ym ($start -> $end)"
+  call_mcp "activities_${ym}" get_activities \
+    "{\"startdate\":\"$start\",\"enddate\":\"$end\",\"force_refresh\":true}"
+done
 
 echo
 echo "Cache totals:"
 curl -s --max-time 30 "$MCP_URL/cache/count?tool=daily_summary" \
   | python3 -c "import json,sys; print('  daily_summary:', json.load(sys.stdin).get('count'))" || true
+curl -s --max-time 30 "$MCP_URL/cache/count?tool=activities_month" \
+  | python3 -c "import json,sys; print('  activities_month:', json.load(sys.stdin).get('count'))" || true
 curl -s --max-time 30 "$MCP_URL/cache/count?tool=activities_in_range" \
-  | python3 -c "import json,sys; print('  activities_in_range:', json.load(sys.stdin).get('count'))" || true
+  | python3 -c "import json,sys; c=json.load(sys.stdin).get('count'); print('  activities_in_range (legacy):', c) if c else None" || true
 
 echo
 echo "Done."
