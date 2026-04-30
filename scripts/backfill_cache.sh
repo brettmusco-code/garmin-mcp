@@ -87,7 +87,10 @@ print(json.dumps({
 # Build 10-day chunks from 2025-01-01 to today.
 # Each chunk = 10 days × 11 metrics = 110 Garmin requests, ~30-45s per call,
 # well under Render's free-tier proxy timeout.
-mapfile -t chunks < <(python3 -c "
+chunks=()
+while IFS= read -r line; do
+  chunks+=("$line")
+done < <(python3 -c "
 from datetime import date, timedelta
 start = date(2025, 1, 1)
 end = date.today()
