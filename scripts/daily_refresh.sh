@@ -122,12 +122,18 @@ echo "[2/2] get_activities — force_refresh month(s): $months_to_refresh"
 for ym in $months_to_refresh; do
   year=$(echo "$ym" | cut -d- -f1)
   month=$(echo "$ym" | cut -d- -f2)
-  start=$(python3 -c "print('$year-$month-01')")
-  end=$(python3 -c "
+  # Pass year/month as env vars so Python doesn't parse "04" as octal literal.
+  start=$(YEAR=$year MONTH=$month python3 -c "
+import os
+print(f\"{os.environ['YEAR']}-{os.environ['MONTH']}-01\")
+")
+  end=$(YEAR=$year MONTH=$month python3 -c "
+import os
 from calendar import monthrange
 from datetime import date
-last = monthrange($year, $month)[1]
-print(date($year, $month, last).isoformat())
+y = int(os.environ['YEAR']); m = int(os.environ['MONTH'])
+last = monthrange(y, m)[1]
+print(date(y, m, last).isoformat())
 ")
   # Don't ask Garmin for dates beyond today.
   if [ "$end" \> "$today" ]; then end="$today"; fi
