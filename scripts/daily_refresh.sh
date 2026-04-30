@@ -18,7 +18,7 @@ set -euo pipefail
 
 MCP_URL="${MCP_URL:-https://garmin-mcp-rnwu.onrender.com}"
 METRICS='["steps","sleep","stress","rhr","hrv","respiration","training_readiness","training_status","max_metrics","intensity_minutes","stats_and_body"]'
-DAILY_LOOKBACK_DAYS=7
+DAILY_LOOKBACK_DAYS=3
 FORCE_REFRESH_DAYS=2       # re-fetch the last N days to catch late Garmin syncs
 ACTIVITIES_LOOKBACK_DAYS=2
 # Render free-tier proxy cuts requests off around ~100s. Keep per-call scope
