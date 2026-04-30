@@ -43,12 +43,12 @@ fi
 call_mcp() {
   local label="$1" name="$2" args="$3"
   local payload
-  payload=$(python3 -c "
-import json
+  payload=$(NAME="$name" ARGS="$args" python3 -c '
+import json, os
 print(json.dumps({
-  'jsonrpc':'2.0','id':1,'method':'tools/call',
-  'params':{'name':'$name','arguments':$args}
-}))")
+  "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+  "params": {"name": os.environ["NAME"], "arguments": json.loads(os.environ["ARGS"])}
+}))')
   local outfile="/tmp/mcp_refresh_${label}.json"
   local http
   http=$(curl -s --max-time $REQ_TIMEOUT_SEC -o "$outfile" \
