@@ -1,0 +1,26 @@
+name: daily-refresh
+# Keeps the R2 cache current with yesterday's Garmin data.
+# Runs every morning; the script is idempotent so running twice is harmless.
+
+on:
+  schedule:
+    # 10:00 UTC = 06:00 ET (EDT) / 05:00 ET (EST). Early enough that Garmin
+    # has finished syncing overnight, late enough that timezones have settled.
+    - cron: '0 10 * * *'
+  workflow_dispatch:  # manual trigger from the Actions tab
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Make script executable
+        run: chmod +x scripts/daily_refresh.sh
+
+      - name: Run daily refresh
+        env:
+          MCP_URL: ${{ secrets.MCP_URL }}
+          MCP_BEARER: ${{ secrets.MCP_BEARER }}
+        run: ./scripts/daily_refresh.sh
