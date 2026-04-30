@@ -15,7 +15,7 @@ set -euo pipefail
 MCP_URL="${MCP_URL:-https://garmin-mcp-rnwu.onrender.com}"
 # Keep aligned with daily_refresh.sh METRICS — adds body_battery_events and
 # morning_readiness so /morning cache-hits on today + yesterday.
-METRICS='["steps","sleep","stress","rhr","hrv","respiration","training_readiness","training_status","max_metrics","intensity_minutes","stats_and_body","body_battery_events","morning_readiness"]'
+METRICS='["steps","sleep","stress","rhr","hrv","respiration","training_readiness","training_status","max_metrics","intensity_minutes","stats_and_body","body_battery_events","morning_readiness","nutrition_food_log","nutrition_meals"]'
 CHUNK_TIMEOUT_SEC=90    # Render free tier proxy cuts off at ~100s
 SLEEP_BETWEEN=20        # cool-down between chunks to avoid Garmin OAuth 429
 START_CHUNK="${1:-1}"

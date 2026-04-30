@@ -91,9 +91,10 @@ DAILY_METHODS: dict[str, str] = {
     "heart_rates": "get_heart_rates",
     "morning_readiness": "get_morning_training_readiness",
     "fitness_age": "get_fitnessage_data",
-    "hydration": "get_hydration_data",
     "spo2": "get_spo2_data",
     "all_day_events": "get_all_day_events",
+    "nutrition_food_log": "get_nutrition_daily_food_log",
+    "nutrition_meals": "get_nutrition_daily_meals",
 }
 
 

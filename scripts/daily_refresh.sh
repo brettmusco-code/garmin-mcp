@@ -20,7 +20,7 @@
 set -euo pipefail
 
 MCP_URL="${MCP_URL:-https://garmin-mcp-rnwu.onrender.com}"
-METRICS='["steps","sleep","stress","rhr","hrv","respiration","training_readiness","training_status","max_metrics","intensity_minutes","stats_and_body","body_battery_events","morning_readiness"]'
+METRICS='["steps","sleep","stress","rhr","hrv","respiration","training_readiness","training_status","max_metrics","intensity_minutes","stats_and_body","body_battery_events","morning_readiness","nutrition_food_log","nutrition_meals"]'
 DAILY_LOOKBACK_DAYS=3
 FORCE_REFRESH_DAYS=2       # re-fetch the last N days to catch late Garmin syncs
 SCHEDULED_LOOKAHEAD_DAYS=14  # prewarm scheduled workouts + their structures
