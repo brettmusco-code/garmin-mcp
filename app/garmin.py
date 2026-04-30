@@ -414,8 +414,19 @@ def get_workouts(start: int = 0, limit: int = 100):
     return _call_with_backoff(get_client().get_workouts, int(start), limit)
 
 
-def get_workout_by_id(workout_id: str | int):
-    return _call_with_backoff(get_client().get_workout_by_id, str(workout_id))
+def get_workout_by_id(workout_id: str | int, force_refresh: bool = False):
+    """Full step-by-step workout structure. Immutable once created — cached
+    long-term keyed by workout_id."""
+    wid = str(workout_id)
+    args = {"workout_id": wid}
+    key_parts = [wid]
+    if not force_refresh:
+        hit = cache.get("workout_by_id", args, key_parts=key_parts, ttl_seconds=30 * 24 * 3600)
+        if hit is not None:
+            return hit
+    data = _call_with_backoff(get_client().get_workout_by_id, wid)
+    cache.put("workout_by_id", args, data, key_parts=key_parts)
+    return data
 
 
 def _calendar_month(year: int, month: int) -> dict:

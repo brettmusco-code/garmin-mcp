@@ -20,9 +20,10 @@
 set -euo pipefail
 
 MCP_URL="${MCP_URL:-https://garmin-mcp-rnwu.onrender.com}"
-METRICS='["steps","sleep","stress","rhr","hrv","respiration","training_readiness","training_status","max_metrics","intensity_minutes","stats_and_body"]'
+METRICS='["steps","sleep","stress","rhr","hrv","respiration","training_readiness","training_status","max_metrics","intensity_minutes","stats_and_body","body_battery_events","morning_readiness"]'
 DAILY_LOOKBACK_DAYS=3
 FORCE_REFRESH_DAYS=2       # re-fetch the last N days to catch late Garmin syncs
+SCHEDULED_LOOKAHEAD_DAYS=14  # prewarm scheduled workouts + their structures
 # Render free-tier proxy cuts requests off around ~100s. Keep per-call scope
 # small so each HTTP request stays under that budget.
 REQ_TIMEOUT_SEC=90
@@ -143,11 +144,53 @@ print(date(y, m, last).isoformat())
 done
 
 echo
+echo "[3/4] get_scheduled_workouts — next $SCHEDULED_LOOKAHEAD_DAYS days (force_refresh month(s))"
+ahead_end=$(python3 -c "from datetime import date, timedelta; print((date.today() + timedelta(days=$SCHEDULED_LOOKAHEAD_DAYS)).isoformat())")
+echo "  window $today -> $ahead_end"
+call_mcp "scheduled_workouts" get_scheduled_workouts \
+  "{\"startdate\":\"$today\",\"enddate\":\"$ahead_end\",\"force_refresh\":true}" || true
+
+# Parse the response to extract workoutIds and prewarm each one.
+echo
+echo "[4/4] get_workout_by_id — prewarm structures for scheduled workouts"
+workout_ids=$(python3 -c "
+import json
+try:
+    d = json.load(open('/tmp/mcp_refresh_scheduled_workouts.json'))
+    # Response is MCP envelope: {'result': {'content': [{'type':'text','text': '<json>'}]}}
+    content = d.get('result', {}).get('content', [])
+    items = []
+    for c in content:
+        if c.get('type') == 'text':
+            items = json.loads(c.get('text', '[]'))
+            break
+    ids = sorted({str(it.get('workoutId')) for it in items if it.get('workoutId')})
+    print(' '.join(ids))
+except Exception as ex:
+    print('', end='')
+" 2>/dev/null || echo "")
+
+if [ -z "$workout_ids" ]; then
+  echo "  (no scheduled workouts found, or parse failed — skipping)"
+else
+  wcount=$(echo "$workout_ids" | wc -w | tr -d ' ')
+  echo "  prewarming $wcount workout structure(s)"
+  for wid in $workout_ids; do
+    call_mcp "workout_${wid}" get_workout_by_id \
+      "{\"workout_id\":\"$wid\"}" || true
+  done
+fi
+
+echo
 echo "Cache totals:"
 curl -s --max-time 30 "$MCP_URL/cache/count?tool=daily_summary" \
   | python3 -c "import json,sys; print('  daily_summary:', json.load(sys.stdin).get('count'))" || true
 curl -s --max-time 30 "$MCP_URL/cache/count?tool=activities_month" \
   | python3 -c "import json,sys; print('  activities_month:', json.load(sys.stdin).get('count'))" || true
+curl -s --max-time 30 "$MCP_URL/cache/count?tool=calendar_month" \
+  | python3 -c "import json,sys; print('  calendar_month:', json.load(sys.stdin).get('count'))" || true
+curl -s --max-time 30 "$MCP_URL/cache/count?tool=workout_by_id" \
+  | python3 -c "import json,sys; print('  workout_by_id:', json.load(sys.stdin).get('count'))" || true
 curl -s --max-time 30 "$MCP_URL/cache/count?tool=activities_in_range" \
   | python3 -c "import json,sys; c=json.load(sys.stdin).get('count'); print('  activities_in_range (legacy):', c) if c else None" || true
 

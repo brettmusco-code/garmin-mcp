@@ -193,10 +193,13 @@ TOOLS = [
     },
     {
         "name": "get_workout_by_id",
-        "description": "Full step-by-step definition of one saved workout.",
+        "description": "Full step-by-step definition of one saved workout. Cached per workout_id (30-day TTL) — workouts are immutable once created.",
         "inputSchema": {
             "type": "object",
-            "properties": {"workout_id": {"type": "string"}},
+            "properties": {
+                "workout_id": {"type": "string"},
+                "force_refresh": {"type": "boolean", "description": "skip cache, default false"},
+            },
             "required": ["workout_id"],
         },
     },
@@ -391,7 +394,7 @@ def _call_tool(name: str, args: dict) -> Any:
         wid = args.get("workout_id")
         if not wid:
             raise ValueError("`workout_id` is required")
-        return garmin.get_workout_by_id(wid)
+        return garmin.get_workout_by_id(wid, force_refresh=bool(args.get("force_refresh", False)))
     if name == "get_training_plans":
         return garmin.get_training_plans()
     if name == "get_training_plan_by_id":
