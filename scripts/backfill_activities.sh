@@ -26,7 +26,7 @@ fi
 echo "Bearer acquired."
 
 count_cached() {
-  curl -s --max-time 30 "$MCP_URL/cache/count?tool=activities_in_range" \
+  curl -s --max-time 30 "$MCP_URL/cache/count?tool=activities_month" \
     | python3 -c "import json,sys; print(json.load(sys.stdin).get('count', 0))"
 }
 
@@ -82,5 +82,5 @@ for i in "${!chunks[@]}"; do
 done
 
 echo
-echo "Done. Final activities_in_range cache count:"
+echo "Done. Final activities_month cache count:"
 count_cached
