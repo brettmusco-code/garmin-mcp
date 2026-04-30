@@ -221,6 +221,24 @@ TOOLS = [
         },
     },
     {
+        "name": "get_scheduled_workouts",
+        "description": (
+            "Scheduled/planned workouts (not completed activities) from the "
+            "Garmin Connect calendar between two dates (inclusive). Walks the "
+            "calendar month-by-month and caches per (year, month). Useful for "
+            "'what's on my plan today/this week' queries."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "startdate": {"type": "string", "description": "YYYY-MM-DD"},
+                "enddate": {"type": "string", "description": "YYYY-MM-DD"},
+                "force_refresh": {"type": "boolean", "description": "skip cache, default false"},
+            },
+            "required": ["startdate", "enddate"],
+        },
+    },
+    {
         "name": "analyze_training_period",
         "description": (
             "Summarize activities in a date range (max 366 days). Returns totals, "
@@ -381,6 +399,12 @@ def _call_tool(name: str, args: dict) -> Any:
         if not pid:
             raise ValueError("`plan_id` is required")
         return garmin.get_training_plan_by_id(pid, bool(args.get("adaptive", False)))
+    if name == "get_scheduled_workouts":
+        return garmin.get_scheduled_workouts(
+            _require(args, "startdate"),
+            _require(args, "enddate"),
+            force_refresh=bool(args.get("force_refresh", False)),
+        )
     if name == "analyze_training_period":
         return garmin.analyze_training_period(
             _require(args, "startdate"), _require(args, "enddate")

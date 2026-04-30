@@ -418,6 +418,74 @@ def get_workout_by_id(workout_id: str | int):
     return _call_with_backoff(get_client().get_workout_by_id, str(workout_id))
 
 
+def _calendar_month(year: int, month: int) -> dict:
+    """Fetch one Garmin Connect calendar month via the web-gateway endpoint.
+
+    The python-garminconnect library doesn't wrap this, so we use the
+    underlying garth client to hit `/calendar-service/year/{Y}/month/{M-1}`
+    directly (Garmin's month is 0-indexed).
+    """
+    c = get_client()
+    # Garmin's calendar service uses 0-indexed months (Jan=0 .. Dec=11).
+    path = f"/calendar-service/year/{year}/month/{month - 1}"
+    return _call_with_backoff(c.garth.connectapi, path) or {}
+
+
+def get_scheduled_workouts(
+    startdate: str | date,
+    enddate: str | date,
+    force_refresh: bool = False,
+) -> list[dict]:
+    """Return scheduled/planned workouts between two dates (inclusive).
+
+    Walks the Garmin calendar month-by-month, filters entries tagged as
+    workouts (not completed activities), and returns the relevant fields.
+    Cached per (year, month) like activities_month.
+    """
+    s, e = _validate_range(startdate, enddate)
+
+    # Enumerate covering (year, month) buckets.
+    months: list[tuple[int, int]] = []
+    cur = date(s.year, s.month, 1)
+    while cur <= e:
+        months.append((cur.year, cur.month))
+        cur = date(
+            cur.year + (1 if cur.month == 12 else 0),
+            1 if cur.month == 12 else cur.month + 1,
+            1,
+        )
+
+    out: list[dict] = []
+    for year, month in months:
+        args = {"year": year, "month": month}
+        key_parts = [f"{year:04d}-{month:02d}"]
+        data: dict | None = None
+        if not force_refresh:
+            data = cache.get("calendar_month", args, key_parts=key_parts)
+        if data is None:
+            data = _calendar_month(year, month)
+            cache.put("calendar_month", args, data, key_parts=key_parts)
+
+        # Garmin's calendar items come back as `calendarItems` with an `itemType`.
+        # We want scheduled workouts ("workout") and training-plan workouts,
+        # not completed activities ("activity").
+        for item in data.get("calendarItems", []) or []:
+            itype = (item.get("itemType") or "").lower()
+            if itype in ("activity",):
+                continue
+            date_str = item.get("date") or ""
+            try:
+                d = datetime.fromisoformat(date_str).date()
+            except ValueError:
+                continue
+            if not (s <= d <= e):
+                continue
+            out.append(item)
+
+    out.sort(key=lambda x: x.get("date") or "")
+    return out
+
+
 def get_training_plans():
     """Active and available training plans (Garmin Coach + custom)."""
     return _call_with_backoff(get_client().get_training_plans)
