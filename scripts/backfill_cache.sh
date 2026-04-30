@@ -13,10 +13,13 @@
 set -euo pipefail
 
 MCP_URL="${MCP_URL:-https://garmin-mcp-rnwu.onrender.com}"
-METRICS='["steps","sleep","stress","rhr","hrv","respiration","training_readiness","training_status","max_metrics","intensity_minutes","stats_and_body"]'
+# Keep aligned with daily_refresh.sh METRICS — adds body_battery_events and
+# morning_readiness so /morning cache-hits on today + yesterday.
+METRICS='["steps","sleep","stress","rhr","hrv","respiration","training_readiness","training_status","max_metrics","intensity_minutes","stats_and_body","body_battery_events","morning_readiness"]'
 CHUNK_TIMEOUT_SEC=90    # Render free tier proxy cuts off at ~100s
 SLEEP_BETWEEN=20        # cool-down between chunks to avoid Garmin OAuth 429
 START_CHUNK="${1:-1}"
+BACKFILL_START="${BACKFILL_START:-2025-01-01}"  # override with env var if needed
 
 # Fetch bearer from the rubber-stamp OAuth /token endpoint.
 echo "Fetching bearer from $MCP_URL/token..."
@@ -90,9 +93,10 @@ print(json.dumps({
 chunks=()
 while IFS= read -r line; do
   chunks+=("$line")
-done < <(python3 -c "
+done < <(BF_START="$BACKFILL_START" python3 -c "
+import os
 from datetime import date, timedelta
-start = date(2025, 1, 1)
+start = date.fromisoformat(os.environ['BF_START'])
 end = date.today()
 cur = start
 while cur <= end:
