@@ -1,0 +1,32 @@
+name: backfill
+# Gap-fills the R2 cache for the last N days. Only fetches (metric, date)
+# pairs that aren't already cached — safe to re-run idempotently.
+#
+# Manual trigger only. Garmin's rate-limit exposure is contained to this
+# single GitHub container; the production web service stays in readonly mode.
+
+on:
+  workflow_dispatch:
+    inputs:
+      days_back:
+        description: "How many days back to gap-fill"
+        required: true
+        default: "180"
+        type: string
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Make script executable
+        run: chmod +x scripts/backfill_missing.sh
+
+      - name: Run backfill
+        env:
+          MCP_URL: ${{ secrets.MCP_URL }}
+          MCP_BEARER: ${{ secrets.MCP_BEARER }}
+          DAYS_BACK: ${{ inputs.days_back }}
+        run: ./scripts/backfill_missing.sh
