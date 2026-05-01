@@ -22,11 +22,14 @@ set -euo pipefail
 MCP_URL="${MCP_URL:-https://garmin-mcp-rnwu.onrender.com}"
 METRICS='["steps","sleep","stress","rhr","hrv","respiration","training_readiness","training_status","max_metrics","intensity_minutes","stats_and_body","body_battery_events","morning_readiness","nutrition_food_log","nutrition_meals"]'
 DAILY_LOOKBACK_DAYS=3
-FORCE_REFRESH_DAYS=2       # re-fetch the last N days to catch late Garmin syncs
+FORCE_REFRESH_DAYS=1       # re-fetch only today (yesterday+ should already be cached)
 SCHEDULED_LOOKAHEAD_DAYS=14  # prewarm scheduled workouts + their structures
 # Render free-tier proxy cuts requests off around ~100s. Keep per-call scope
 # small so each HTTP request stays under that budget.
 REQ_TIMEOUT_SEC=90
+# If Garmin OAuth starts 429ing, abort the run instead of hammering the
+# endpoint — each additional call extends the throttle window.
+MAX_CONSECUTIVE_429=2
 
 today=$(python3 -c "from datetime import date; print(date.today().isoformat())")
 daily_start=$(python3 -c "from datetime import date, timedelta; print((date.today() - timedelta(days=$DAILY_LOOKBACK_DAYS)).isoformat())")
@@ -56,6 +59,8 @@ if [ -z "$MCP_BEARER" ]; then
   exit 1
 fi
 
+# Returns exit codes: 0=ok, 1=non-429 error, 2=Garmin 429 rate-limit.
+# Callers can distinguish 429s to abort early instead of hammering.
 call_mcp() {
   local label="$1" name="$2" args="$3"
   local payload
@@ -92,34 +97,67 @@ except Exception as ex:
 ")
   if [ -n "$err" ]; then
     echo "  ERROR: $err" >&2
+    # Distinguish Garmin OAuth 429 so the caller can abort the run.
+    if echo "$err" | grep -qi "rate limit.*429\|429.*rate limit\|too many requests"; then
+      return 2
+    fi
     return 1
   fi
+  return 0
 }
 
 echo "=== daily_refresh $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
 echo "Target: $MCP_URL"
 echo
 
+# Track consecutive Garmin 429s so we abort early. Each 429 re-triggers an
+# OAuth-exchange rate-limit window; continuing to hammer only extends it.
+consec_429=0
+
 # Per-day fan-out: one HTTP call per (date). Keeps each request small
 # enough for Render's free-tier proxy timeout. Cache hits return fast.
-echo "[1/2] get_daily_summaries — $DAILY_LOOKBACK_DAYS days ending $today"
+echo "[1/4] get_daily_summaries — $DAILY_LOOKBACK_DAYS days ending $today"
 failed_days=0
+aborted=false
 for i in $(seq 0 $DAILY_LOOKBACK_DAYS); do
   d=$(python3 -c "from datetime import date, timedelta; print((date.today() - timedelta(days=$i)).isoformat())")
   force="false"
   if [ "$i" -lt "$FORCE_REFRESH_DAYS" ]; then force="true"; fi
   echo "  day $d (force_refresh=$force)"
-  if ! call_mcp "daily_${d}" get_daily_summaries \
-    "{\"startdate\":\"$d\",\"enddate\":\"$d\",\"metrics\":$METRICS,\"force_refresh\":$force}"; then
+  set +e
+  call_mcp "daily_${d}" get_daily_summaries \
+    "{\"startdate\":\"$d\",\"enddate\":\"$d\",\"metrics\":$METRICS,\"force_refresh\":$force}"
+  rc=$?
+  set -e
+  if [ "$rc" = "2" ]; then
+    consec_429=$((consec_429 + 1))
     failed_days=$((failed_days + 1))
+    if [ "$consec_429" -ge "$MAX_CONSECUTIVE_429" ]; then
+      echo "  ABORT: $MAX_CONSECUTIVE_429 consecutive Garmin 429s — skipping remaining steps to avoid extending the throttle window" >&2
+      aborted=true
+      break
+    fi
+  elif [ "$rc" != "0" ]; then
+    consec_429=0
+    failed_days=$((failed_days + 1))
+  else
+    consec_429=0
   fi
 done
 if [ "$failed_days" -gt 0 ]; then
   echo "  WARNING: $failed_days day(s) failed — run again to retry" >&2
 fi
 
+if [ "$aborted" = "true" ]; then
+  echo
+  echo "Aborted early due to Garmin rate-limit. Cache totals (what we have):"
+  curl -s --max-time 30 "$MCP_URL/cache/count?tool=daily_summary" \
+    | python3 -c "import json,sys; print('  daily_summary:', json.load(sys.stdin).get('count'))" || true
+  exit 0   # exit 0 so the GitHub Action doesn't mark the run as failed every day
+fi
+
 echo
-echo "[2/2] get_activities — force_refresh month(s): $months_to_refresh"
+echo "[2/4] get_activities — force_refresh month(s): $months_to_refresh"
 for ym in $months_to_refresh; do
   year=$(echo "$ym" | cut -d- -f1)
   month=$(echo "$ym" | cut -d- -f2)
@@ -139,16 +177,38 @@ print(date(y, m, last).isoformat())
   # Don't ask Garmin for dates beyond today.
   if [ "$end" \> "$today" ]; then end="$today"; fi
   echo "  $ym ($start -> $end)"
+  set +e
   call_mcp "activities_${ym}" get_activities \
     "{\"startdate\":\"$start\",\"enddate\":\"$end\",\"force_refresh\":true}"
+  rc=$?
+  set -e
+  if [ "$rc" = "2" ]; then
+    consec_429=$((consec_429 + 1))
+    if [ "$consec_429" -ge "$MAX_CONSECUTIVE_429" ]; then
+      echo "  ABORT: consecutive Garmin 429s — skipping remaining steps" >&2
+      exit 0
+    fi
+  elif [ "$rc" = "0" ]; then
+    consec_429=0
+  fi
 done
 
 echo
 echo "[3/4] get_scheduled_workouts — next $SCHEDULED_LOOKAHEAD_DAYS days (force_refresh month(s))"
 ahead_end=$(python3 -c "from datetime import date, timedelta; print((date.today() + timedelta(days=$SCHEDULED_LOOKAHEAD_DAYS)).isoformat())")
 echo "  window $today -> $ahead_end"
+set +e
 call_mcp "scheduled_workouts" get_scheduled_workouts \
-  "{\"startdate\":\"$today\",\"enddate\":\"$ahead_end\",\"force_refresh\":true}" || true
+  "{\"startdate\":\"$today\",\"enddate\":\"$ahead_end\",\"force_refresh\":true}"
+rc=$?
+set -e
+if [ "$rc" = "2" ]; then
+  consec_429=$((consec_429 + 1))
+  if [ "$consec_429" -ge "$MAX_CONSECUTIVE_429" ]; then
+    echo "  ABORT: consecutive Garmin 429s — skipping workout structure prewarm" >&2
+    exit 0
+  fi
+fi
 
 # Parse the response to extract workoutIds and prewarm each one.
 echo
