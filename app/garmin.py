@@ -742,7 +742,7 @@ def analyze_training_period(
     Uses the cached per-month activities (same source as get_activities_in_range)
     so repeated calls over the same window don't pound Garmin.
     """
-    _validate_range(startdate, enddate)
+    s, e = _validate_range(startdate, enddate)
     acts = get_activities_in_range(startdate, enddate) or []
 
     totals = {"count": len(acts), "distance_mi": 0.0, "duration_hr": 0.0, "calories": 0, "elevation_gain_m": 0.0}
