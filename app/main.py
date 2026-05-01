@@ -98,12 +98,13 @@ TOOLS = [
     },
     {
         "name": "get_body_composition",
-        "description": "Weight, body fat, BMI, muscle mass. Single date or range (max 366 days).",
+        "description": "Weight, body fat, BMI, muscle mass. Single date or range (max 366 days). Cached 24h.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "startdate": {"type": "string", "description": "YYYY-MM-DD"},
                 "enddate": {"type": "string", "description": "YYYY-MM-DD (optional)"},
+                "force_refresh": {"type": "boolean", "description": "skip cache, default false"},
             },
             "required": ["startdate"],
         },
@@ -112,7 +113,7 @@ TOOLS = [
         "name": "get_training_score",
         "description": (
             "Hill or endurance training score. Single date or range (max 366 days). "
-            "metric: 'hill' or 'endurance'."
+            "metric: 'hill' or 'endurance'. Cached 24h."
         ),
         "inputSchema": {
             "type": "object",
@@ -120,6 +121,7 @@ TOOLS = [
                 "metric": {"type": "string", "enum": ["hill", "endurance"]},
                 "startdate": {"type": "string", "description": "YYYY-MM-DD"},
                 "enddate": {"type": "string", "description": "YYYY-MM-DD (optional)"},
+                "force_refresh": {"type": "boolean", "description": "skip cache, default false"},
             },
             "required": ["metric", "startdate"],
         },
@@ -128,7 +130,7 @@ TOOLS = [
         "name": "get_lactate_threshold",
         "description": (
             "Lactate threshold heart rate / pace. Call with no args for latest; or "
-            "provide startdate+enddate (max 366 days) for history. aggregation = 'daily' (default) or 'weekly'."
+            "provide startdate+enddate (max 366 days) for history. aggregation = 'daily' (default) or 'weekly'. Cached 24h."
         ),
         "inputSchema": {
             "type": "object",
@@ -136,6 +138,7 @@ TOOLS = [
                 "startdate": {"type": "string", "description": "YYYY-MM-DD (optional)"},
                 "enddate": {"type": "string", "description": "YYYY-MM-DD (optional)"},
                 "aggregation": {"type": "string", "enum": ["daily", "weekly"]},
+                "force_refresh": {"type": "boolean", "description": "skip cache, default false"},
             },
         },
     },
@@ -143,7 +146,7 @@ TOOLS = [
         "name": "get_progress_summary",
         "description": (
             "Aggregated training progress between two dates (max 366 days). "
-            "metric: one of distance, duration, elevationGain, calories (default: distance)."
+            "metric: one of distance, duration, elevationGain, calories (default: distance). Cached 24h."
         ),
         "inputSchema": {
             "type": "object",
@@ -152,6 +155,7 @@ TOOLS = [
                 "enddate": {"type": "string", "description": "YYYY-MM-DD"},
                 "metric": {"type": "string", "description": "distance/duration/elevationGain/calories"},
                 "group_by_activities": {"type": "boolean"},
+                "force_refresh": {"type": "boolean", "description": "skip cache, default false"},
             },
             "required": ["startdate", "enddate"],
         },
@@ -160,7 +164,7 @@ TOOLS = [
         "name": "get_weekly_summaries",
         "description": (
             "Weekly aggregates (steps, stress, intensity_minutes) ending on a given date. "
-            "Up to 104 weeks back. Returns { metric: [...weeks] }."
+            "Up to 104 weeks back. Returns { metric: [...weeks] }. Cached 24h per metric."
         ),
         "inputSchema": {
             "type": "object",
@@ -171,6 +175,7 @@ TOOLS = [
                     "type": "array",
                     "items": {"type": "string", "enum": ["steps", "stress", "intensity_minutes"]},
                 },
+                "force_refresh": {"type": "boolean", "description": "skip cache, default false"},
             },
             "required": ["enddate"],
         },
@@ -294,8 +299,13 @@ TOOLS = [
     },
     {
         "name": "get_personal_records",
-        "description": "Personal records across all activity types (fastest mile, longest ride, etc.).",
-        "inputSchema": {"type": "object", "properties": {}},
+        "description": "Personal records across all activity types (fastest mile, longest ride, etc.). Cached 24h.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "force_refresh": {"type": "boolean", "description": "skip cache, default false"},
+            },
+        },
     },
     {
         "name": "get_race_predictions",
@@ -355,7 +365,7 @@ def _call_tool(name: str, args: dict) -> Any:
         e = args.get("enddate")
         if e and not DATE_RE.match(e):
             raise ValueError("`enddate` must be YYYY-MM-DD")
-        return garmin.get_body_composition(s, e)
+        return garmin.get_body_composition(s, e, force_refresh=bool(args.get("force_refresh", False)))
     if name == "get_training_score":
         metric = args.get("metric")
         if metric not in ("hill", "endurance"):
@@ -364,7 +374,7 @@ def _call_tool(name: str, args: dict) -> Any:
         e = args.get("enddate")
         if e and not DATE_RE.match(e):
             raise ValueError("`enddate` must be YYYY-MM-DD")
-        return garmin.get_training_score(metric, s, e)
+        return garmin.get_training_score(metric, s, e, force_refresh=bool(args.get("force_refresh", False)))
     if name == "get_lactate_threshold":
         s = args.get("startdate")
         e = args.get("enddate")
@@ -373,20 +383,24 @@ def _call_tool(name: str, args: dict) -> Any:
         agg = args.get("aggregation", "daily")
         if agg not in ("daily", "weekly"):
             raise ValueError("`aggregation` must be 'daily' or 'weekly'")
-        return garmin.get_lactate_threshold(s, e, agg)
+        return garmin.get_lactate_threshold(s, e, agg, force_refresh=bool(args.get("force_refresh", False)))
     if name == "get_progress_summary":
         return garmin.get_progress_summary(
             _require(args, "startdate"),
             _require(args, "enddate"),
             args.get("metric", "distance"),
             bool(args.get("group_by_activities", True)),
+            force_refresh=bool(args.get("force_refresh", False)),
         )
     if name == "get_weekly_summaries":
         weeks = int(args.get("weeks", 52))
         metrics = args.get("metrics")
         if metrics is not None and not isinstance(metrics, list):
             raise ValueError("`metrics` must be an array")
-        return garmin.get_weekly_summaries(_require(args, "enddate"), weeks, metrics)
+        return garmin.get_weekly_summaries(
+            _require(args, "enddate"), weeks, metrics,
+            force_refresh=bool(args.get("force_refresh", False)),
+        )
     if name == "get_devices":
         return garmin.get_devices()
     if name == "get_workouts":
@@ -422,7 +436,7 @@ def _call_tool(name: str, args: dict) -> Any:
         days = int(args.get("days", 30))
         return garmin.analyze_sleep_trend(_require(args, "enddate"), days)
     if name == "get_personal_records":
-        return garmin.get_personal_records()
+        return garmin.get_personal_records(force_refresh=bool(args.get("force_refresh", False)))
     if name == "get_race_predictions":
         s = args.get("startdate")
         e = args.get("enddate")

@@ -290,8 +290,17 @@ def get_activity_details(activity_id: str | int, force_refresh: bool = False) ->
     return out
 
 
-def get_personal_records():
-    return _call_with_backoff(get_client().get_personal_record)
+def get_personal_records(force_refresh: bool = False):
+    """PRs change rarely. Cached 24h."""
+    args = {}
+    key_parts = ["latest"]
+    if not force_refresh:
+        hit = cache.get("personal_records", args, key_parts=key_parts)
+        if hit is not None:
+            return hit
+    data = _call_with_backoff(get_client().get_personal_record)
+    cache.put("personal_records", args, data, key_parts=key_parts)
+    return data
 
 
 def get_race_predictions(
@@ -317,49 +326,93 @@ def get_race_predictions(
     return data
 
 
-def get_body_composition(startdate: str | date, enddate: str | date | None = None):
+def get_body_composition(
+    startdate: str | date,
+    enddate: str | date | None = None,
+    force_refresh: bool = False,
+):
+    """Body composition (weight/fat/muscle) entries in a range. Cached — Garmin
+    entries are manual logs and rarely backfilled, so a 24h TTL is plenty."""
     s = _coerce_date(startdate)
+    e_iso = _coerce_date(enddate).isoformat() if enddate else None
+    args = {"startdate": s.isoformat(), "enddate": e_iso}
+    key_parts = [f"{s.isoformat()}__{e_iso or 'single'}"]
+    if not force_refresh:
+        hit = cache.get("body_composition", args, key_parts=key_parts)
+        if hit is not None:
+            return hit
     if enddate:
         _, _ = _validate_range(startdate, enddate)
-        return _call_with_backoff(
-            get_client().get_body_composition, s.isoformat(), _coerce_date(enddate).isoformat()
+        data = _call_with_backoff(
+            get_client().get_body_composition, s.isoformat(), e_iso
         )
-    return _call_with_backoff(get_client().get_body_composition, s.isoformat())
+    else:
+        data = _call_with_backoff(get_client().get_body_composition, s.isoformat())
+    cache.put("body_composition", args, data, key_parts=key_parts)
+    return data
 
 
 def get_training_score(
     metric: str,
     startdate: str | date,
     enddate: str | date | None = None,
+    force_refresh: bool = False,
 ):
-    """Hill or endurance training score. Single date or range (max 366 days)."""
+    """Hill or endurance training score. Single date or range (max 366 days).
+    Cached — Garmin updates these once daily."""
     methods = {"hill": "get_hill_score", "endurance": "get_endurance_score"}
     if metric not in methods:
         raise ValueError(f"metric must be one of {sorted(methods)}")
-    fn = getattr(get_client(), methods[metric])
     s = _coerce_date(startdate)
+    e_iso = _coerce_date(enddate).isoformat() if enddate else None
+    args = {"metric": metric, "startdate": s.isoformat(), "enddate": e_iso}
+    key_parts = [metric, f"{s.isoformat()}__{e_iso or 'single'}"]
+    if not force_refresh:
+        hit = cache.get("training_score", args, key_parts=key_parts)
+        if hit is not None:
+            return hit
+    fn = getattr(get_client(), methods[metric])
     if enddate:
         _, _ = _validate_range(startdate, enddate)
-        return _call_with_backoff(fn, s.isoformat(), _coerce_date(enddate).isoformat())
-    return _call_with_backoff(fn, s.isoformat())
+        data = _call_with_backoff(fn, s.isoformat(), e_iso)
+    else:
+        data = _call_with_backoff(fn, s.isoformat())
+    cache.put("training_score", args, data, key_parts=key_parts)
+    return data
 
 
 def get_lactate_threshold(
     startdate: str | date | None = None,
     enddate: str | date | None = None,
     aggregation: str = "daily",
+    force_refresh: bool = False,
 ):
+    """Lactate threshold (HR + power). Cached 24h — Garmin updates when you
+    complete threshold-eligible efforts."""
+    args = {
+        "startdate": str(startdate) if startdate else None,
+        "enddate": str(enddate) if enddate else None,
+        "aggregation": aggregation,
+    }
+    key_parts = [aggregation, f"{startdate or 'latest'}__{enddate or 'latest'}"]
+    if not force_refresh:
+        hit = cache.get("lactate_threshold", args, key_parts=key_parts)
+        if hit is not None:
+            return hit
     c = get_client()
     if startdate and enddate:
         s, e = _validate_range(startdate, enddate)
-        return _call_with_backoff(
+        data = _call_with_backoff(
             c.get_lactate_threshold,
             latest=False,
             start_date=s.isoformat(),
             end_date=e.isoformat(),
             aggregation=aggregation,
         )
-    return _call_with_backoff(c.get_lactate_threshold, latest=True)
+    else:
+        data = _call_with_backoff(c.get_lactate_threshold, latest=True)
+    cache.put("lactate_threshold", args, data, key_parts=key_parts)
+    return data
 
 
 def get_progress_summary(
@@ -367,26 +420,46 @@ def get_progress_summary(
     enddate: str | date,
     metric: str = "distance",
     group_by_activities: bool = True,
+    force_refresh: bool = False,
 ):
+    """Activity totals/averages over a range. Cached per (range, metric, group) —
+    historical ranges never change; ranges ending 'today' benefit from the 24h
+    TTL to avoid slamming Garmin on repeated queries."""
     s, e = _validate_range(startdate, enddate)
-    return _call_with_backoff(
+    args = {
+        "startdate": s.isoformat(),
+        "enddate": e.isoformat(),
+        "metric": metric,
+        "group_by_activities": group_by_activities,
+    }
+    key_parts = [metric, "grouped" if group_by_activities else "flat", f"{s.isoformat()}__{e.isoformat()}"]
+    if not force_refresh:
+        hit = cache.get("progress_summary", args, key_parts=key_parts)
+        if hit is not None:
+            return hit
+    data = _call_with_backoff(
         get_client().get_progress_summary_between_dates,
         s.isoformat(),
         e.isoformat(),
         metric,
         group_by_activities,
     )
+    cache.put("progress_summary", args, data, key_parts=key_parts)
+    return data
 
 
 def get_weekly_summaries(
     enddate: str | date,
     weeks: int = 52,
     metrics: list[str] | None = None,
+    force_refresh: bool = False,
 ) -> dict[str, Any]:
     """Weekly aggregates (steps / stress / intensity_minutes).
 
     intensity_minutes uses a (start, end) range under the hood — we derive
     start as (enddate - weeks*7 days) to stay consistent.
+
+    Cached per (metric, enddate, weeks) with 24h TTL.
     """
     if weeks < 1 or weeks > 104:
         raise ValueError("weeks must be between 1 and 104")
@@ -397,19 +470,39 @@ def get_weekly_summaries(
     if unknown:
         raise ValueError(f"unknown weekly metrics: {unknown}. Supported: {sorted(allowed)}")
 
-    c = get_client()
     out: dict[str, Any] = {}
+    need_client = False
+    to_fetch: list[str] = []
     for m in metrics:
+        cache_args = {"metric": m, "enddate": end.isoformat(), "weeks": weeks}
+        key_parts = [m, end.isoformat(), str(weeks)]
+        if not force_refresh:
+            hit = cache.get("weekly_summary", cache_args, key_parts=key_parts)
+            if hit is not None:
+                out[m] = hit
+                continue
+        to_fetch.append(m)
+        need_client = True
+
+    if not need_client:
+        return out
+
+    c = get_client()
+    for m in to_fetch:
+        cache_args = {"metric": m, "enddate": end.isoformat(), "weeks": weeks}
+        key_parts = [m, end.isoformat(), str(weeks)]
         try:
             if m == "steps":
-                out[m] = _call_with_backoff(c.get_weekly_steps, end.isoformat(), weeks)
+                data = _call_with_backoff(c.get_weekly_steps, end.isoformat(), weeks)
             elif m == "stress":
-                out[m] = _call_with_backoff(c.get_weekly_stress, end.isoformat(), weeks)
+                data = _call_with_backoff(c.get_weekly_stress, end.isoformat(), weeks)
             elif m == "intensity_minutes":
                 start = end - timedelta(days=weeks * 7)
-                out[m] = _call_with_backoff(
+                data = _call_with_backoff(
                     c.get_weekly_intensity_minutes, start.isoformat(), end.isoformat()
                 )
+            out[m] = data
+            cache.put("weekly_summary", cache_args, data, key_parts=key_parts)
         except Exception as ex:  # noqa: BLE001
             out[m] = {"error": str(ex)}
     return out
