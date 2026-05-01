@@ -35,6 +35,10 @@ JITTER_MIN_SEC = 0.1
 JITTER_MAX_SEC = 0.25
 RATE_LIMIT_MAX_RETRIES = 4
 RATE_LIMIT_BASE_DELAY_SEC = 2.0
+# Immutable historical data (completed activities, past daily summaries).
+# ~100 years in seconds; effectively infinite for our purposes. Use
+# force_refresh=true to bypass if you ever need to re-fetch.
+IMMUTABLE_TTL = 100 * 365 * 24 * 3600
 
 
 class GarminError(Exception):
@@ -201,15 +205,18 @@ def _month_bounds(year: int, month: int) -> tuple[date, date]:
 def _fetch_activities_month(year: int, month: int, force_refresh: bool = False) -> list[dict]:
     """Fetch (and cache) one calendar month of activities, unfiltered.
 
-    Cache key is (year, month). Nightly refresh rewrites only the current
-    month in place — past months are frozen until explicitly force-refreshed.
-    Long TTL (30 days): past months are immutable, and the nightly job
-    force-refreshes the current month to catch new activities.
+    Cache key is (year, month). Past months are immutable — use an effectively-
+    infinite TTL so a 2-year-old activity stays cached indefinitely. Current
+    month uses 24h TTL because new activities are still being added; nightly
+    refresh force-refreshes it regardless.
     """
     args = {"year": year, "month": month}
     key_parts = [f"{year:04d}-{month:02d}"]
+    today = date.today()
+    is_current_month = (year == today.year and month == today.month)
+    ttl = 24 * 3600 if is_current_month else IMMUTABLE_TTL
     if not force_refresh:
-        hit = cache.get("activities_month", args, key_parts=key_parts, ttl_seconds=30 * 24 * 3600)
+        hit = cache.get("activities_month", args, key_parts=key_parts, ttl_seconds=ttl)
         if hit is not None:
             return hit
     start, end = _month_bounds(year, month)
@@ -268,12 +275,12 @@ def get_activities_in_range(
 
 def get_activity_details(activity_id: str | int, force_refresh: bool = False) -> dict[str, Any]:
     """Full details for one activity. Activities are immutable once complete —
-    long TTL (90 days)."""
+    effectively infinite TTL."""
     aid = str(activity_id)
     args = {"activity_id": aid}
     key_parts = [aid]
     if not force_refresh:
-        hit = cache.get("activity_details", args, key_parts=key_parts, ttl_seconds=90 * 24 * 3600)
+        hit = cache.get("activity_details", args, key_parts=key_parts, ttl_seconds=IMMUTABLE_TTL)
         if hit is not None:
             return hit
     c = get_client()
@@ -581,11 +588,15 @@ def get_scheduled_workouts(
     for year, month in months:
         args = {"year": year, "month": month}
         key_parts = [f"{year:04d}-{month:02d}"]
+        today = date.today()
+        is_current_or_future = (year, month) >= (today.year, today.month)
+        # Future/current months: 24h TTL since plans can change.
+        # Past months: immutable — already-scheduled workouts in the past don't
+        # get edited in practice.
+        ttl = 24 * 3600 if is_current_or_future else IMMUTABLE_TTL
         data: dict | None = None
         if not force_refresh:
-            # 30-day TTL: nightly refresh force-refreshes current/future months;
-            # past months are frozen.
-            data = cache.get("calendar_month", args, key_parts=key_parts, ttl_seconds=30 * 24 * 3600)
+            data = cache.get("calendar_month", args, key_parts=key_parts, ttl_seconds=ttl)
         if data is None:
             data = _calendar_month(year, month)
             cache.put("calendar_month", args, data, key_parts=key_parts)
@@ -651,12 +662,14 @@ def get_daily_summaries(
 
     tasks: list[tuple[str, str]] = []
     today_str = date.today().isoformat()
+    yesterday_str = (date.today() - timedelta(days=1)).isoformat()
     for m in metrics:
         for d in dates:
             if not force_refresh:
-                # Past dates are immutable → long TTL. Today's data may update
-                # during the day → short TTL so nightly refresh picks it up.
-                ttl = 24 * 3600 if d >= today_str else 90 * 24 * 3600
+                # Today and yesterday can still be updating (late device syncs,
+                # sleep data finalizing the morning after). Everything older is
+                # immutable → effectively infinite TTL.
+                ttl = 24 * 3600 if d >= yesterday_str else IMMUTABLE_TTL
                 hit = cache.get(
                     "daily_summary",
                     {"metric": m, "date": d},
