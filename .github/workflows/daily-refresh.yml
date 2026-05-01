@@ -1,26 +1,37 @@
 name: daily-refresh
 # Keeps the R2 cache current with yesterday's Garmin data.
-# Runs every morning; the script is idempotent so running twice is harmless.
+# Talks to Garmin directly via app.garmin (not through the web MCP, which
+# runs in readonly mode). Writes to the shared R2 bucket.
 
 on:
   schedule:
     # 07:00 UTC = 03:00 ET (EDT) / 02:00 ET (EST). GitHub Actions cron is
     # always UTC and doesn't honor DST, so the ET hour shifts by 1 in winter.
     - cron: '0 7 * * *'
-  workflow_dispatch:  # manual trigger from the Actions tab
+  workflow_dispatch:
 
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: Make script executable
-        run: chmod +x scripts/daily_refresh.sh
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11.9"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
 
       - name: Run daily refresh
         env:
-          MCP_URL: ${{ secrets.MCP_URL }}
-          MCP_BEARER: ${{ secrets.MCP_BEARER }}
-        run: ./scripts/daily_refresh.sh
+          GARTH_TOKENS_B64: ${{ secrets.GARTH_TOKENS_B64 }}
+          S3_CACHE_BUCKET: ${{ secrets.S3_CACHE_BUCKET }}
+          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+          S3_CACHE_PREFIX: ${{ secrets.S3_CACHE_PREFIX }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          GARMIN_READONLY: "false"
+        run: python scripts/daily_refresh.py
