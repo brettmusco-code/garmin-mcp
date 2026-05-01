@@ -295,13 +295,26 @@ def get_personal_records():
 
 
 def get_race_predictions(
-    startdate: str | date | None = None, enddate: str | date | None = None
+    startdate: str | date | None = None,
+    enddate: str | date | None = None,
+    force_refresh: bool = False,
 ):
+    """Latest race predictions or a history range. Cached for 24h — Garmin
+    recomputes these daily at most, and the endpoint is slow and rate-sensitive."""
+    args = {"startdate": str(startdate) if startdate else None, "enddate": str(enddate) if enddate else None}
+    key_parts = [f"{startdate or 'latest'}__{enddate or 'latest'}"]
+    if not force_refresh:
+        hit = cache.get("race_predictions", args, key_parts=key_parts)
+        if hit is not None:
+            return hit
     c = get_client()
     if startdate and enddate:
         s, e = _validate_range(startdate, enddate)
-        return _call_with_backoff(c.get_race_predictions, s.isoformat(), e.isoformat())
-    return _call_with_backoff(c.get_race_predictions)
+        data = _call_with_backoff(c.get_race_predictions, s.isoformat(), e.isoformat())
+    else:
+        data = _call_with_backoff(c.get_race_predictions)
+    cache.put("race_predictions", args, data, key_parts=key_parts)
+    return data
 
 
 def get_body_composition(startdate: str | date, enddate: str | date | None = None):
@@ -608,11 +621,12 @@ def analyze_training_period(
 
     Returns totals, averages, per-activity-type breakdowns, and a weekly
     timeline — pre-computed so the LLM doesn't have to crunch raw activity JSON.
+
+    Uses the cached per-month activities (same source as get_activities_in_range)
+    so repeated calls over the same window don't pound Garmin.
     """
-    s, e = _validate_range(startdate, enddate)
-    acts = _call_with_backoff(
-        get_client().get_activities_by_date, s.isoformat(), e.isoformat(), None
-    ) or []
+    _validate_range(startdate, enddate)
+    acts = get_activities_in_range(startdate, enddate) or []
 
     totals = {"count": len(acts), "distance_mi": 0.0, "duration_hr": 0.0, "calories": 0, "elevation_gain_m": 0.0}
     by_type: dict[str, dict[str, Any]] = {}

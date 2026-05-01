@@ -301,13 +301,14 @@ TOOLS = [
         "name": "get_race_predictions",
         "description": (
             "Predicted race times (5K/10K/half/full). Optional date range for history; "
-            "otherwise returns latest."
+            "otherwise returns latest. Cached 24h."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "startdate": {"type": "string", "description": "YYYY-MM-DD (optional)"},
                 "enddate": {"type": "string", "description": "YYYY-MM-DD (optional)"},
+                "force_refresh": {"type": "boolean", "description": "skip cache, default false"},
             },
         },
     },
@@ -427,7 +428,7 @@ def _call_tool(name: str, args: dict) -> Any:
         e = args.get("enddate")
         if (s and not DATE_RE.match(s)) or (e and not DATE_RE.match(e)):
             raise ValueError("dates must be YYYY-MM-DD")
-        return garmin.get_race_predictions(s, e)
+        return garmin.get_race_predictions(s, e, force_refresh=bool(args.get("force_refresh", False)))
     raise ValueError(f"Unknown tool: {name}")
 
 
