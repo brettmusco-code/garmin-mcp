@@ -4,18 +4,16 @@ Auth model:
   1. One-time bootstrap locally (see scripts/bootstrap.py). User completes MFA
      interactively. `garminconnect` writes Garth OAuth tokens to a dir.
   2. For deployment, those tokens are base64-encoded and stored in
-     GARTH_TOKENS_B64. At startup we decode them to a temp dir and hand that to
-     garth. The tokens auto-refresh internally for ~1 year; no password needed
-     at runtime.
+     GARTH_TOKENS_B64 as a *bootstrap* value. First startup: load from env,
+     push to R2. Subsequent startups: load from R2 (survives Render restarts).
+  3. garth refreshes OAuth2 tokens ~daily. Our patched refresh pushes the
+     updated tokens back to R2 so restarts don't redo the exchange (the
+     Garmin endpoint Garmin aggressively rate-limits).
 """
 from __future__ import annotations
 
-import base64
-import io
 import os
 import random
-import tarfile
-import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
@@ -24,7 +22,7 @@ from typing import Any, Optional
 
 from garminconnect import Garmin
 
-from . import cache
+from . import cache, tokens
 
 _client: Optional[Garmin] = None
 _lock = Lock()
@@ -102,25 +100,12 @@ DAILY_METHODS: dict[str, str] = {
 }
 
 
-def _tokens_dir_from_env() -> str:
-    b64 = os.environ.get("GARTH_TOKENS_B64")
-    if not b64:
-        raise RuntimeError(
-            "GARTH_TOKENS_B64 is not set. Run scripts/bootstrap.py locally "
-            "first, then copy the printed value into your environment."
-        )
-    tmp = tempfile.mkdtemp(prefix="garth-")
-    with tarfile.open(fileobj=io.BytesIO(base64.b64decode(b64)), mode="r:gz") as tf:
-        tf.extractall(tmp)  # noqa: S202 (we created the archive ourselves)
-    return tmp
-
-
 def get_client() -> Garmin:
     global _client
     with _lock:
         if _client is not None:
             return _client
-        tokens_dir = _tokens_dir_from_env()
+        tokens_dir, source = tokens.load_tokens_dir()
         client = Garmin()
         client.garth.sess.headers.update({
             "User-Agent": (
@@ -130,6 +115,20 @@ def get_client() -> Garmin:
             )
         })
         client.login(tokens_dir)
+        # Set _garth_home so garth's refresh_oauth2 dumps refreshed tokens
+        # to disk. Our patched refresh (in tokens.py) then pushes them to R2.
+        # Without this, refreshed tokens stay in memory only and are lost on
+        # container restart — forcing a fresh OAuth exchange every time
+        # Render wakes the container.
+        client.garth._garth_home = tokens_dir
+        # Bootstrap case: first deploy loaded tokens from env — push them
+        # to R2 so subsequent restarts use R2 and skip the OAuth exchange
+        # path that Garmin rate-limits.
+        if source == "env":
+            try:
+                tokens.persist_tokens_dir(tokens_dir)
+            except Exception:  # noqa: BLE001
+                pass  # logged inside persist_tokens_dir
         _client = client
         return client
 
