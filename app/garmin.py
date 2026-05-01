@@ -684,7 +684,18 @@ def get_daily_summaries(
         return result
 
     # Only build the Garmin client if we actually need to fetch something.
-    client = get_client()
+    # If the client itself fails (e.g. Garmin SSO/OAuth 429), degrade
+    # gracefully: mark the uncached metric-days as errors so the caller
+    # still gets every cached metric-day that DID hit R2. Previously a
+    # client-init failure killed the whole call, hiding cached data that
+    # was sitting right there in R2.
+    try:
+        client = get_client()
+    except Exception as ex:  # noqa: BLE001
+        err = {"error": f"Garmin client unavailable: {ex}"}
+        for m, d in tasks:
+            result[m][d] = err
+        return result
 
     def _one(metric: str, d: str) -> tuple[str, str, Any]:
         method = getattr(client, DAILY_METHODS[metric])
