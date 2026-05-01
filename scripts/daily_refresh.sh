@@ -116,7 +116,7 @@ consec_429=0
 
 # Per-day fan-out: one HTTP call per (date). Keeps each request small
 # enough for Render's free-tier proxy timeout. Cache hits return fast.
-echo "[1/4] get_daily_summaries — $DAILY_LOOKBACK_DAYS days ending $today"
+echo "[1/5] get_daily_summaries — $DAILY_LOOKBACK_DAYS days ending $today"
 failed_days=0
 aborted=false
 for i in $(seq 0 $DAILY_LOOKBACK_DAYS); do
@@ -157,7 +157,7 @@ if [ "$aborted" = "true" ]; then
 fi
 
 echo
-echo "[2/4] get_activities — force_refresh month(s): $months_to_refresh"
+echo "[2/5] get_activities — force_refresh month(s): $months_to_refresh"
 for ym in $months_to_refresh; do
   year=$(echo "$ym" | cut -d- -f1)
   month=$(echo "$ym" | cut -d- -f2)
@@ -194,7 +194,7 @@ print(date(y, m, last).isoformat())
 done
 
 echo
-echo "[3/4] get_scheduled_workouts — next $SCHEDULED_LOOKAHEAD_DAYS days (force_refresh month(s))"
+echo "[3/5] get_scheduled_workouts — next $SCHEDULED_LOOKAHEAD_DAYS days (force_refresh month(s))"
 ahead_end=$(python3 -c "from datetime import date, timedelta; print((date.today() + timedelta(days=$SCHEDULED_LOOKAHEAD_DAYS)).isoformat())")
 echo "  window $today -> $ahead_end"
 set +e
@@ -212,7 +212,7 @@ fi
 
 # Parse the response to extract workoutIds and prewarm each one.
 echo
-echo "[4/4] get_workout_by_id — prewarm structures for scheduled workouts"
+echo "[4/5] get_workout_by_id — prewarm structures for scheduled workouts"
 workout_ids=$(python3 -c "
 import json
 try:
@@ -242,6 +242,38 @@ else
 fi
 
 echo
+echo "[5/5] derived metrics — force-refresh the daily-updating ones so the"
+echo "      web MCP (GARMIN_READONLY=true) can serve them from cache."
+prewarm_one() {
+  local label="$1" name="$2" args="$3"
+  echo "  $name"
+  set +e
+  call_mcp "$label" "$name" "$args"
+  rc=$?
+  set -e
+  if [ "$rc" = "2" ]; then
+    consec_429=$((consec_429 + 1))
+    if [ "$consec_429" -ge "$MAX_CONSECUTIVE_429" ]; then
+      echo "  ABORT: consecutive Garmin 429s — stopping derived-metric prewarm" >&2
+      return 99   # signal caller to exit
+    fi
+  elif [ "$rc" = "0" ]; then
+    consec_429=0
+  fi
+  return 0
+}
+
+prewarm_one "race_predictions"      get_race_predictions     '{"force_refresh":true}' || [ $? -eq 99 ] && exit 0
+prewarm_one "lactate_threshold"     get_lactate_threshold    '{"force_refresh":true}' || [ $? -eq 99 ] && exit 0
+prewarm_one "training_score_hill"   get_training_score       "{\"metric\":\"hill\",\"startdate\":\"$today\",\"force_refresh\":true}" || [ $? -eq 99 ] && exit 0
+prewarm_one "training_score_endur"  get_training_score       "{\"metric\":\"endurance\",\"startdate\":\"$today\",\"force_refresh\":true}" || [ $? -eq 99 ] && exit 0
+prewarm_one "personal_records"      get_personal_records     '{"force_refresh":true}' || [ $? -eq 99 ] && exit 0
+
+# Body composition: only if user logs weight. Pull a 30-day window.
+body_start=$(python3 -c "from datetime import date, timedelta; print((date.today() - timedelta(days=30)).isoformat())")
+prewarm_one "body_composition"      get_body_composition     "{\"startdate\":\"$body_start\",\"enddate\":\"$today\",\"force_refresh\":true}" || [ $? -eq 99 ] && exit 0
+
+echo
 echo "Cache totals:"
 curl -s --max-time 30 "$MCP_URL/cache/count?tool=daily_summary" \
   | python3 -c "import json,sys; print('  daily_summary:', json.load(sys.stdin).get('count'))" || true
@@ -251,6 +283,10 @@ curl -s --max-time 30 "$MCP_URL/cache/count?tool=calendar_month" \
   | python3 -c "import json,sys; print('  calendar_month:', json.load(sys.stdin).get('count'))" || true
 curl -s --max-time 30 "$MCP_URL/cache/count?tool=workout_by_id" \
   | python3 -c "import json,sys; print('  workout_by_id:', json.load(sys.stdin).get('count'))" || true
+for tool in race_predictions lactate_threshold training_score personal_records body_composition; do
+  curl -s --max-time 30 "$MCP_URL/cache/count?tool=$tool" \
+    | python3 -c "import json,sys,os; print(f'  {os.environ[\"T\"]}:', json.load(sys.stdin).get('count'))" T=$tool || true
+done
 curl -s --max-time 30 "$MCP_URL/cache/count?tool=activities_in_range" \
   | python3 -c "import json,sys; c=json.load(sys.stdin).get('count'); print('  activities_in_range (legacy):', c) if c else None" || true
 

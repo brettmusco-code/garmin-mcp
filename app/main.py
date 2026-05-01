@@ -546,7 +546,8 @@ def _handle(req: dict) -> dict:
 @app.get("/")
 @app.get("/health")
 def health() -> PlainTextResponse:
-    return PlainTextResponse("garmin-mcp ok")
+    mode = "readonly" if garmin.READONLY_MODE else "live"
+    return PlainTextResponse(f"garmin-mcp ok ({mode})")
 
 
 @app.get("/cache/list")

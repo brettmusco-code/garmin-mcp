@@ -38,6 +38,13 @@ RATE_LIMIT_BASE_DELAY_SEC = 2.0
 # force_refresh=true to bypass if you ever need to re-fetch.
 IMMUTABLE_TTL = 100 * 365 * 24 * 3600
 
+# Readonly mode — set GARMIN_READONLY=true in the web service's env to
+# disable all live Garmin calls. The nightly GitHub Action runs in normal
+# mode (not readonly) and is the sole writer to R2. The web MCP only reads
+# from R2 and returns cache misses as errors rather than trying Garmin.
+# Prevents rate-limit exposure on the user-facing path.
+READONLY_MODE = os.environ.get("GARMIN_READONLY", "").lower() in ("1", "true", "yes")
+
 
 class GarminError(Exception):
     pass
@@ -112,6 +119,13 @@ def get_client() -> Garmin:
     with _lock:
         if _client is not None:
             return _client
+        if READONLY_MODE:
+            raise GarminError(
+                "GARMIN_READONLY=true — live Garmin calls disabled on this "
+                "instance. Data comes from the nightly pre-warm run. If this "
+                "metric/date isn't cached, it won't be until tomorrow's 3am "
+                "refresh."
+            )
         if time.time() < _auth_failed_until:
             remaining = int(_auth_failed_until - time.time())
             raise GarminRateLimitError(
