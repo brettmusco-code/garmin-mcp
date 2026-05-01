@@ -100,11 +100,24 @@ DAILY_METHODS: dict[str, str] = {
 }
 
 
+# Circuit breaker: when Garmin rate-limits us, stop hammering. Every failed
+# OAuth attempt extends Garmin's throttle window. Remember the failure for
+# AUTH_COOLDOWN_SEC and fail fast instead of retrying.
+_auth_failed_until: float = 0.0
+AUTH_COOLDOWN_SEC = 300  # 5 minutes
+
+
 def get_client() -> Garmin:
-    global _client
+    global _client, _auth_failed_until
     with _lock:
         if _client is not None:
             return _client
+        if time.time() < _auth_failed_until:
+            remaining = int(_auth_failed_until - time.time())
+            raise GarminRateLimitError(
+                f"Garmin auth in cooldown for {remaining}s after recent 429. "
+                "Serving cached data only."
+            )
         tokens_dir, source = tokens.load_tokens_dir()
         client = Garmin()
         client.garth.sess.headers.update({
@@ -114,7 +127,14 @@ def get_client() -> Garmin:
                 "Chrome/131.0.0.0 Safari/537.36"
             )
         })
-        client.login(tokens_dir)
+        try:
+            client.login(tokens_dir)
+        except Exception as ex:  # noqa: BLE001
+            msg = str(ex).lower()
+            if "429" in msg or "too many requests" in msg or "rate limit" in msg:
+                _auth_failed_until = time.time() + AUTH_COOLDOWN_SEC
+                raise GarminRateLimitError(f"Garmin login throttled: {ex}") from ex
+            raise
         # Set _garth_home so garth's refresh_oauth2 dumps refreshed tokens
         # to disk. Our patched refresh (in tokens.py) then pushes them to R2.
         # Without this, refreshed tokens stay in memory only and are lost on
