@@ -203,11 +203,13 @@ def _fetch_activities_month(year: int, month: int, force_refresh: bool = False) 
 
     Cache key is (year, month). Nightly refresh rewrites only the current
     month in place — past months are frozen until explicitly force-refreshed.
+    Long TTL (30 days): past months are immutable, and the nightly job
+    force-refreshes the current month to catch new activities.
     """
     args = {"year": year, "month": month}
     key_parts = [f"{year:04d}-{month:02d}"]
     if not force_refresh:
-        hit = cache.get("activities_month", args, key_parts=key_parts)
+        hit = cache.get("activities_month", args, key_parts=key_parts, ttl_seconds=30 * 24 * 3600)
         if hit is not None:
             return hit
     start, end = _month_bounds(year, month)
@@ -265,11 +267,13 @@ def get_activities_in_range(
 
 
 def get_activity_details(activity_id: str | int, force_refresh: bool = False) -> dict[str, Any]:
+    """Full details for one activity. Activities are immutable once complete —
+    long TTL (90 days)."""
     aid = str(activity_id)
     args = {"activity_id": aid}
     key_parts = [aid]
     if not force_refresh:
-        hit = cache.get("activity_details", args, key_parts=key_parts)
+        hit = cache.get("activity_details", args, key_parts=key_parts, ttl_seconds=90 * 24 * 3600)
         if hit is not None:
             return hit
     c = get_client()
@@ -579,7 +583,9 @@ def get_scheduled_workouts(
         key_parts = [f"{year:04d}-{month:02d}"]
         data: dict | None = None
         if not force_refresh:
-            data = cache.get("calendar_month", args, key_parts=key_parts)
+            # 30-day TTL: nightly refresh force-refreshes current/future months;
+            # past months are frozen.
+            data = cache.get("calendar_month", args, key_parts=key_parts, ttl_seconds=30 * 24 * 3600)
         if data is None:
             data = _calendar_month(year, month)
             cache.put("calendar_month", args, data, key_parts=key_parts)
@@ -644,13 +650,18 @@ def get_daily_summaries(
     result: dict[str, dict[str, Any]] = {m: {} for m in metrics}
 
     tasks: list[tuple[str, str]] = []
+    today_str = date.today().isoformat()
     for m in metrics:
         for d in dates:
             if not force_refresh:
+                # Past dates are immutable → long TTL. Today's data may update
+                # during the day → short TTL so nightly refresh picks it up.
+                ttl = 24 * 3600 if d >= today_str else 90 * 24 * 3600
                 hit = cache.get(
                     "daily_summary",
                     {"metric": m, "date": d},
                     key_parts=[m, d],
+                    ttl_seconds=ttl,
                 )
                 if hit is not None:
                     result[m][d] = hit
