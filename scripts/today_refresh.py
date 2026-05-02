@@ -62,20 +62,27 @@ def main() -> int:
     except Exception as ex:  # noqa: BLE001
         print(f"  ERROR: {str(ex)[:200]}", file=sys.stderr)
 
-    # 3. Activity details for any activity from today.
-    print("[3/3] activity details for today's activities")
+    # 3. Activity details for today AND yesterday.
+    # GitHub Actions runs in UTC. A session completed at 6pm ET on May 1
+    # is "yesterday" from a May 2 00:00 UTC container's perspective, so
+    # we widen the window by a day to catch evening-local sessions.
+    from datetime import timedelta
+    yesterday = today - timedelta(days=1)
+    yesterday_iso = yesterday.isoformat()
+    print("[3/3] activity details for today + yesterday (UTC-tolerant)")
     try:
-        todays_acts = garmin.get_activities_in_range(
-            startdate=today_iso, enddate=today_iso
+        acts = garmin.get_activities_in_range(
+            startdate=yesterday_iso, enddate=today_iso
         ) or []
-        print(f"  found {len(todays_acts)} activit(ies) today")
-        for act in todays_acts:
+        print(f"  found {len(acts)} activit(ies) in {yesterday_iso}..{today_iso}")
+        for act in acts:
             aid = act.get("activityId")
             if not aid:
                 continue
             try:
-                # force_refresh=True — activities can change briefly after
-                # upload (gear edits, name fixes) so refresh once mid-day.
+                # force_refresh=True for today's; yesterday's is likely already
+                # cached from the nightly — still safe to refresh once since
+                # we only run every 4h.
                 garmin.get_activity_details(str(aid), force_refresh=True)
                 print(f"    activity {aid}: refreshed")
             except Exception as ex:  # noqa: BLE001
