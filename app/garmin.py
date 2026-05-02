@@ -1031,6 +1031,347 @@ def analyze_sleep_trend(enddate: str | date, days: int = 30) -> dict[str, Any]:
     }
 
 
+# ---------- Athlete baseline (dynamic physiology snapshot) ----------
+
+
+def get_athlete_baseline(force_refresh: bool = False) -> dict[str, Any]:
+    """Current physiology snapshot, derived from the freshest Garmin data
+    available. Replaces hardcoded VO2max/FTP/LT values in project
+    instructions — skills call this at the top of their data-gather step
+    so baselines are always current rather than stale.
+
+    Aggregates:
+      - VO2max (run + bike) from max_metrics
+      - LT HR and run FTP from lactate_threshold
+      - Endurance + hill scores from training_score
+      - Weight from body_composition
+      - Race predictions (5K/10K/half/marathon)
+      - Staleness days per field so callers know how fresh each value is
+      - Derived W/kg and inferred cycling FTP
+
+    Cached 6h (refreshed every few /morning calls). Pass force_refresh=true
+    to bypass.
+    """
+    cache_args = {"v": 1}
+    key_parts = ["latest"]
+    if not force_refresh:
+        hit = cache.get("athlete_baseline", cache_args, key_parts=key_parts,
+                        ttl_seconds=6 * 3600)
+        if hit is not None:
+            return hit
+
+    today = date.today()
+    today_iso = today.isoformat()
+
+    def _age_days(d_str: str | None) -> int | None:
+        if not d_str:
+            return None
+        try:
+            # Accept "2026-04-15" or "2026-04-15T10:58:02"
+            d_clean = d_str.split("T")[0].split(" ")[0]
+            d = datetime.strptime(d_clean, "%Y-%m-%d").date()
+            return (today - d).days
+        except (ValueError, AttributeError):
+            return None
+
+    out: dict[str, Any] = {
+        "as_of": today_iso,
+        "staleness_days": {},
+        "notes": [],
+    }
+
+    # --- VO2max (via max_metrics for today, fall back to recent days) ---
+    vo2_run = None
+    vo2_bike = None
+    vo2_date = None
+    for back in range(0, 14):
+        d = (today - timedelta(days=back)).isoformat()
+        mm = get_daily_summaries(startdate=d, enddate=d, metrics=["max_metrics"])
+        payload = mm.get("max_metrics", {}).get(d)
+        if isinstance(payload, dict) and "error" not in payload:
+            recent = payload.get("generic") or {}
+            cyc = payload.get("cycling") or {}
+            if recent.get("vo2MaxValue") is not None:
+                vo2_run = recent.get("vo2MaxValue")
+                vo2_date = recent.get("calendarDate") or d
+            if cyc.get("vo2MaxValue") is not None:
+                vo2_bike = cyc.get("vo2MaxValue")
+            if vo2_run is not None:
+                break
+    out["vo2max_run"] = vo2_run
+    out["vo2max_bike"] = vo2_bike
+    out["staleness_days"]["vo2max"] = _age_days(vo2_date)
+
+    # --- LT HR + run FTP (lactate_threshold endpoint) ---
+    try:
+        lt = get_lactate_threshold()
+        shr = lt.get("speed_and_heart_rate") or {}
+        pwr = lt.get("power") or {}
+        out["lt_hr"] = shr.get("heartRate")
+        out["run_ftp_watts"] = pwr.get("functionalThresholdPower")
+        weight_kg = pwr.get("weight")
+        ptw = pwr.get("powerToWeight")
+        out["run_ftp_wkg"] = round(ptw, 2) if ptw else None
+        out["weight_kg"] = round(weight_kg, 1) if weight_kg else None
+        out["staleness_days"]["lt_hr"] = _age_days(shr.get("calendarDate"))
+        out["staleness_days"]["run_ftp"] = _age_days(pwr.get("calendarDate"))
+    except Exception as ex:  # noqa: BLE001
+        out["notes"].append(f"lactate_threshold lookup failed: {str(ex)[:100]}")
+
+    # --- Endurance + hill scores ---
+    try:
+        es = get_training_score("endurance", startdate=today_iso)
+        dto = es.get("enduranceScoreDTO") or {}
+        out["endurance_score"] = dto.get("overallScore") or es.get("avg")
+        cls_id = dto.get("classification")
+        class_map = {
+            1: "Untrained", 2: "Recreational", 3: "Intermediate",
+            4: "Trained", 5: "Well-trained", 6: "Expert",
+            7: "Superior", 8: "Elite",
+        }
+        out["endurance_classification"] = class_map.get(cls_id, f"class_{cls_id}")
+        out["staleness_days"]["endurance_score"] = _age_days(dto.get("calendarDate"))
+    except Exception as ex:  # noqa: BLE001
+        out["notes"].append(f"endurance_score lookup failed: {str(ex)[:100]}")
+
+    try:
+        hs = get_training_score("hill", startdate=today_iso)
+        latest = (hs.get("hillScoreDTOList") or [None])[0] or {}
+        out["hill_score"] = latest.get("overallScore")
+        hill_cls_id = latest.get("hillScoreClassificationId")
+        # Garmin's hill classifications (approximate — 1=lowest, 6=highest)
+        hill_class_map = {
+            1: "Very low", 2: "Low", 3: "Moderate",
+            4: "High", 5: "Very high", 6: "Extreme",
+        }
+        out["hill_classification"] = hill_class_map.get(hill_cls_id, f"class_{hill_cls_id}")
+        out["staleness_days"]["hill_score"] = _age_days(latest.get("calendarDate"))
+    except Exception as ex:  # noqa: BLE001
+        out["notes"].append(f"hill_score lookup failed: {str(ex)[:100]}")
+
+    # --- Weight (prefer body_composition if logged recently, else LT endpoint) ---
+    if out.get("weight_kg") is None:
+        try:
+            bc = get_body_composition(
+                startdate=(today - timedelta(days=30)).isoformat(),
+                enddate=today_iso,
+            )
+            entries = bc.get("dateWeightList") or []
+            if entries:
+                latest = max(entries, key=lambda e: e.get("date", ""))
+                w_grams = latest.get("weight")
+                if w_grams:
+                    out["weight_kg"] = round(w_grams / 1000.0, 1)
+                    out["staleness_days"]["weight"] = _age_days(latest.get("date"))
+        except Exception as ex:  # noqa: BLE001
+            out["notes"].append(f"body_composition lookup failed: {str(ex)[:100]}")
+
+    # --- Race predictions ---
+    try:
+        rp = get_race_predictions()
+        out["race_predictions"] = {
+            "5k_seconds": rp.get("time5K"),
+            "10k_seconds": rp.get("time10K"),
+            "half_marathon_seconds": rp.get("timeHalfMarathon"),
+            "marathon_seconds": rp.get("timeMarathon"),
+        }
+        out["staleness_days"]["race_predictions"] = _age_days(rp.get("calendarDate"))
+    except Exception as ex:  # noqa: BLE001
+        out["notes"].append(f"race_predictions lookup failed: {str(ex)[:100]}")
+
+    # --- Derived metrics (MCP-computed, not Garmin) ---
+    # W/kg if we have both FTP and weight but not already from LT endpoint.
+    ftp = out.get("run_ftp_watts")
+    wt = out.get("weight_kg")
+    if ftp and wt and not out.get("run_ftp_wkg"):
+        out["run_ftp_wkg"] = round(ftp / wt, 2)
+
+    # Inferred cycling FTP. Typical run-to-bike FTP ratio for triathletes
+    # and multi-sport athletes is ~0.72-0.78 depending on discipline
+    # specialization. Use 0.75 as a reasonable default; flag as inferred.
+    if ftp and not out.get("bike_ftp_watts"):
+        out["bike_ftp_estimated_watts"] = round(ftp * 0.75)
+        out["bike_ftp_source"] = "inferred from run FTP × 0.75 (typical triathlon ratio)"
+
+    # VDOT estimate from 5K prediction (Jack Daniels formula)
+    t5k_s = (out.get("race_predictions") or {}).get("5k_seconds")
+    if t5k_s:
+        # Jack Daniels VDOT approximation from 5K time:
+        # VDOT ≈ -4.6 + 0.182258 × v + 0.000104 × v²  where v = 5000 / t_min in m/min
+        try:
+            v = 5000.0 / (t5k_s / 60.0)
+            vdot = -4.6 + 0.182258 * v + 0.000104 * (v ** 2)
+            out["vdot_from_5k"] = round(vdot, 1)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # --- Sport-specific activity-derived fitness (last 60 days) ---
+    # Uses 2 months of cached activities to derive per-sport signals
+    # rather than relying on a single latest measurement.
+    try:
+        window_start = (today - timedelta(days=60)).isoformat()
+        acts = get_activities_in_range(
+            startdate=window_start, enddate=today_iso
+        ) or []
+
+        out["sport_fitness"] = {
+            "run": _summarize_run_fitness(acts),
+            "bike": _summarize_bike_fitness(acts),
+            "swim": _summarize_swim_fitness(acts),
+        }
+    except Exception as ex:  # noqa: BLE001
+        out["notes"].append(f"sport_fitness aggregation failed: {str(ex)[:100]}")
+
+    cache.put("athlete_baseline", cache_args, out, key_parts=key_parts)
+    return out
+
+
+def _summarize_run_fitness(acts: list[dict]) -> dict[str, Any]:
+    """Run-specific fitness from recent activities.
+    Pulls fastest recent splits, weekly volume, HR-at-pace baseline.
+    """
+    runs = [a for a in acts
+            if (a.get("activityType") or {}).get("typeKey")
+            in ("running", "treadmill_running", "trail_running")]
+    if not runs:
+        return {"count": 0, "note": "no runs in last 60 days"}
+
+    # Best fastest splits across all runs
+    best_5k_s = min(
+        (a.get("fastestSplit_5000") for a in runs if a.get("fastestSplit_5000")),
+        default=None,
+    )
+    best_1k_s = min(
+        (a.get("fastestSplit_1000") for a in runs if a.get("fastestSplit_1000")),
+        default=None,
+    )
+    best_mile_s = min(
+        (a.get("fastestSplit_1609") for a in runs if a.get("fastestSplit_1609")),
+        default=None,
+    )
+
+    total_m = sum(a.get("distance") or 0 for a in runs)
+    total_dur_s = sum(a.get("duration") or 0 for a in runs)
+    avg_hr_samples = [a.get("averageHR") for a in runs if a.get("averageHR")]
+    vo2_samples = [a.get("vO2MaxValue") for a in runs if a.get("vO2MaxValue")]
+
+    return {
+        "count": len(runs),
+        "total_km": round(total_m / 1000, 1),
+        "total_hours": round(total_dur_s / 3600, 1),
+        "weekly_km_avg": round((total_m / 1000) / (len(runs) / 4 if len(runs) >= 4 else 60 / 7), 1),
+        "best_1k_seconds": best_1k_s,
+        "best_mile_seconds": best_mile_s,
+        "best_5k_seconds": best_5k_s,
+        "avg_hr": round(sum(avg_hr_samples) / len(avg_hr_samples), 1) if avg_hr_samples else None,
+        "vo2max_from_runs_avg": round(sum(vo2_samples) / len(vo2_samples), 1) if vo2_samples else None,
+    }
+
+
+def _summarize_bike_fitness(acts: list[dict]) -> dict[str, Any]:
+    """Bike-specific fitness from recent activities.
+    Captures 20-min best power, FTP candidate, avg NP, volume.
+    """
+    rides = [a for a in acts
+             if (a.get("activityType") or {}).get("typeKey")
+             in ("cycling", "virtual_ride", "indoor_cycling", "gravel_cycling", "road_biking", "mountain_biking")]
+    if not rides:
+        return {"count": 0, "note": "no rides in last 60 days"}
+
+    # Best 20-min average power — classic FTP proxy (FTP ≈ 95% of 20-min best)
+    best_20min_w = max(
+        (a.get("maxAvgPower_1200") for a in rides if a.get("maxAvgPower_1200")),
+        default=None,
+    )
+    best_60min_w = max(
+        (a.get("maxAvgPower_3600") for a in rides if a.get("maxAvgPower_3600")),
+        default=None,
+    )
+    ftp_est_from_20min = round(best_20min_w * 0.95) if best_20min_w else None
+
+    total_m = sum(a.get("distance") or 0 for a in rides)
+    total_dur_s = sum(a.get("duration") or 0 for a in rides)
+    np_samples = [a.get("normPower") for a in rides if a.get("normPower")]
+    tss_samples = [a.get("trainingStressScore") for a in rides if a.get("trainingStressScore")]
+
+    return {
+        "count": len(rides),
+        "total_km": round(total_m / 1000, 1),
+        "total_hours": round(total_dur_s / 3600, 1),
+        "best_20min_watts": best_20min_w,
+        "best_60min_watts": best_60min_w,
+        "ftp_est_from_20min_watts": ftp_est_from_20min,
+        "avg_np_watts": round(sum(np_samples) / len(np_samples)) if np_samples else None,
+        "total_tss": round(sum(tss_samples)) if tss_samples else None,
+    }
+
+
+def _summarize_swim_fitness(acts: list[dict]) -> dict[str, Any]:
+    """Swim-specific fitness from recent activities.
+    Derives CSS (critical swim speed) from best 400m and 1000m splits,
+    SWOLF trends, volume.
+    """
+    swims = [a for a in acts
+             if (a.get("activityType") or {}).get("typeKey")
+             in ("lap_swimming", "open_water_swimming", "swimming")]
+    if not swims:
+        return {"count": 0, "note": "no swims in last 60 days"}
+
+    # Critical Swim Speed (CSS) is typically derived from the difference
+    # between best 400m and best 200m (or similar) pace. Here we use
+    # fastest_split_400 / fastest_split_100 when available.
+    best_100_s = min(
+        (a.get("fastestSplit_100") for a in swims if a.get("fastestSplit_100")),
+        default=None,
+    )
+    best_400_s = min(
+        (a.get("fastestSplit_400") for a in swims if a.get("fastestSplit_400")),
+        default=None,
+    )
+    best_1000_s = min(
+        (a.get("fastestSplit_1000") for a in swims if a.get("fastestSplit_1000")),
+        default=None,
+    )
+    best_750_s = min(
+        (a.get("fastestSplit_750") for a in swims if a.get("fastestSplit_750")),
+        default=None,
+    )
+
+    # CSS calculation (Ginn & Mackenzie): (1500m time - 400m time) / 1100m = pace in sec/m
+    # Convert to sec/100m for readability.
+    css_sec_per_100m = None
+    if best_400_s and best_1000_s:
+        # Approximate 1500m time by extrapolation if we have 1000m
+        d1, t1 = 400, best_400_s
+        d2, t2 = 1000, best_1000_s
+        # Linear speed model: assume sustainable pace between these points
+        sec_per_m_css = (t2 - t1) / (d2 - d1)
+        css_sec_per_100m = round(sec_per_m_css * 100, 1)
+
+    total_m = sum(a.get("distance") or 0 for a in swims)
+    total_dur_s = sum(a.get("duration") or 0 for a in swims)
+    swolf_samples = [a.get("averageSwolf") for a in swims if a.get("averageSwolf")]
+    stroke_samples = [
+        a.get("averageSwimCadenceInStrokesPerMinute")
+        for a in swims
+        if a.get("averageSwimCadenceInStrokesPerMinute")
+    ]
+
+    return {
+        "count": len(swims),
+        "total_km": round(total_m / 1000, 1),
+        "total_hours": round(total_dur_s / 3600, 1),
+        "best_100m_seconds": best_100_s,
+        "best_400m_seconds": best_400_s,
+        "best_750m_seconds": best_750_s,
+        "best_1000m_seconds": best_1000_s,
+        "css_sec_per_100m": css_sec_per_100m,
+        "css_source": "calculated from best 400m and 1000m splits" if css_sec_per_100m else None,
+        "avg_swolf": round(sum(swolf_samples) / len(swolf_samples), 1) if swolf_samples else None,
+        "avg_stroke_rate": round(sum(stroke_samples) / len(stroke_samples), 1) if stroke_samples else None,
+    }
+
+
 # ---------- MCP resources ----------
 
 

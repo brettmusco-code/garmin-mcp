@@ -322,6 +322,24 @@ TOOLS = [
             },
         },
     },
+    {
+        "name": "get_athlete_baseline",
+        "description": (
+            "Current multi-sport physiology snapshot derived from freshest "
+            "Garmin data. Returns VO2max (run/bike), LT HR, run FTP, bike FTP "
+            "(measured if available, inferred otherwise), swim CSS (critical "
+            "swim speed), endurance/hill scores, weight, race predictions, "
+            "VDOT, sport-specific fitness trends from recent activities, and "
+            "staleness_days per field. Skills should call this at the start "
+            "of their data-gather step so baselines are always current."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "force_refresh": {"type": "boolean", "description": "skip cache, default false"},
+            },
+        },
+    },
 ]
 
 
@@ -443,6 +461,8 @@ def _call_tool(name: str, args: dict) -> Any:
         if (s and not DATE_RE.match(s)) or (e and not DATE_RE.match(e)):
             raise ValueError("dates must be YYYY-MM-DD")
         return garmin.get_race_predictions(s, e, force_refresh=bool(args.get("force_refresh", False)))
+    if name == "get_athlete_baseline":
+        return garmin.get_athlete_baseline(force_refresh=bool(args.get("force_refresh", False)))
     raise ValueError(f"Unknown tool: {name}")
 
 

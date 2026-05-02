@@ -17,10 +17,11 @@
 Deep analysis of one training session. Depth on signals, not on restating metrics.
 
 **Data to pull:**
-1. If `activity_id` provided: `get_activity_details(activity_id)` directly.
+1. `get_athlete_baseline` — current LT HR, FTP (run and bike), CSS (swim), VDOT. Use for zone-vs-target comparisons and "is this close to my threshold" reasoning.
+2. If `activity_id` provided: `get_activity_details(activity_id)` directly.
    If blank: `get_activities(limit=1)` → get its `activityId` → then `get_activity_details`.
-2. `get_activities(limit=20)` — for similar-session comparison.
-3. `get_daily_summaries` for the session date — recovery state that day.
+3. `get_activities(limit=20)` — for similar-session comparison.
+4. `get_daily_summaries` for the session date — recovery state that day.
 
 **Output format** — use markdown directly. **Do NOT wrap the response in triple-backticks or code blocks.** Chat output, not a document.
 
