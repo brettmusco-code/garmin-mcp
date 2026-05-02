@@ -1141,26 +1141,44 @@ def get_athlete_baseline(force_refresh: bool = False) -> dict[str, Any]:
     }
 
     # --- VO2max (via max_metrics for today, fall back to recent days) ---
+    # max_metrics returns a LIST of record objects, each with:
+    #   {userId, generic: {calendarDate, vo2MaxValue, vo2MaxPreciseValue, ...},
+    #    cycling: {...}, heatAltitudeAcclimation: {...}}
+    # Garmin may publish same-day data late; extend lookback to 30 days.
     vo2_run = None
     vo2_bike = None
-    vo2_date = None
-    for back in range(0, 14):
+    vo2_run_date = None
+    vo2_bike_date = None
+    for back in range(0, 30):
         d = (today - timedelta(days=back)).isoformat()
         mm = get_daily_summaries(startdate=d, enddate=d, metrics=["max_metrics"])
         payload = mm.get("max_metrics", {}).get(d)
-        if isinstance(payload, dict) and "error" not in payload:
-            recent = payload.get("generic") or {}
-            cyc = payload.get("cycling") or {}
-            if recent.get("vo2MaxValue") is not None:
-                vo2_run = recent.get("vo2MaxValue")
-                vo2_date = recent.get("calendarDate") or d
-            if cyc.get("vo2MaxValue") is not None:
-                vo2_bike = cyc.get("vo2MaxValue")
-            if vo2_run is not None:
-                break
-    out["vo2max_run"] = vo2_run
-    out["vo2max_bike"] = vo2_bike
-    out["staleness_days"]["vo2max"] = _age_days(vo2_date)
+        # Payload can be list (normal), dict (some older shape), or error.
+        records = []
+        if isinstance(payload, list):
+            records = [r for r in payload if isinstance(r, dict)]
+        elif isinstance(payload, dict) and "error" not in payload:
+            records = [payload]
+        if not records:
+            continue
+        for rec in records:
+            generic = rec.get("generic") or {}
+            cycling = rec.get("cycling") or {}
+            # Prefer the precise value if present
+            run_val = generic.get("vo2MaxPreciseValue") or generic.get("vo2MaxValue")
+            bike_val = cycling.get("vo2MaxPreciseValue") or cycling.get("vo2MaxValue")
+            if run_val and vo2_run is None:
+                vo2_run = run_val
+                vo2_run_date = generic.get("calendarDate") or d
+            if bike_val and vo2_bike is None:
+                vo2_bike = bike_val
+                vo2_bike_date = cycling.get("calendarDate") or d
+        if vo2_run is not None and vo2_bike is not None:
+            break
+    out["vo2max_run"] = round(vo2_run, 1) if vo2_run else None
+    out["vo2max_bike"] = round(vo2_bike, 1) if vo2_bike else None
+    out["staleness_days"]["vo2max_run"] = _age_days(vo2_run_date)
+    out["staleness_days"]["vo2max_bike"] = _age_days(vo2_bike_date)
 
     # --- LT HR + run FTP (lactate_threshold endpoint) ---
     try:
