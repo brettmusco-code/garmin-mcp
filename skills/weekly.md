@@ -52,17 +52,17 @@ Acute {n} → {n prior} ({±%}), ACWR {ratio} ({sweet-spot/risk}), ramp {±%}/wk
 Scheduled: {summary}. Planned load: {TSS estimate}. Key session: {which + why}. Biggest risk: {sleep / volume spike / intensity stack / none}.
 
 ## 🍽️ Nutrition
-(73kg, 1.6-1.8 g/kg protein target)
+(Use baseline.weight_kg. Protein 1.6-1.8 g/kg, carbs 3.5-4.5 g/kg base / up to 7 g/kg on long-hard days.)
 
-**Baseline (easy/rest day):** ~{kcal} · P {g} / C {g} / F {g}
-**Hard day (+{kcal}):** add {carbs g} pre/during, {protein g} post within 60min
-**Rest day (-200-300 kcal):** lower carbs, maintain protein
+**Baseline (easy/rest day):** ~{kcal estimate: BMR × 1.4 + session kcal} · P {weight_kg × 1.7}g / C {weight_kg × 4}g / F {~25% of kcal / 9}g
+**Hard day (+300-500 kcal):** add {+50-80g carbs pre/during}, {+10g protein post} within 60min
+**Rest day (-200-300 kcal):** lower carbs (~3 g/kg), maintain protein
 **Week-specific:** {call out hard days from schedule, e.g. "Tues VO2 + Sat long ride → +carb days"}
 
 ## 📈 Fitness Trajectory (4 weeks)
 - Endurance {prev → curr} ({±}), VO2max {prev → curr}, hill {prev → curr}
 - Race: 5K {prev→curr}, 10K {prev→curr}, half {prev→curr}, mar {prev→curr}
-- Multi-method check: {for any multi_method.*.flag that fires, mention it in 1 line — "Garmin VO2max 60 but 3 recent 5K splits suggest 62. Time for a field test or accept Garmin is lagging."}
+- Multi-method check: {for any multi_method.*.flag that fires, mention it in 1 line — e.g., "Garmin VO2max N but M methods suggest N±Δ. Field test or accept Garmin is lagging."}
 - {1-line verdict on where training is heading}
 ```
 
@@ -72,7 +72,7 @@ Scheduled: {summary}. Planned load: {TSS estimate}. Key session: {which + why}. 
 - Volumes in km, round to 0.1.
 - Flag ACWR outside 0.8-1.3 with specific intervention.
 - Next-week load from scheduled workout types: recovery=20 TSS, base=60, threshold=90, VO2=100, long=120+.
-- Nutrition must reflect 73kg + endurance profile.
+- Nutrition must reflect baseline.weight_kg (pulled dynamically) + endurance profile. Never hardcode weight.
 - If nutrition data missing, say so and estimate from expenditure.
 - Trajectory comparison: actual numbers vs 4 weeks ago, not vague "improving."
 - Commit to a training emphasis for next week (base-build / threshold push / deload) — don't hedge.

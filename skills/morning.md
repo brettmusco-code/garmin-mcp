@@ -74,5 +74,5 @@ Baseline: {from get_athlete_baseline — VO2max run/bike · run FTP W (W/kg) · 
 - Quantify drags: "sleep factor 61% is the biggest drag — one 8h night flips to green."
 - Progression: actual numbers vs 2-4 weeks ago. Not "trending up."
 - Always include one gap/risk alongside positives.
-- Cycling FTP is inferred (~330W); flag when used.
+- If `bike_ftp_source` in baseline indicates inferred (not measured from 20-min best), say so when quoting bike power targets.
 - Target length: 20-30 lines. Tight. Every bullet earns its spot.
