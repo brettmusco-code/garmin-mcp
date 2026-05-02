@@ -1186,12 +1186,11 @@ def get_athlete_baseline(force_refresh: bool = False) -> dict[str, Any]:
     if ftp and wt and not out.get("run_ftp_wkg"):
         out["run_ftp_wkg"] = round(ftp / wt, 2)
 
-    # Inferred cycling FTP. Typical run-to-bike FTP ratio for triathletes
-    # and multi-sport athletes is ~0.72-0.78 depending on discipline
-    # specialization. Use 0.75 as a reasonable default; flag as inferred.
-    if ftp and not out.get("bike_ftp_watts"):
-        out["bike_ftp_estimated_watts"] = round(ftp * 0.75)
-        out["bike_ftp_source"] = "inferred from run FTP × 0.75 (typical triathlon ratio)"
+    # Cycling FTP: prefer measured 20-min best × 0.95 (classic proxy) over
+    # the run-FTP inference. Only fall back to the ratio estimate if no
+    # rides have been logged.
+    # (We compute this later, after sport_fitness is built, to access the
+    # measured value.)
 
     # VDOT estimate from 5K prediction (Jack Daniels formula)
     t5k_s = (out.get("race_predictions") or {}).get("5k_seconds")
@@ -1219,6 +1218,18 @@ def get_athlete_baseline(force_refresh: bool = False) -> dict[str, Any]:
             "bike": _summarize_bike_fitness(acts),
             "swim": _summarize_swim_fitness(acts),
         }
+
+        # Derive cycling FTP preferentially from measured 20-min best.
+        # Fall back to run-FTP inference only if no ride data exists.
+        measured_ftp = (out["sport_fitness"].get("bike") or {}).get(
+            "ftp_est_from_20min_watts"
+        )
+        if measured_ftp:
+            out["bike_ftp_watts"] = measured_ftp
+            out["bike_ftp_source"] = "derived from best 20-min power × 0.95 (last 60 days)"
+        elif ftp:
+            out["bike_ftp_estimated_watts"] = round(ftp * 0.75)
+            out["bike_ftp_source"] = "inferred from run FTP × 0.75 (no rides to measure)"
     except Exception as ex:  # noqa: BLE001
         out["notes"].append(f"sport_fitness aggregation failed: {str(ex)[:100]}")
 
