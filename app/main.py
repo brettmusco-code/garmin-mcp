@@ -326,12 +326,16 @@ TOOLS = [
         "name": "get_athlete_baseline",
         "description": (
             "Current multi-sport physiology snapshot derived from freshest "
-            "Garmin data. Returns VO2max (run/bike), LT HR, run FTP, bike FTP "
-            "(measured if available, inferred otherwise), swim CSS (critical "
-            "swim speed), endurance/hill scores, weight, race predictions, "
-            "VDOT, sport-specific fitness trends from recent activities, and "
-            "staleness_days per field. Skills should call this at the start "
-            "of their data-gather step so baselines are always current."
+            "Garmin data + activity-derived multi-method cross-validation. "
+            "Returns: VO2max (run/bike), LT HR, run FTP, bike FTP (measured "
+            "or inferred), swim CSS, endurance/hill scores, weight, race "
+            "predictions, VDOT, sport-specific 60-day fitness trends, and "
+            "`multi_method`: a dict with run_vo2max, run_lt_hr, run_ftp, "
+            "bike_ftp, bike_vo2max, swim_css — each with multiple independent "
+            "estimates (Garmin + Daniels VDOT + Coggan 20min + Karvonen + "
+            "Ginn CSS etc.), a consensus median, spread, and a flag when "
+            "Garmin disagrees significantly with observed efforts. Skills "
+            "should call this at the start of their data-gather step."
         ),
         "inputSchema": {
             "type": "object",

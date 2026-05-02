@@ -62,6 +62,7 @@ Scheduled: {summary}. Planned load: {TSS estimate}. Key session: {which + why}. 
 ## 📈 Fitness Trajectory (4 weeks)
 - Endurance {prev → curr} ({±}), VO2max {prev → curr}, hill {prev → curr}
 - Race: 5K {prev→curr}, 10K {prev→curr}, half {prev→curr}, mar {prev→curr}
+- Multi-method check: {for any multi_method.*.flag that fires, mention it in 1 line — "Garmin VO2max 60 but 3 recent 5K splits suggest 62. Time for a field test or accept Garmin is lagging."}
 - {1-line verdict on where training is heading}
 ```
 

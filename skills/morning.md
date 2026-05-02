@@ -60,7 +60,7 @@ Key session this week: {workout + when}. Next quality window: {day}.
 - {Trend 2: same}
 - {Gap/risk trend — keep honest}
 
-Baseline: {from get_athlete_baseline — VO2max run/bike · run FTP W (W/kg) · LT HR · endurance score (class) · hill score (class) · flag any field >14 days stale}
+Baseline: {from get_athlete_baseline — VO2max run/bike · run FTP W (W/kg) · LT HR · endurance score (class) · hill score (class). If multi_method.*.flag is non-null for any threshold, append "⚠️ {flag}". Flag any field >14 days stale.}
 ```
 
 ### Rules

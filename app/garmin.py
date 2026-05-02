@@ -22,7 +22,7 @@ from typing import Any, Optional
 
 from garminconnect import Garmin
 
-from . import cache, tokens, weather
+from . import cache, thresholds, tokens, weather
 
 _client: Optional[Garmin] = None
 _lock = Lock()
@@ -1279,6 +1279,37 @@ def get_athlete_baseline(force_refresh: bool = False) -> dict[str, Any]:
             "swim": _summarize_swim_fitness(acts),
         }
 
+        # Split activities by sport for threshold analysis
+        run_acts = [a for a in acts
+                    if (a.get("activityType") or {}).get("typeKey")
+                    in ("running", "treadmill_running", "trail_running")]
+        ride_acts = [a for a in acts
+                     if (a.get("activityType") or {}).get("typeKey")
+                     in ("cycling", "virtual_ride", "indoor_cycling",
+                         "gravel_cycling", "road_biking", "mountain_biking")]
+        swim_acts = [a for a in acts
+                     if (a.get("activityType") or {}).get("typeKey")
+                     in ("lap_swimming", "open_water_swimming", "swimming")]
+
+        # Observed max HR from any recent hard effort
+        observed_max_hr = max(
+            (a.get("maxHR") for a in acts if a.get("maxHR")),
+            default=None,
+        )
+        # Recent RHR from daily summaries (re-use the recent cache)
+        rhr_val = None
+        for back in range(0, 14):
+            d = (today - timedelta(days=back)).isoformat()
+            rr = get_daily_summaries(startdate=d, enddate=d, metrics=["rhr"])
+            payload = rr.get("rhr", {}).get(d)
+            if isinstance(payload, dict) and "error" not in payload:
+                all_m = payload.get("allMetrics", {}).get("metricsMap", {})
+                wellness = all_m.get("WELLNESS_RESTING_HEART_RATE", [])
+                if wellness:
+                    rhr_val = wellness[0].get("value")
+                    if rhr_val:
+                        break
+
         # Derive cycling FTP preferentially from measured 20-min best.
         # Fall back to run-FTP inference only if no ride data exists.
         measured_ftp = (out["sport_fitness"].get("bike") or {}).get(
@@ -1290,8 +1321,48 @@ def get_athlete_baseline(force_refresh: bool = False) -> dict[str, Any]:
         elif ftp:
             out["bike_ftp_estimated_watts"] = round(ftp * 0.75)
             out["bike_ftp_source"] = "inferred from run FTP × 0.75 (no rides to measure)"
+
+        # --- Multi-method threshold analysis ---
+        # Each helper returns {garmin_value, methods, consensus, spread, flag}.
+        # Consensus is the median of all methods — a robust cross-check vs.
+        # any single source (especially Garmin, which can lag real fitness).
+        out["multi_method"] = {
+            "run_vo2max": thresholds.run_vo2max_methods(
+                garmin_vo2max=out.get("vo2max_run"),
+                race_predictions=out.get("race_predictions"),
+                run_activities=run_acts,
+                lt_hr=out.get("lt_hr"),
+            ),
+            "run_lt_hr": thresholds.run_lt_hr_methods(
+                garmin_lt_hr=out.get("lt_hr"),
+                max_hr=observed_max_hr,
+                rhr=rhr_val,
+                run_activities=run_acts,
+            ),
+            "run_ftp": thresholds.run_ftp_methods(
+                garmin_run_ftp=out.get("run_ftp_watts"),
+                run_activities=run_acts,
+            ),
+            "bike_ftp": thresholds.bike_ftp_methods(
+                garmin_bike_ftp=out.get("bike_ftp_watts"),
+                ride_activities=ride_acts,
+            ),
+            "bike_vo2max": thresholds.bike_vo2max_methods(
+                garmin_vo2max_bike=out.get("vo2max_bike"),
+                ride_activities=ride_acts,
+                weight_kg=out.get("weight_kg"),
+            ),
+            "swim_css": thresholds.swim_css_methods(
+                swim_activities=swim_acts,
+            ),
+        }
+        # Observed data points that the threshold helpers used
+        out["observed"] = {
+            "max_hr": observed_max_hr,
+            "rhr": rhr_val,
+        }
     except Exception as ex:  # noqa: BLE001
-        out["notes"].append(f"sport_fitness aggregation failed: {str(ex)[:100]}")
+        out["notes"].append(f"sport_fitness / multi_method aggregation failed: {str(ex)[:150]}")
 
     cache.put("athlete_baseline", cache_args, out, key_parts=key_parts)
     return out
