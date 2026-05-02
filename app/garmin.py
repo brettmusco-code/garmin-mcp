@@ -22,7 +22,7 @@ from typing import Any, Optional
 
 from garminconnect import Garmin
 
-from . import cache, tokens
+from . import cache, tokens, weather
 
 _client: Optional[Garmin] = None
 _lock = Lock()
@@ -308,13 +308,27 @@ def get_activities_in_range(
 
 def get_activity_details(activity_id: str | int, force_refresh: bool = False) -> dict[str, Any]:
     """Full details for one activity. Activities are immutable once complete —
-    effectively infinite TTL."""
+    effectively infinite TTL.
+
+    Enriched with `ambient_weather` (from Open-Meteo historical API). The
+    watch-reported `weather` field is kept for reference but is usually
+    distorted by wrist heat / sun / pavement. Prefer `ambient_weather` for
+    heat-stress and aerobic-decoupling analysis.
+    """
     aid = str(activity_id)
     args = {"activity_id": aid}
     key_parts = [aid]
     if not force_refresh:
         hit = cache.get("activity_details", args, key_parts=key_parts, ttl_seconds=IMMUTABLE_TTL)
         if hit is not None:
+            # Backfill weather on legacy cached entries that were written
+            # before ambient_weather was added. Cheap: one R2 read + maybe
+            # one Open-Meteo call per activity, results cached.
+            if "ambient_weather" not in hit:
+                hit["ambient_weather"] = _ambient_weather_from_summary(
+                    hit.get("summary") or {}
+                )
+                cache.put("activity_details", args, hit, key_parts=key_parts)
             return hit
     c = get_client()
     out: dict[str, Any] = {}
@@ -330,8 +344,28 @@ def get_activity_details(activity_id: str | int, force_refresh: bool = False) ->
             out[key] = _call_with_backoff(call)
         except Exception as ex:  # noqa: BLE001
             out[key] = {"error": str(ex)}
+    # Ambient weather from Open-Meteo — uses lat/lon/start_time from the
+    # summary. Falls back to {"error": ...} if any of those are missing.
+    out["ambient_weather"] = _ambient_weather_from_summary(out.get("summary") or {})
     cache.put("activity_details", args, out, key_parts=key_parts)
     return out
+
+
+def _ambient_weather_from_summary(summary: dict) -> dict:
+    """Extract lat/lon/start/duration from a Garmin activity summary and
+    hand off to weather.summarize_activity_weather. Small wrapper so we
+    can apply the same extraction in both the cold-fetch and the
+    backfill-on-read paths."""
+    try:
+        lat = summary.get("startLatitude") or (summary.get("summaryDTO") or {}).get("startLatitude")
+        lon = summary.get("startLongitude") or (summary.get("summaryDTO") or {}).get("startLongitude")
+        start = (summary.get("startTimeGMT")
+                 or (summary.get("summaryDTO") or {}).get("startTimeGMT"))
+        duration = (summary.get("duration")
+                    or (summary.get("summaryDTO") or {}).get("duration"))
+        return weather.summarize_activity_weather(lat, lon, start, duration)
+    except Exception as ex:  # noqa: BLE001
+        return {"error": f"weather lookup failed: {ex}"}
 
 
 def get_personal_records(force_refresh: bool = False):
