@@ -321,10 +321,16 @@ def get_activity_details(activity_id: str | int, force_refresh: bool = False) ->
     if not force_refresh:
         hit = cache.get("activity_details", args, key_parts=key_parts, ttl_seconds=IMMUTABLE_TTL)
         if hit is not None:
-            # Backfill weather on legacy cached entries that were written
-            # before ambient_weather was added. Cheap: one R2 read + maybe
-            # one Open-Meteo call per activity, results cached.
-            if "ambient_weather" not in hit:
+            # Backfill weather on cached entries where it's missing OR where
+            # a prior lookup errored (e.g. unparseable timestamp before the
+            # parser was fixed). Re-enriches in place so users don't have
+            # to force-refresh from scratch.
+            existing = hit.get("ambient_weather")
+            needs_weather = (
+                existing is None
+                or (isinstance(existing, dict) and "error" in existing)
+            )
+            if needs_weather:
                 hit["ambient_weather"] = _ambient_weather_from_summary(
                     hit.get("summary") or {}
                 )

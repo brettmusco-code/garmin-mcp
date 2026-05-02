@@ -148,9 +148,19 @@ def summarize_activity_weather(
     if lat is None or lon is None or not start_time_gmt or not duration_sec:
         return {"error": "missing lat/lon/time"}
 
-    # Parse Garmin's "2026-05-01 14:00:34" GMT format (space, no Z)
+    # Garmin returns multiple formats in practice:
+    #   "2026-05-01 14:00:34"      (summary top-level, when present)
+    #   "2026-05-01T21:43:51.0"    (summaryDTO, with fractional seconds)
+    #   "2026-05-01T21:43:51.0Z"   (some endpoints)
+    # Normalize then parse flexibly.
     try:
-        s = start_time_gmt.replace("Z", "").replace("T", " ")
+        s = start_time_gmt.strip()
+        if s.endswith("Z"):
+            s = s[:-1]
+        s = s.replace("T", " ")
+        # Strip fractional seconds if present
+        if "." in s:
+            s = s.split(".", 1)[0]
         start_utc = datetime.strptime(s, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
     except Exception:  # noqa: BLE001
         return {"error": f"unparseable start_time_gmt: {start_time_gmt}"}
