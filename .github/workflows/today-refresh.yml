@@ -1,0 +1,38 @@
+name: today-refresh
+# Mid-day refresh — every 4 hours, repulls today's metrics + activities +
+# activity details. Keeps the cache current for sessions completed during
+# the day so claude.ai /weekly and /session-review can read fresh data
+# without waiting for the 3am nightly.
+
+on:
+  schedule:
+    # Every 4 hours at :07 past the hour (off-peak to avoid noisy-neighbor
+    # patterns on GitHub Actions cron).
+    - cron: '7 */4 * * *'
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11.9"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run today refresh
+        env:
+          GARTH_TOKENS_B64: ${{ secrets.GARTH_TOKENS_B64 }}
+          S3_CACHE_BUCKET: ${{ secrets.S3_CACHE_BUCKET }}
+          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+          S3_CACHE_PREFIX: ${{ secrets.S3_CACHE_PREFIX }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          GARMIN_READONLY: "false"
+        run: python scripts/today_refresh.py

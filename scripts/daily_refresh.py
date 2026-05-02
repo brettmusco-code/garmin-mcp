@@ -109,6 +109,36 @@ def main() -> int:
             print(f"  ERROR: {ex}", file=sys.stderr)
     print()
 
+    # ---------- [1.5/5] activity details for last 7 days ----------
+    # Pre-warm get_activity_details for every activity in the last week so
+    # /session-review on claude.ai web is an instant cache hit rather than
+    # a readonly-blocked error.
+    week_start = (today - timedelta(days=7)).isoformat()
+    print(f"[1.5/5] activity_details — last 7 days ({week_start} → {today})")
+    try:
+        recent = garmin.get_activities_in_range(
+            startdate=week_start, enddate=today.isoformat()
+        ) or []
+        print(f"  found {len(recent)} activities")
+        detail_count = 0
+        for act in recent:
+            aid = act.get("activityId")
+            if not aid:
+                continue
+            try:
+                garmin.get_activity_details(str(aid), force_refresh=False)
+                detail_count += 1
+                consec_429 = 0
+            except Exception as ex:  # noqa: BLE001
+                if is_rate_limit(ex):
+                    consec_429 += 1
+                    if abort_if_rate_limited(consec_429, "remaining steps"):
+                        return 0
+        print(f"  pre-warmed details for {detail_count}/{len(recent)} activities")
+    except Exception as ex:  # noqa: BLE001
+        print(f"  ERROR: {str(ex)[:150]}", file=sys.stderr)
+    print()
+
     # ---------- [2/5] activities (current month, force-refresh) ----------
     months = [(today.year, today.month)]
     if today.day <= 3:
