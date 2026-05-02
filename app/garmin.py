@@ -384,19 +384,26 @@ INDOOR_ACTIVITY_TYPES = {
 
 def _is_indoor_activity(summary: dict) -> bool:
     """Check whether this activity happened indoors / doesn't benefit from
-    ambient weather. Two signals:
-      1. activityType.typeKey is a known indoor type
-      2. The 'isIndoor' flag or parentTypeId suggests indoor (some activities
-         use parent "fitness_equipment" id=29)
+    ambient weather.
+
+    Garmin exposes activity type under different keys depending on which
+    endpoint produced the summary:
+      - activity list: summary["activityType"]["typeKey"]
+      - activity_details: summary["activityTypeDTO"]["typeKey"]
     """
-    atype = (summary.get("activityType") or {}).get("typeKey", "")
+    type_dict = (
+        summary.get("activityType")
+        or summary.get("activityTypeDTO")
+        or (summary.get("summaryDTO") or {}).get("activityType")
+        or {}
+    )
+    atype = type_dict.get("typeKey", "")
     if atype in INDOOR_ACTIVITY_TYPES:
         return True
     # parentTypeId 29 = fitness_equipment (generic indoor fitness-equipment bucket)
-    parent_id = (summary.get("activityType") or {}).get("parentTypeId")
-    if parent_id == 29:
+    if type_dict.get("parentTypeId") == 29:
         return True
-    # Manufacturer "VIRTUALTRAINING" / "ZWIFT" / etc. are always indoor virtual
+    # Manufacturer "VIRTUALTRAINING" / "ZWIFT" / etc. = virtual indoor platform
     manufacturer = (summary.get("manufacturer") or "").upper()
     if manufacturer in ("VIRTUALTRAINING", "ZWIFT", "TRAINERROAD", "ROUVY"):
         return True
