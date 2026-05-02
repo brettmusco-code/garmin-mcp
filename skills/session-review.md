@@ -43,8 +43,9 @@ Deep analysis of one training session. Depth on signals, not on restating metric
 ## Key Metrics
 Avg HR {bpm} / max {bpm} · Pwr {W avg, NP, IF if ride} · TSS {n} · TE aerobic {n} / anaerobic {n}
 
-## Conditions (ambient)
-{temp °F, apparent °F, humidity %, wind mph}, {clear/cloudy/rain}. {Thermal impact on HR/pace in 1 sentence.}
+## Conditions
+{If ambient_weather.skipped=true: "Indoor session — no weather context." and skip the rest of this section.}
+{If outdoor: temp °F, apparent °F, humidity %, wind mph, clear/cloudy/rain. Add a 1-sentence thermal impact note on HR/pace.}
 
 ## vs Recent Similar
 {2-3 sessions of same type with actual numbers — "last 4 thresholds: 268W, 272W, 275W, 278W today — clean upward"}. If new session type, say so.

@@ -321,19 +321,24 @@ def get_activity_details(activity_id: str | int, force_refresh: bool = False) ->
     if not force_refresh:
         hit = cache.get("activity_details", args, key_parts=key_parts, ttl_seconds=IMMUTABLE_TTL)
         if hit is not None:
-            # Backfill weather on cached entries where it's missing OR where
-            # a prior lookup errored (e.g. unparseable timestamp before the
-            # parser was fixed). Re-enriches in place so users don't have
-            # to force-refresh from scratch.
+            # Backfill weather on cached entries that need it:
+            #  - missing entirely (legacy cache)
+            #  - prior lookup errored (e.g. unparseable timestamp before
+            #    the parser was fixed)
+            #  - indoor activity that was cached before the indoor-skip
+            #    check existed (has weather data that's meaningless)
             existing = hit.get("ambient_weather")
+            summary = hit.get("summary") or {}
+            is_indoor = _is_indoor_activity(summary)
             needs_weather = (
                 existing is None
                 or (isinstance(existing, dict) and "error" in existing)
+                # Indoor activity but old cache entry still has real weather data
+                or (is_indoor and isinstance(existing, dict)
+                    and not existing.get("skipped"))
             )
             if needs_weather:
-                hit["ambient_weather"] = _ambient_weather_from_summary(
-                    hit.get("summary") or {}
-                )
+                hit["ambient_weather"] = _ambient_weather_from_summary(summary)
                 cache.put("activity_details", args, hit, key_parts=key_parts)
             return hit
     c = get_client()
@@ -357,11 +362,59 @@ def get_activity_details(activity_id: str | int, force_refresh: bool = False) ->
     return out
 
 
+INDOOR_ACTIVITY_TYPES = {
+    # Virtual rides have GPS but from the virtual course, not the rider's location.
+    "virtual_ride",
+    "indoor_cycling",
+    "treadmill_running",
+    "indoor_running",
+    # Pool swimming — conditions outdoors are irrelevant to the session.
+    "lap_swimming",
+    "pool_swimming",
+    # Strength / other indoor work.
+    "strength_training",
+    "indoor_cardio",
+    "elliptical",
+    "stair_climbing",
+    "yoga",
+    "pilates",
+    "indoor_rowing",
+}
+
+
+def _is_indoor_activity(summary: dict) -> bool:
+    """Check whether this activity happened indoors / doesn't benefit from
+    ambient weather. Two signals:
+      1. activityType.typeKey is a known indoor type
+      2. The 'isIndoor' flag or parentTypeId suggests indoor (some activities
+         use parent "fitness_equipment" id=29)
+    """
+    atype = (summary.get("activityType") or {}).get("typeKey", "")
+    if atype in INDOOR_ACTIVITY_TYPES:
+        return True
+    # parentTypeId 29 = fitness_equipment (generic indoor fitness-equipment bucket)
+    parent_id = (summary.get("activityType") or {}).get("parentTypeId")
+    if parent_id == 29:
+        return True
+    # Manufacturer "VIRTUALTRAINING" / "ZWIFT" / etc. are always indoor virtual
+    manufacturer = (summary.get("manufacturer") or "").upper()
+    if manufacturer in ("VIRTUALTRAINING", "ZWIFT", "TRAINERROAD", "ROUVY"):
+        return True
+    return False
+
+
 def _ambient_weather_from_summary(summary: dict) -> dict:
     """Extract lat/lon/start/duration from a Garmin activity summary and
     hand off to weather.summarize_activity_weather. Small wrapper so we
     can apply the same extraction in both the cold-fetch and the
-    backfill-on-read paths."""
+    backfill-on-read paths. Returns a stub for indoor activities — no
+    point looking up weather for a pool swim or trainer ride."""
+    if _is_indoor_activity(summary):
+        return {
+            "skipped": True,
+            "reason": "indoor activity",
+            "activity_type": (summary.get("activityType") or {}).get("typeKey"),
+        }
     try:
         lat = summary.get("startLatitude") or (summary.get("summaryDTO") or {}).get("startLatitude")
         lon = summary.get("startLongitude") or (summary.get("summaryDTO") or {}).get("startLongitude")

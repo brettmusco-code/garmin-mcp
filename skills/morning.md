@@ -36,7 +36,7 @@ Use this structure literally. Section headers as H2 (##), bullets as `-`.
 - Limiting factor: {lowest readiness contributor with %}
 
 ## Yesterday
-{Activity 1 — sport, duration, key metric, TE, 1-line coach take. Include ambient temp/humidity if outside 50-70°F ideal range.}
+{Activity 1 — sport, duration, key metric, TE, 1-line coach take. If outdoor AND ambient temp outside 50-70°F: include temp/humidity. If indoor (ambient_weather.skipped=true): skip weather entirely.}
 {Activity 2 if any — same format}
 TL added: {n}. Fueling: {kcal in/out · P/C/F OR "not logged"}.
 
