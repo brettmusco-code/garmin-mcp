@@ -6,13 +6,15 @@ name: today-refresh
 
 on:
   schedule:
-    # Every 3 hours at :07 past the hour. Hourly was too aggressive —
-    # Garmin started rate-limiting the OAuth exchange endpoint because
-    # every fresh GitHub container requires a new token exchange.
-    # 3-hour cadence is a compromise: reasonable freshness for mid-day
-    # sessions, but few enough auth attempts to stay under Garmin's
-    # throttle threshold.
-    - cron: '7 */3 * * *'
+    # Every 30 min. Counter-intuitively, MORE frequent runs are safer
+    # than less frequent when paired with ALLOW_OAUTH_REFRESH=false:
+    # Garmin OAuth2 tokens live 1 hour. If runs are <50 min apart the
+    # token from the previous run is still valid, so no refresh happens
+    # at all. A 3-hour cadence guarantees token expiry between runs →
+    # every run refreshes → maximum rate-limit pressure. 30-min cadence
+    # means ~48 runs/day but only ~1 OAuth exchange/day (at the anchor
+    # daily-refresh run).
+    - cron: '*/30 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -39,4 +41,9 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           GARMIN_READONLY: "false"
+          # Only the daily-refresh anchor run may contact Garmin's
+          # OAuth exchange endpoint. This run skips refresh and reads
+          # whatever R2 has. If the token is expired, the next daily-
+          # refresh will rotate it (3am ET).
+          ALLOW_OAUTH_REFRESH: "false"
         run: python scripts/today_refresh.py

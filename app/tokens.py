@@ -157,6 +157,24 @@ def _patched_refresh(self):
         )
         return self.oauth2_token
 
+    # Token IS expired. Is this container authorized to refresh? Only the
+    # "anchor" run (typically the 3am nightly) should call Garmin's
+    # exchange endpoint. Hourly/sub-hourly runs that find an expired
+    # token should fail fast and let the anchor run deal with it on its
+    # next scheduled execution.
+    allow = os.environ.get("ALLOW_OAUTH_REFRESH", "true").lower() in ("1", "true", "yes")
+    if not allow:
+        logger.info(
+            "oauth2 token expired, but ALLOW_OAUTH_REFRESH is false — "
+            "skipping refresh (anchor run will handle it)"
+        )
+        raise RuntimeError(
+            "OAuth2 token expired and this run is not authorized to "
+            "refresh (ALLOW_OAUTH_REFRESH=false). This prevents multiple "
+            "concurrent refreshes from compounding rate-limit pressure. "
+            "The next anchor run (daily-refresh) will rotate the token."
+        )
+
     # Otherwise proceed with the real refresh.
     logger.info("oauth2 token expired or near expiry — calling refresh")
     result = _original_refresh(self)

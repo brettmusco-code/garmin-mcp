@@ -30,6 +30,13 @@ METRICS_TODAY = [
 ]
 
 
+def _is_refresh_blocked(ex: BaseException) -> bool:
+    """True if the exception is the 'ALLOW_OAUTH_REFRESH=false' trip —
+    expected when an hourly run finds an expired token and correctly
+    defers the refresh to the anchor daily-refresh run."""
+    return "ALLOW_OAUTH_REFRESH" in str(ex)
+
+
 def main() -> int:
     if garmin.READONLY_MODE:
         print("ERROR: GARMIN_READONLY set. Unset it for refresh jobs.",
@@ -52,6 +59,9 @@ def main() -> int:
         )
         print("  ok")
     except Exception as ex:  # noqa: BLE001
+        if _is_refresh_blocked(ex):
+            print("  skipped — token expired, refresh deferred to anchor run")
+            return 0  # exit cleanly; not an error
         print(f"  ERROR: {str(ex)[:200]}", file=sys.stderr)
 
     # 2. Current month's activities (force refresh to pick up new ones).
@@ -60,6 +70,9 @@ def main() -> int:
         garmin._fetch_activities_month(today.year, today.month, force_refresh=True)
         print("  ok")
     except Exception as ex:  # noqa: BLE001
+        if _is_refresh_blocked(ex):
+            print("  skipped — token expired, refresh deferred to anchor run")
+            return 0
         print(f"  ERROR: {str(ex)[:200]}", file=sys.stderr)
 
     # 3. Activity details for today AND yesterday.
