@@ -1,5 +1,3 @@
-
-
 **Name:** `morning`
 
 **Description:** Daily training summary with recovery, today's plan, fueling, and fitness trajectory
@@ -14,7 +12,7 @@ Generate a daily training summary. Depth where it matters, tight everywhere else
 
 **Data to pull (in parallel where possible):**
 1. `get_athlete_baseline` — pre-computed nightly (returns in ~300ms). Includes VO2max, LT HR, FTP, race predictions, per-sport fitness (90-day window), multi-method thresholds with flags and CI, LT1 aerobic threshold, staleness_days, key_session_counts. Use this for every physiology reference — never hardcode numbers.
-2. `get_daily_summaries` for the last 2 days with metrics `[training_readiness, hrv, rhr, sleep, stats_and_body, training_status, morning_readiness, body_battery_events, nutrition_food_log, nutrition_meals]`. If any metric returns an error, omit and note "not available" inline — don't let it fail the whole summary.
+2. `get_daily_summaries` for the last 2 days with metrics `[training_readiness, hrv, rhr, sleep, stats_and_body, training_status, morning_readiness, body_battery_events, nutrition_food_log, nutrition_meals]`. If any metric returns an error for TODAY specifically, that means the morning refresh job hit a Garmin rate limit — note "⚠️ Today's {metric} unavailable (Garmin rate-limited refresh)" in the Recovery section and use YESTERDAY's end-of-day values as your best proxy. Do NOT invent today's values.
 3. `get_activities` for today - 3 → today (catches yesterday + today).
 4. `get_scheduled_workouts` today → today + 7.
 5. For today's scheduled workout: call `get_workout_by_id(workoutId)` to get actual interval structure — don't infer from title.
@@ -72,6 +70,7 @@ Baseline: {from get_athlete_baseline — VO2max run/bike · run FTP W (W/kg) · 
 
 - **Render as chat with markdown headings, NOT a code block. No wrapping triple-backticks.**
 - Commit to a verdict. No hedging.
+- Before writing the "Yesterday" section, verify the activities you're describing are from YESTERDAY (today - 1). Do NOT conflate days. If the skill invocation runs on Sunday, "yesterday" is Saturday, NOT Friday. Reference today's actual date from the data tools, not memory.
 - Skip boring/normal metrics — only include what moves the read.
 - Derive pacing targets from baseline values returned by get_athlete_baseline (LT HR, run FTP, VDOT, bike FTP inferred). Never echo Garmin's generic zones.
 - Prefer `ambient_weather` over Garmin's watch weather.

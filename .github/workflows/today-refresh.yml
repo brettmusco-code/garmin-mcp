@@ -6,10 +6,13 @@ name: today-refresh
 
 on:
   schedule:
-    # Every hour at :07 past the hour. GitHub's free-tier cron scheduling
-    # can drift 5-15 min under load, so actual cadence is ~1-1.5h. Still
-    # well under any Garmin rate limit (hundreds of data calls/day).
-    - cron: '7 * * * *'
+    # Every 3 hours at :07 past the hour. Hourly was too aggressive —
+    # Garmin started rate-limiting the OAuth exchange endpoint because
+    # every fresh GitHub container requires a new token exchange.
+    # 3-hour cadence is a compromise: reasonable freshness for mid-day
+    # sessions, but few enough auth attempts to stay under Garmin's
+    # throttle threshold.
+    - cron: '7 */3 * * *'
   workflow_dispatch:
 
 jobs:
