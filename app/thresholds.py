@@ -39,7 +39,9 @@ Each helper returns a dict:
 """
 from __future__ import annotations
 
+import math
 import statistics
+from datetime import date, datetime
 from typing import Any, Iterable
 
 
@@ -169,6 +171,257 @@ def _pace_to_speed_m_min(seconds_per_km: float) -> float:
     return 1000.0 / (seconds_per_km / 60.0)
 
 
+# ---------- accuracy helpers ----------
+
+
+def _parse_activity_date(a: dict) -> date | None:
+    """Best-effort parse of an activity's start date."""
+    ts = a.get("startTimeLocal") or a.get("startTimeGMT") or ""
+    try:
+        # Handle "2026-05-01 14:00:34", "2026-05-01T14:00:34", ".0" suffix, trailing Z
+        s = ts.strip().replace("T", " ").rstrip("Z")
+        if "." in s:
+            s = s.split(".", 1)[0]
+        return datetime.strptime(s, "%Y-%m-%d %H:%M:%S").date()
+    except (ValueError, AttributeError):
+        return None
+
+
+def recency_weight(activity_date: date | None, today: date,
+                   half_life_days: float = 30.0) -> float:
+    """Exponential decay weight for recency. Session today = 1.0,
+    half_life_days ago = 0.5. Returns 0 for unknown dates (safely ignored)."""
+    if activity_date is None:
+        return 0.0
+    age = max(0, (today - activity_date).days)
+    return math.pow(0.5, age / half_life_days)
+
+
+def weighted_best(activities: list[dict], value_key: str,
+                  today: date, half_life_days: float = 30.0,
+                  higher_is_better: bool = True) -> tuple[float | None, dict | None]:
+    """Pick the "best" value from activities, weighting recent efforts more.
+
+    Rather than taking the absolute max/min across all sessions (which
+    anchors on a single possibly-stale peak), we rank each candidate by
+    its value multiplied by a recency weight. The activity that wins is
+    the one that combines high value AND recency.
+
+    Returns (weighted_value, source_activity) — the raw value from the
+    winner (not the weighted score itself).
+    """
+    candidates = []
+    for a in activities:
+        v = a.get(value_key)
+        if v is None or v <= 0:
+            continue
+        w = recency_weight(_parse_activity_date(a), today, half_life_days)
+        if w == 0:
+            continue
+        score = v * w if higher_is_better else (1.0 / v) * w
+        candidates.append((score, v, a))
+    if not candidates:
+        return None, None
+    candidates.sort(key=lambda t: t[0], reverse=True)
+    _, winner_value, winner_act = candidates[0]
+    return winner_value, winner_act
+
+
+def aerobic_decoupling_clean(a: dict) -> bool:
+    """Check whether a session was "clean" enough to anchor threshold
+    estimates. Aerobic decoupling = HR drift vs power drift. If HR rose
+    significantly over a 20-min effort but power held, the athlete was
+    pacing conservatively at sub-threshold. If HR held but power dropped,
+    they blew up mid-effort.
+
+    Garmin's activity objects don't expose first-half/second-half power
+    directly, so we use a proxy:
+      - averageHR vs maxHR spread is reasonable (not a blowup spike)
+      - IF (intensity factor) >= 0.80 (real threshold effort)
+    If the spread is too narrow (avg very close to max) they likely blew
+    up at the end. If IF is low, it wasn't a threshold session.
+
+    Returns True if the session looks clean enough to use. Conservative
+    default — returns True if we can't tell.
+    """
+    avg_hr = a.get("averageHR")
+    max_hr_a = a.get("maxHR")
+    if_val = a.get("intensityFactor")
+    # If IF is reported and is too low, skip.
+    if if_val is not None and if_val < 0.80:
+        return False
+    # If HR data missing, be conservative and accept the session.
+    if not avg_hr or not max_hr_a:
+        return True
+    # If peak HR is only slightly above avg (<5% gap), likely a sustained
+    # clean effort. If it's much higher, they spiked at the end (fine —
+    # 20-min power avg still valid). If much narrower (<2%), suspicious.
+    gap_pct = (max_hr_a - avg_hr) / max_hr_a
+    if gap_pct < 0.02:
+        return False
+    return True
+
+
+def tte_adjusted_ftp(activities: list[dict]) -> dict | None:
+    """Time-to-exhaustion adjusted FTP for cycling.
+
+    Classic Coggan FTP-from-20-min × 0.95 assumes a typical TTE of ~60 min.
+    But if you've sustained 95%+ of your 20-min best for 40+ minutes, your
+    actual TTE is longer and FTP is closer to your 20-min value (less
+    reduction). If you've barely held 85% of 20-min best for 40 min, TTE
+    is shorter and 0.95 overestimates FTP.
+
+    Returns {"ftp": w, "tte_minutes": n, "source": str} or None if we
+    lack the data.
+    """
+    best_20min = max(
+        (a.get("maxAvgPower_1200") for a in activities if a.get("maxAvgPower_1200")),
+        default=None,
+    )
+    if not best_20min:
+        return None
+
+    best_40min = max(
+        (a.get("maxAvgPower_2400") for a in activities if a.get("maxAvgPower_2400")),
+        default=None,
+    )
+    best_60min = max(
+        (a.get("maxAvgPower_3600") for a in activities if a.get("maxAvgPower_3600")),
+        default=None,
+    )
+
+    # Ratio of best 60-min to best 20-min tells us TTE profile.
+    if best_60min:
+        ratio = best_60min / best_20min
+        # A ratio of 0.95 means sustained 60-min matches 20-min × 0.95 — FTP is right at best_60min.
+        # A ratio of 0.88 means big drop-off — athlete has limited TTE, use 0.93 reducer.
+        # A ratio of 0.98 means near-equal — athlete has long TTE, use 0.97 reducer.
+        if ratio >= 0.95:
+            return {
+                "ftp": best_60min,
+                "tte_minutes": 60,
+                "source": f"60-min best ({best_60min}W) = {ratio:.2f}x 20-min best — long TTE, FTP = 60-min power",
+            }
+        if ratio >= 0.90:
+            return {
+                "ftp": round(best_20min * 0.96),
+                "tte_minutes": "45-60",
+                "source": f"60-min/20-min ratio {ratio:.2f} — TTE near typical, FTP = 20-min × 0.96",
+            }
+        return {
+            "ftp": round(best_20min * 0.93),
+            "tte_minutes": "<45",
+            "source": f"60-min/20-min ratio {ratio:.2f} — short TTE, FTP = 20-min × 0.93",
+        }
+    if best_40min:
+        ratio = best_40min / best_20min
+        if ratio >= 0.96:
+            return {
+                "ftp": round(best_20min * 0.96),
+                "tte_minutes": "40+",
+                "source": f"40-min best held {ratio:.2f} of 20-min — solid TTE, 0.96 reducer",
+            }
+        return {
+            "ftp": round(best_20min * 0.93),
+            "tte_minutes": "<40",
+            "source": f"40-min best only {ratio:.2f} of 20-min — short TTE, 0.93 reducer",
+        }
+    # No long-effort data; fall back to classic 0.95.
+    return {
+        "ftp": round(best_20min * 0.95),
+        "tte_minutes": "unknown",
+        "source": f"20-min × 0.95 (classic Coggan, no 40+ min data to adjust TTE)",
+    }
+
+
+def detect_race_effort(a: dict) -> bool:
+    """Heuristic: even-pacing + sustained high HR + ≥5km run suggests a
+    race/TT effort regardless of tags. Every km pace is within 5% of the
+    fastest km → consistent race pacing, not random fast splits in easy run.
+
+    Garmin activities don't expose per-km pace in the summary, so we use
+    a proxy: averageSpeed vs maxSpeed ratio is high (>0.85 = steady),
+    duration >= 15 min, and avg HR near threshold.
+    """
+    dur = a.get("duration") or 0
+    if dur < 900:  # < 15 min
+        return False
+    avg_speed = a.get("averageSpeed")
+    max_speed = a.get("maxSpeed")
+    avg_hr = a.get("averageHR")
+    if not (avg_speed and max_speed and avg_hr):
+        return False
+    if max_speed <= 0:
+        return False
+    steady_ratio = avg_speed / max_speed
+    # Race/TT pacing: avg very close to max. Relaxed threshold because
+    # max speed can spike on downhills.
+    if steady_ratio >= 0.82 and avg_hr >= 170:
+        return True
+    return False
+
+
+def heat_corrected_time(time_seconds: float,
+                        ambient_weather: dict | None) -> tuple[float, str | None]:
+    """Correct a race/TT time back to neutral-temperature equivalent.
+
+    Research (Ely et al., Vihma et al.): endurance performance degrades
+    roughly 0.3-0.5% per °C above ~15°C apparent temperature, accelerating
+    above ~25°C. Correction is applied so a hot 17:37 5K becomes its
+    cool-weather equivalent for VDOT purposes.
+
+    Returns (corrected_seconds, explanation). Explanation is None if no
+    correction was applied.
+    """
+    if not ambient_weather or ambient_weather.get("skipped"):
+        return time_seconds, None
+    apparent_f = ambient_weather.get("apparent_f")
+    if apparent_f is None:
+        return time_seconds, None
+    # Convert to °C. Neutral ~59°F (15°C).
+    apparent_c = (apparent_f - 32) * 5 / 9
+    if apparent_c <= 15:
+        return time_seconds, None
+    # Degradation per °C above 15: 0.3% up to 25°C, 0.6% above.
+    excess_c = apparent_c - 15
+    if excess_c <= 10:
+        pct = excess_c * 0.003
+    else:
+        pct = 10 * 0.003 + (excess_c - 10) * 0.006
+    corrected = time_seconds * (1 - pct)
+    return corrected, (
+        f"Heat-corrected: {apparent_f:.0f}°F apparent → "
+        f"-{pct*100:.1f}% applied (race in neutral conditions would be "
+        f"{corrected:.0f}s, actual {time_seconds:.0f}s)"
+    )
+
+
+def confidence_interval(values: list[float]) -> tuple[float | None, tuple[float, float] | None]:
+    """Return (point_estimate, (low, high)) 80% CI from a list of method
+    values. Uses simple percentile approach (20th, 80th). Returns None
+    for CI if fewer than 3 values."""
+    clean = [v for v in values if isinstance(v, (int, float))]
+    if not clean:
+        return None, None
+    point = round(statistics.median(clean), 1)
+    if len(clean) < 3:
+        return point, None
+    sorted_v = sorted(clean)
+    low = sorted_v[max(0, int(len(sorted_v) * 0.2))]
+    high = sorted_v[min(len(sorted_v) - 1, int(len(sorted_v) * 0.8))]
+    return point, (round(low, 1), round(high, 1))
+
+
+def lt_to_lt1(lt2: float | None) -> float | None:
+    """Aerobic threshold (LT1) is typically ~10% lower than lactate
+    threshold (LT2) when expressed as % of max HR. For an LT2 at 88% max,
+    LT1 is around 80%. Approximate conversion: LT1 ≈ LT2 × 0.92.
+    """
+    if lt2 is None:
+        return None
+    return round(lt2 * 0.92, 0)
+
+
 # ---------- VO2max (run) ----------
 
 
@@ -190,16 +443,18 @@ def run_vo2max_methods(
     race_predictions: dict | None,
     run_activities: list[dict],
     lt_hr: float | None,
+    today: date | None = None,
 ) -> dict[str, Any]:
     """Compare multiple VO2max estimates for running.
 
     Methods:
       1. Garmin's reported VO2max (from max_metrics.generic)
       2. Jack Daniels VDOT from Garmin's 5K prediction
-      3. VDOT from best recent 5K fastestSplit across all runs
-      4. VDOT from best 10K split
-      5. "Sustained threshold effort" — best 20+ min at HR near LT (proxy)
+      3. VDOT from best recent 5K fastestSplit in a KEY session (recency-weighted)
+      4. VDOT from best mile split (recency-weighted)
+      5. VDOT from detected race/TT efforts (heat-corrected)
     """
+    today = today or date.today()
     methods: list[dict[str, Any]] = []
 
     if garmin_vo2max is not None:
@@ -226,57 +481,87 @@ def run_vo2max_methods(
                 "notes": "Depends on Garmin's prediction, which itself is based on VO2max. Circular but useful as a check.",
             })
 
-    # Method 3: VDOT from best actual 5K split in a real run
-    best_5k_s = min(
-        (a.get("fastestSplit_5000") for a in run_activities if a.get("fastestSplit_5000")),
-        default=None,
-    )
-    if best_5k_s:
-        v = vdot_from_time(5000.0, best_5k_s)
+    # Method 3: VDOT from best 5K split, recency-weighted across key runs
+    val, winner = weighted_best(run_activities, "fastestSplit_5000", today,
+                                half_life_days=30, higher_is_better=False)
+    if val:
+        v = vdot_from_time(5000.0, val)
         if v is not None:
+            age_days = (today - _parse_activity_date(winner)).days if _parse_activity_date(winner) else None
             methods.append({
-                "name": "vdot_from_actual_5k_split",
+                "name": "vdot_from_best_5k_split_recency_weighted",
                 "value": v,
                 "delta_vs_garmin": round(v - garmin_vo2max, 1) if garmin_vo2max else None,
                 "confidence": "high",
-                "source": f"VDOT from best 5K split in last 60 days ({round(best_5k_s/60, 1)} min)",
-                "notes": "Actual performance, not prediction. Most reliable when the split was an all-out effort.",
+                "source": (
+                    f"Recency-weighted best 5K split from key runs "
+                    f"({round(val/60, 1)} min, {age_days}d ago: "
+                    f"{winner.get('activityName','?')})"
+                ),
+                "notes": "Weights recent efforts more than old ones (30d half-life). Actual performance.",
             })
 
-    # Method 4: VDOT from best 1-mile split (equivalent conversion)
-    best_mile_s = min(
-        (a.get("fastestSplit_1609") for a in run_activities if a.get("fastestSplit_1609")),
-        default=None,
-    )
-    if best_mile_s:
-        v = vdot_from_time(1609.0, best_mile_s)
+    # Method 4: VDOT from best mile split, recency-weighted
+    val, winner = weighted_best(run_activities, "fastestSplit_1609", today,
+                                half_life_days=30, higher_is_better=False)
+    if val:
+        v = vdot_from_time(1609.0, val)
         if v is not None:
+            age_days = (today - _parse_activity_date(winner)).days if _parse_activity_date(winner) else None
             methods.append({
-                "name": "vdot_from_actual_mile_split",
+                "name": "vdot_from_best_mile_split_recency_weighted",
                 "value": v,
                 "delta_vs_garmin": round(v - garmin_vo2max, 1) if garmin_vo2max else None,
                 "confidence": "medium",
-                "source": f"VDOT from best mile split in last 60 days ({round(best_mile_s/60, 1)} min)",
-                "notes": "Mile is short — tends to overestimate VO2max vs 5K. Use as a ceiling reference.",
+                "source": f"Recency-weighted best mile split ({round(val/60, 1)} min, {age_days}d ago)",
+                "notes": "Mile tends to overestimate vs 5K. Use as a ceiling reference.",
             })
 
-    # Method 5: HR-based threshold sustain — VO2max estimate from % max HR
-    # effort and avg pace. Rough but useful when actual racing data is thin.
-    # Formula: VO2max ≈ speed × 0.2 + 3.5 (ACSM)
-    # Take best recent sustained pace at >=90% max HR for >=20 min.
-    # (We don't have per-split HR here, so skip for now and flag.)
+    # Method 5: VDOT from detected race/TT efforts (heat-corrected)
+    race_candidates = [a for a in run_activities if detect_race_effort(a)]
+    if race_candidates:
+        # Pick the most recent race-like effort
+        race_candidates.sort(
+            key=lambda a: _parse_activity_date(a) or date(1970, 1, 1),
+            reverse=True,
+        )
+        race = race_candidates[0]
+        race_dist = race.get("distance")
+        race_dur = race.get("duration")
+        if race_dist and race_dur:
+            # Apply heat correction if weather is available
+            ambient = race.get("ambient_weather")
+            corrected_time, heat_note = heat_corrected_time(race_dur, ambient)
+            v = vdot_from_time(race_dist, corrected_time)
+            if v is not None:
+                age_days = (today - _parse_activity_date(race)).days if _parse_activity_date(race) else None
+                src = (
+                    f"Detected race/TT effort: {race.get('activityName','?')} "
+                    f"({round(race_dist/1000, 1)}km in {round(race_dur/60, 1)}min, "
+                    f"{age_days}d ago)"
+                )
+                if heat_note:
+                    src += f" | {heat_note}"
+                methods.append({
+                    "name": "vdot_from_detected_race_effort_heat_corrected",
+                    "value": v,
+                    "delta_vs_garmin": round(v - garmin_vo2max, 1) if garmin_vo2max else None,
+                    "confidence": "high",
+                    "source": src,
+                    "notes": "Steady-pacing + high HR detected. Heat-corrected if apparent temp >15°C.",
+                })
 
-    # Compute consensus + spread + flag
+    # Compute consensus + spread + CI + flag
     all_vals = [m["value"] for m in methods if m["value"] is not None]
-    consensus = _median_or_none(all_vals)
+    consensus, ci = confidence_interval(all_vals)
     spread = _spread(all_vals)
-    # Flag if non-Garmin methods agree on a value ≥1.0 different from Garmin
     flag = _flag_from_spread(methods, garmin_vo2max, large_spread_threshold=1.0)
 
     return {
         "garmin_value": garmin_vo2max,
         "methods": methods,
         "consensus": consensus,
+        "confidence_interval_80pct": list(ci) if ci else None,
         "spread": spread,
         "flag": flag,
     }
@@ -355,16 +640,30 @@ def run_lt_hr_methods(
         })
 
     all_vals = [m["value"] for m in methods if m["value"] is not None]
-    consensus = _median_or_none(all_vals)
+    consensus, ci = confidence_interval(all_vals)
     spread = _spread(all_vals)
     flag = _flag_from_spread(methods, garmin_lt_hr, large_spread_threshold=3.0)
+
+    # Aerobic threshold (LT1) derived from LT2 (lactate threshold HR).
+    # Uses the consensus LT2 rather than Garmin's alone — if our multi-
+    # method analysis found LT2 is ~177 vs Garmin's 181, LT1 should be
+    # derived from 177 too.
+    lt1 = lt_to_lt1(consensus)
+    lt1_note = (
+        f"LT1 (aerobic threshold) ≈ {lt1} bpm — use for Z2/endurance work. "
+        f"LT2 (lactate threshold, reported above) is for threshold/tempo sessions."
+        if lt1 else None
+    )
 
     return {
         "garmin_value": garmin_lt_hr,
         "methods": methods,
         "consensus": consensus,
+        "confidence_interval_80pct": list(ci) if ci else None,
         "spread": spread,
         "flag": flag,
+        "lt1_aerobic_threshold_bpm": lt1,
+        "lt1_note": lt1_note,
     }
 
 
@@ -374,14 +673,16 @@ def run_lt_hr_methods(
 def run_ftp_methods(
     garmin_run_ftp: float | None,
     run_activities: list[dict],
+    today: date | None = None,
 ) -> dict[str, Any]:
     """Compare multiple running FTP estimates.
 
     Methods:
       1. Garmin's reported run FTP
-      2. Best 20-min power × 0.95 (Coggan method)
-      3. Best 60-min power (critical power proxy)
+      2. Best 20-min power × 0.95 (Coggan method, recency-weighted)
+      3. Best 60-min power (critical power proxy, recency-weighted)
     """
+    today = today or date.today()
     methods: list[dict[str, Any]] = []
 
     if garmin_run_ftp is not None:
@@ -394,37 +695,35 @@ def run_ftp_methods(
             "notes": "Garmin's running power FTP. Updated on threshold-eligible efforts.",
         })
 
-    best_20min = max(
-        (a.get("maxAvgPower_1200") for a in run_activities if a.get("maxAvgPower_1200")),
-        default=None,
-    )
-    if best_20min:
-        coggan = round(best_20min * 0.95)
+    val_20, winner_20 = weighted_best(run_activities, "maxAvgPower_1200", today,
+                                      half_life_days=30, higher_is_better=True)
+    if val_20:
+        coggan = round(val_20 * 0.95)
+        age = (today - _parse_activity_date(winner_20)).days if _parse_activity_date(winner_20) else None
         methods.append({
-            "name": "coggan_20min_test",
+            "name": "coggan_20min_test_recency_weighted",
             "value": coggan,
             "delta_vs_garmin": round(coggan - garmin_run_ftp) if garmin_run_ftp else None,
             "confidence": "high",
-            "source": f"Best 20-min avg power ({best_20min}W) × 0.95",
+            "source": f"Recency-weighted best 20-min avg power ({round(val_20)}W, {age}d ago) × 0.95",
             "notes": "Classic FTP-from-test proxy. Accurate if the 20-min effort was all-out.",
         })
 
-    best_60min = max(
-        (a.get("maxAvgPower_3600") for a in run_activities if a.get("maxAvgPower_3600")),
-        default=None,
-    )
-    if best_60min:
+    val_60, winner_60 = weighted_best(run_activities, "maxAvgPower_3600", today,
+                                      half_life_days=30, higher_is_better=True)
+    if val_60:
+        age = (today - _parse_activity_date(winner_60)).days if _parse_activity_date(winner_60) else None
         methods.append({
-            "name": "best_60min_power",
-            "value": best_60min,
-            "delta_vs_garmin": round(best_60min - garmin_run_ftp) if garmin_run_ftp else None,
+            "name": "best_60min_power_recency_weighted",
+            "value": round(val_60),
+            "delta_vs_garmin": round(val_60 - garmin_run_ftp) if garmin_run_ftp else None,
             "confidence": "high",
-            "source": f"Best 60-min avg power in last 60 days",
+            "source": f"Recency-weighted best 60-min avg power ({round(val_60)}W, {age}d ago)",
             "notes": "Direct critical-power observation. Equals FTP if you held threshold for an hour.",
         })
 
     all_vals = [m["value"] for m in methods if m["value"] is not None]
-    consensus = _median_or_none(all_vals)
+    consensus, ci = confidence_interval(all_vals)
     spread = _spread(all_vals)
     flag = _flag_from_spread(methods, garmin_run_ftp, large_spread_threshold=10.0)
 
@@ -432,6 +731,7 @@ def run_ftp_methods(
         "garmin_value": garmin_run_ftp,
         "methods": methods,
         "consensus": consensus,
+        "confidence_interval_80pct": list(ci) if ci else None,
         "spread": spread,
         "flag": flag,
     }
@@ -443,15 +743,26 @@ def run_ftp_methods(
 def bike_ftp_methods(
     garmin_bike_ftp: float | None,
     ride_activities: list[dict],
+    today: date | None = None,
 ) -> dict[str, Any]:
     """Compare multiple cycling FTP estimates.
 
+    Filters to clean sessions (aerobic decoupling check) before extracting
+    peak values, so a brief 20-min power spike in a Z2 ride with erratic
+    HR gets excluded. Uses TTE-adjusted reducer based on 60-min/20-min
+    ratio. Recency-weighted so recent strong efforts dominate.
+
     Methods:
       1. Garmin's reported bike FTP (if set — most users don't have one)
-      2. Best 20-min × 0.95 (Coggan)
-      3. Best 60-min × 1.0 (critical power)
-      4. Normalized Power from best 40-60 min effort × ~0.97 (TTE-adjusted)
+      2. TTE-adjusted FTP from clean 20-min / 40-min / 60-min bests
+      3. Best 60-min × 1.0 (critical power, recency-weighted)
+      4. NP from ≥40min effort × ~0.97
     """
+    today = today or date.today()
+    # Filter to "clean" sessions for FTP derivation — sessions where HR
+    # behavior suggests a sustained effort rather than a one-off spike or
+    # a blowup.
+    clean_rides = [a for a in ride_activities if aerobic_decoupling_clean(a)]
     methods: list[dict[str, Any]] = []
 
     if garmin_bike_ftp is not None:
@@ -464,56 +775,53 @@ def bike_ftp_methods(
             "notes": "Depends on whether user ran an explicit FTP test in Garmin.",
         })
 
-    best_20min = max(
-        (a.get("maxAvgPower_1200") for a in ride_activities if a.get("maxAvgPower_1200")),
-        default=None,
-    )
-    if best_20min:
-        coggan = round(best_20min * 0.95)
+    # Method 2: TTE-adjusted FTP — looks at 60/40/20 min relationship
+    # to pick the right reducer instead of the blanket 0.95.
+    tte = tte_adjusted_ftp(clean_rides)
+    if tte:
         methods.append({
-            "name": "coggan_20min_test",
-            "value": coggan,
-            "delta_vs_garmin": round(coggan - garmin_bike_ftp) if garmin_bike_ftp else None,
+            "name": "tte_adjusted_ftp",
+            "value": tte["ftp"],
+            "delta_vs_garmin": round(tte["ftp"] - garmin_bike_ftp) if garmin_bike_ftp else None,
             "confidence": "high",
-            "source": f"Best 20-min avg power ({best_20min}W) × 0.95",
-            "notes": "Reliable when the 20-min was truly all-out. Overestimates if paced conservatively.",
+            "source": tte["source"],
+            "notes": f"TTE {tte['tte_minutes']} min. Adjusts Coggan reducer based on actual power-duration profile.",
         })
 
-    best_60min = max(
-        (a.get("maxAvgPower_3600") for a in ride_activities if a.get("maxAvgPower_3600")),
-        default=None,
-    )
-    if best_60min:
+    # Method 3: Best 60-min power, recency-weighted — if a genuine 60-min
+    # effort exists recently, that IS FTP directly.
+    val_60, winner_60 = weighted_best(clean_rides, "maxAvgPower_3600", today,
+                                      half_life_days=30, higher_is_better=True)
+    if val_60:
+        age = (today - _parse_activity_date(winner_60)).days if _parse_activity_date(winner_60) else None
         methods.append({
-            "name": "best_60min_power",
-            "value": best_60min,
-            "delta_vs_garmin": round(best_60min - garmin_bike_ftp) if garmin_bike_ftp else None,
+            "name": "best_60min_power_recency_weighted",
+            "value": round(val_60),
+            "delta_vs_garmin": round(val_60 - garmin_bike_ftp) if garmin_bike_ftp else None,
             "confidence": "high",
-            "source": f"Best 60-min avg power in last 60 days ({best_60min}W)",
-            "notes": "Direct critical-power observation. This IS FTP if it was a full hour at threshold.",
+            "source": f"Recency-weighted best 60-min avg power ({round(val_60)}W, {age}d ago: {winner_60.get('activityName','?')})",
+            "notes": "Direct critical-power observation. IS FTP if the hour was at threshold.",
         })
 
-    # Normalized Power is typically slightly higher than avg for variable efforts;
-    # Best recent NP over a long ride gives a low-cost FTP floor.
-    best_np_long = max(
-        (a.get("normPower") for a in ride_activities
-         if a.get("normPower") and (a.get("duration") or 0) >= 2400),  # >=40 min
-        default=None,
-    )
-    if best_np_long:
-        # Over a 40-60 min effort, NP tends to run ~5-10% above FTP if sustained hard.
-        np_based = round(best_np_long * 0.97)
+    # Method 4: NP from a long sustained effort × 0.97
+    long_rides = [a for a in clean_rides
+                  if (a.get("duration") or 0) >= 2400 and a.get("normPower")]
+    val_np, winner_np = weighted_best(long_rides, "normPower", today,
+                                      half_life_days=30, higher_is_better=True)
+    if val_np:
+        np_based = round(val_np * 0.97)
+        age = (today - _parse_activity_date(winner_np)).days if _parse_activity_date(winner_np) else None
         methods.append({
-            "name": "np_adjusted_long_effort",
+            "name": "np_adjusted_long_effort_recency_weighted",
             "value": np_based,
             "delta_vs_garmin": round(np_based - garmin_bike_ftp) if garmin_bike_ftp else None,
             "confidence": "medium",
-            "source": f"Best NP ({best_np_long}W) from a ≥40min ride × 0.97",
+            "source": f"Best NP ({round(val_np)}W) from ≥40min ride × 0.97, {age}d ago",
             "notes": "NP-adjusted floor. Lower bound on FTP if the ride was paced aggressively.",
         })
 
     all_vals = [m["value"] for m in methods if m["value"] is not None]
-    consensus = _median_or_none(all_vals)
+    consensus, ci = confidence_interval(all_vals)
     spread = _spread(all_vals)
     flag = _flag_from_spread(methods, garmin_bike_ftp, large_spread_threshold=10.0)
 
@@ -521,8 +829,11 @@ def bike_ftp_methods(
         "garmin_value": garmin_bike_ftp,
         "methods": methods,
         "consensus": consensus,
+        "confidence_interval_80pct": list(ci) if ci else None,
         "spread": spread,
         "flag": flag,
+        "clean_rides_used": len(clean_rides),
+        "total_rides_evaluated": len(ride_activities),
     }
 
 
@@ -575,7 +886,7 @@ def bike_vo2max_methods(
         })
 
     all_vals = [m["value"] for m in methods if m["value"] is not None]
-    consensus = _median_or_none(all_vals)
+    consensus, ci = confidence_interval(all_vals)
     spread = _spread(all_vals)
     flag = _flag_from_spread(methods, garmin_vo2max_bike, large_spread_threshold=2.0)
 
@@ -583,6 +894,7 @@ def bike_vo2max_methods(
         "garmin_value": garmin_vo2max_bike,
         "methods": methods,
         "consensus": consensus,
+        "confidence_interval_80pct": list(ci) if ci else None,
         "spread": spread,
         "flag": flag,
     }
@@ -659,7 +971,7 @@ def swim_css_methods(
         })
 
     all_vals = [m["value"] for m in methods if m["value"] is not None]
-    consensus = _median_or_none(all_vals)
+    consensus, ci = confidence_interval(all_vals)
     spread = _spread(all_vals)
     flag = None
     # For swimming, no Garmin CSS to compare against — just flag large spread.
@@ -670,6 +982,7 @@ def swim_css_methods(
         "garmin_value": None,  # no Garmin CSS
         "methods": methods,
         "consensus": consensus,
+        "confidence_interval_80pct": list(ci) if ci else None,
         "spread": spread,
         "flag": flag,
     }

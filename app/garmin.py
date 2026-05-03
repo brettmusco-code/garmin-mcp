@@ -1112,7 +1112,7 @@ def get_athlete_baseline(force_refresh: bool = False) -> dict[str, Any]:
     Cached 6h (refreshed every few /morning calls). Pass force_refresh=true
     to bypass.
     """
-    cache_args = {"v": 1}
+    cache_args = {"v": 2}  # bump when baseline schema changes
     key_parts = ["latest"]
     if not force_refresh:
         hit = cache.get("athlete_baseline", cache_args, key_parts=key_parts,
@@ -1386,12 +1386,28 @@ def get_athlete_baseline(force_refresh: bool = False) -> dict[str, Any]:
         # Each helper returns {garmin_value, methods, consensus, spread, flag}.
         # Consensus is the median of all methods — a robust cross-check vs.
         # any single source (especially Garmin, which can lag real fitness).
+        # Enrich detected-race run candidates with ambient_weather for
+        # heat correction. Only fetches details for activities that pass
+        # the race-detection heuristic (usually 0-3 per 90 days).
+        race_enriched = []
+        for a in key_run_acts:
+            if thresholds.detect_race_effort(a):
+                aid = a.get("activityId")
+                if aid:
+                    try:
+                        det = get_activity_details(str(aid))
+                        a = {**a, "ambient_weather": det.get("ambient_weather")}
+                    except Exception:  # noqa: BLE001
+                        pass
+            race_enriched.append(a)
+
         out["multi_method"] = {
             "run_vo2max": thresholds.run_vo2max_methods(
                 garmin_vo2max=out.get("vo2max_run"),
                 race_predictions=out.get("race_predictions"),
-                run_activities=key_run_acts,
+                run_activities=race_enriched,
                 lt_hr=out.get("lt_hr"),
+                today=today,
             ),
             "run_lt_hr": thresholds.run_lt_hr_methods(
                 garmin_lt_hr=out.get("lt_hr"),
@@ -1402,10 +1418,12 @@ def get_athlete_baseline(force_refresh: bool = False) -> dict[str, Any]:
             "run_ftp": thresholds.run_ftp_methods(
                 garmin_run_ftp=out.get("run_ftp_watts"),
                 run_activities=key_run_acts,
+                today=today,
             ),
             "bike_ftp": thresholds.bike_ftp_methods(
                 garmin_bike_ftp=out.get("bike_ftp_watts"),
                 ride_activities=key_ride_acts,
+                today=today,
             ),
             "bike_vo2max": thresholds.bike_vo2max_methods(
                 garmin_vo2max_bike=out.get("vo2max_bike"),
