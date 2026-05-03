@@ -1,4 +1,15 @@
-"""Multi-method threshold and VO2max estimation.
+"""Multi-method threshold and VO2max estimation with key-session filtering.
+
+Thresholds (FTP, LT HR, VO2max, CSS) should reflect what you can do on a
+hard, focused effort — not the average of every activity. A 5-min power
+spike during a recovery ride or a fast 1-km split in an easy run isn't
+a real performance test; including those data points pollutes the
+estimate.
+
+Helpers filter to "key sessions" — intervals, tempo, threshold, time
+trials, races — before extracting peak values. See is_key_* helpers.
+
+Each threshold helper returns a dict:
 
 Garmin exposes single point estimates for VO2max, LT HR, FTP, CSS, etc.
 Those are convenient but can drift — Garmin's VO2max algorithm is
@@ -30,6 +41,93 @@ from __future__ import annotations
 
 import statistics
 from typing import Any, Iterable
+
+
+# ---------- key-session detection ----------
+
+# Keywords that signal a deliberate quality/test session in activity names.
+# Lowercased comparison; any hit qualifies the session as "key."
+_RUN_KEY_KEYWORDS = {
+    "race", "tt", "time trial", "threshold", "tempo", "vo2",
+    "interval", "test", "5k", "10k", "half marathon", "marathon",
+    "track", "repeats", "fartlek", "lactate", "ftp",
+}
+_BIKE_KEY_KEYWORDS = {
+    "race", "tt", "time trial", "threshold", "tempo", "vo2",
+    "interval", "test", "ftp", "cp", "critical power",
+    "sweet spot", "sst", "over-under", "overunder", "z4", "z5",
+    "20 min", "20min", "20-min",
+}
+_SWIM_KEY_KEYWORDS = {
+    "race", "tt", "time trial", "test", "css", "critical swim speed",
+    "400", "800", "1000", "1500", "threshold",
+}
+
+
+def _activity_name(a: dict) -> str:
+    return (a.get("activityName") or "").lower()
+
+
+def _event_is_race(a: dict) -> bool:
+    et = a.get("eventType") or {}
+    return (et.get("typeKey") or "").lower() in {"race", "competition"}
+
+
+def _name_matches(name: str, kws: set[str]) -> bool:
+    return any(kw in name for kw in kws)
+
+
+def is_key_run(a: dict, observed_max_hr: float | None) -> bool:
+    """Return True if this run looks like a deliberate hard/key session."""
+    dur = a.get("duration") or 0
+    if dur < 900:  # < 15 min
+        return False
+    if _event_is_race(a):
+        return True
+    name = _activity_name(a)
+    if _name_matches(name, _RUN_KEY_KEYWORDS):
+        return True
+    avg_hr = a.get("averageHR")
+    if avg_hr and observed_max_hr and avg_hr >= 0.88 * observed_max_hr:
+        return True
+    return False
+
+
+def is_key_ride(a: dict, ftp_estimate: float | None) -> bool:
+    """Return True if this ride looks like a deliberate hard/key session."""
+    dur = a.get("duration") or 0
+    if dur < 1200:  # < 20 min
+        return False
+    if _event_is_race(a):
+        return True
+    name = _activity_name(a)
+    if _name_matches(name, _BIKE_KEY_KEYWORDS):
+        return True
+    # IF ≥ 0.80 based on either Garmin-reported or computed FTP
+    if_val = a.get("intensityFactor")
+    if if_val and if_val >= 0.80:
+        return True
+    # Fall back: avg power vs an estimated FTP if IF wasn't reported
+    avg_pwr = a.get("avgPower")
+    if avg_pwr and ftp_estimate and avg_pwr >= 0.80 * ftp_estimate:
+        return True
+    return False
+
+
+def is_key_swim(a: dict) -> bool:
+    """Return True if this swim looks like a deliberate hard/key session."""
+    dist = a.get("distance") or 0
+    if dist < 400:
+        return False
+    if _event_is_race(a):
+        return True
+    name = _activity_name(a)
+    if _name_matches(name, _SWIM_KEY_KEYWORDS):
+        return True
+    # If it has a recorded 400m or 1000m fastest split, treat as test-eligible.
+    if a.get("fastestSplit_400") or a.get("fastestSplit_1000"):
+        return True
+    return False
 
 
 # ---------- shared helpers ----------

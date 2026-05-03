@@ -1282,11 +1282,14 @@ def get_athlete_baseline(force_refresh: bool = False) -> dict[str, Any]:
         except Exception:  # noqa: BLE001
             pass
 
-    # --- Sport-specific activity-derived fitness (last 60 days) ---
-    # Uses 2 months of cached activities to derive per-sport signals
-    # rather than relying on a single latest measurement.
+    # --- Sport-specific activity-derived fitness (last 90 days) ---
+    # Uses 3 months of cached activities. 90 days is long enough to catch
+    # genuine key sessions (tests, races, intervals) even if training
+    # weeks are heavy on recovery, but not so long that stale fitness
+    # contaminates current thresholds. Metrics derived from this window
+    # are also weighted toward key sessions, not every activity.
     try:
-        window_start = (today - timedelta(days=60)).isoformat()
+        window_start = (today - timedelta(days=90)).isoformat()
         acts = get_activities_in_range(
             startdate=window_start, enddate=today_iso
         ) or []
@@ -1309,7 +1312,35 @@ def get_athlete_baseline(force_refresh: bool = False) -> dict[str, Any]:
                      if (a.get("activityType") or {}).get("typeKey")
                      in ("lap_swimming", "open_water_swimming", "swimming")]
 
-        # Observed max HR from any recent hard effort
+        # Filter to KEY sessions for threshold estimation. All-activity
+        # averages include easy/recovery work that pollutes threshold
+        # estimates. Key sessions are races, tests, intervals, tempo,
+        # threshold, VO2 — sessions where the athlete was deliberately
+        # close to or at their limit.
+        observed_max_hr_for_filter = max(
+            (a.get("maxHR") for a in run_acts if a.get("maxHR")),
+            default=None,
+        )
+        ftp_hint = (out["sport_fitness"].get("bike") or {}).get(
+            "ftp_est_from_20min_watts"
+        )
+        key_run_acts = [a for a in run_acts
+                        if thresholds.is_key_run(a, observed_max_hr_for_filter)]
+        key_ride_acts = [a for a in ride_acts
+                         if thresholds.is_key_ride(a, ftp_hint)]
+        key_swim_acts = [a for a in swim_acts if thresholds.is_key_swim(a)]
+
+        out["key_session_counts"] = {
+            "run_total": len(run_acts),
+            "run_key": len(key_run_acts),
+            "bike_total": len(ride_acts),
+            "bike_key": len(key_ride_acts),
+            "swim_total": len(swim_acts),
+            "swim_key": len(key_swim_acts),
+        }
+
+        # Observed max HR from any recent hard effort (can be from easy runs
+        # too — max HR can spike on hills even in low-effort sessions).
         observed_max_hr = max(
             (a.get("maxHR") for a in acts if a.get("maxHR")),
             default=None,
@@ -1328,17 +1359,28 @@ def get_athlete_baseline(force_refresh: bool = False) -> dict[str, Any]:
                     if rhr_val:
                         break
 
-        # Derive cycling FTP preferentially from measured 20-min best.
-        # Fall back to run-FTP inference only if no ride data exists.
-        measured_ftp = (out["sport_fitness"].get("bike") or {}).get(
-            "ftp_est_from_20min_watts"
+        # Derive cycling FTP from best 20-min power in a KEY ride (FTP test,
+        # race, tempo, sweet-spot, threshold). Using the full activity list
+        # would pick up random 20-min power spikes from recovery/Z2 rides
+        # that aren't representative of threshold capability.
+        best_20min_key = max(
+            (r.get("maxAvgPower_1200") for r in key_ride_acts
+             if r.get("maxAvgPower_1200")),
+            default=None,
         )
-        if measured_ftp:
-            out["bike_ftp_watts"] = measured_ftp
-            out["bike_ftp_source"] = "derived from best 20-min power × 0.95 (last 60 days)"
+        if best_20min_key:
+            out["bike_ftp_watts"] = round(best_20min_key * 0.95)
+            out["bike_ftp_source"] = (
+                f"best 20-min power × 0.95 from key rides (FTP/TT/race/"
+                f"threshold) in last 90 days (n={len(key_ride_acts)} key "
+                f"rides of {len(ride_acts)} total)"
+            )
         elif ftp:
             out["bike_ftp_estimated_watts"] = round(ftp * 0.75)
-            out["bike_ftp_source"] = "inferred from run FTP × 0.75 (no rides to measure)"
+            out["bike_ftp_source"] = (
+                "inferred from run FTP × 0.75 (no key rides tagged as "
+                "FTP/test/race/threshold in last 90 days)"
+            )
 
         # --- Multi-method threshold analysis ---
         # Each helper returns {garmin_value, methods, consensus, spread, flag}.
@@ -1348,30 +1390,30 @@ def get_athlete_baseline(force_refresh: bool = False) -> dict[str, Any]:
             "run_vo2max": thresholds.run_vo2max_methods(
                 garmin_vo2max=out.get("vo2max_run"),
                 race_predictions=out.get("race_predictions"),
-                run_activities=run_acts,
+                run_activities=key_run_acts,
                 lt_hr=out.get("lt_hr"),
             ),
             "run_lt_hr": thresholds.run_lt_hr_methods(
                 garmin_lt_hr=out.get("lt_hr"),
                 max_hr=observed_max_hr,
                 rhr=rhr_val,
-                run_activities=run_acts,
+                run_activities=key_run_acts,
             ),
             "run_ftp": thresholds.run_ftp_methods(
                 garmin_run_ftp=out.get("run_ftp_watts"),
-                run_activities=run_acts,
+                run_activities=key_run_acts,
             ),
             "bike_ftp": thresholds.bike_ftp_methods(
                 garmin_bike_ftp=out.get("bike_ftp_watts"),
-                ride_activities=ride_acts,
+                ride_activities=key_ride_acts,
             ),
             "bike_vo2max": thresholds.bike_vo2max_methods(
                 garmin_vo2max_bike=out.get("vo2max_bike"),
-                ride_activities=ride_acts,
+                ride_activities=key_ride_acts,
                 weight_kg=out.get("weight_kg"),
             ),
             "swim_css": thresholds.swim_css_methods(
-                swim_activities=swim_acts,
+                swim_activities=key_swim_acts,
             ),
         }
         # Observed data points that the threshold helpers used
