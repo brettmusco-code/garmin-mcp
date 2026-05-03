@@ -139,18 +139,24 @@ def main() -> int:
         print(f"  ERROR: {str(ex)[:150]}", file=sys.stderr)
     print()
 
-    # ---------- [2/5] activities (current month, force-refresh) ----------
+    # ---------- [2/5] activities (current month, NON-force-refresh) ----------
+    # today_refresh.py runs every 3 hours and force-refreshes the current
+    # month. The nightly just warms anything uncached — it's wasteful to
+    # have both jobs force-refresh. Each force_refresh=True is a Garmin
+    # API call; avoiding them reduces pressure on the rate limiter.
     months = [(today.year, today.month)]
     if today.day <= 3:
         prev_y = today.year - 1 if today.month == 1 else today.year
         prev_m = 12 if today.month == 1 else today.month - 1
         months.insert(0, (prev_y, prev_m))
 
-    print(f"[2/5] activities — force_refresh month(s): "
+    print(f"[2/5] activities — cache-first (no force-refresh; today_refresh handles that): "
           f"{[f'{y}-{m:02d}' for y, m in months]}")
     for y, m in months:
         try:
-            garmin._fetch_activities_month(y, m, force_refresh=True)
+            # force_refresh=False — if the month is cached, use it.
+            # today_refresh is the one that keeps current-month fresh.
+            garmin._fetch_activities_month(y, m, force_refresh=False)
             print(f"  {y}-{m:02d}: ok")
             consec_429 = 0
         except Exception as ex:  # noqa: BLE001
@@ -201,7 +207,41 @@ def main() -> int:
     print()
 
     # ---------- [5/5] derived daily metrics ----------
-    print("[5/5] derived metrics (race predictions, LT, training scores, etc.)")
+    # ---------- [5/6] athlete baseline (FIRST among derived — low Garmin load) ----------
+    # Baseline reads cached daily_summary / activities / training_score /
+    # race_predictions / lactate_threshold. Almost all of those come from
+    # R2 cache, NOT from Garmin. So baseline computes reliably even when
+    # Garmin is throttling us on other endpoints. Run it BEFORE the
+    # force-refresh operations below so the web MCP always gets a fresh
+    # baseline schema even if later steps 429.
+    print("[5/6] athlete_baseline — compute + cache consolidated baseline")
+    try:
+        baseline = garmin.get_athlete_baseline(force_refresh=True)
+        mm = baseline.get("multi_method", {}) or {}
+        flags = {k: v.get("flag") for k, v in mm.items() if v.get("flag")}
+        if flags:
+            print(f"  computed — {len(flags)} disagreement flags:")
+            for metric, flag_text in flags.items():
+                print(f"    {metric}: {flag_text[:120]}")
+        else:
+            print(f"  computed — no threshold disagreements flagged")
+        ksc = baseline.get("key_session_counts", {})
+        if ksc:
+            print(f"  key sessions: run {ksc.get('run_key')}/{ksc.get('run_total')}, "
+                  f"bike {ksc.get('bike_key')}/{ksc.get('bike_total')}, "
+                  f"swim {ksc.get('swim_key')}/{ksc.get('swim_total')}")
+    except Exception as ex:  # noqa: BLE001
+        print(f"  ERROR: {str(ex)[:200]}", file=sys.stderr)
+    print()
+
+    # ---------- [6/6] derived metrics (force-refresh — may 429) ----------
+    # Force-refresh the "latest X" endpoints so tomorrow's baseline has
+    # fresher source data. These are the highest risk for 429 since
+    # race_predictions / training_score / lactate_threshold all hit
+    # Garmin. If this aborts from 429, baseline above already succeeded
+    # with today's data — no data loss, just slightly staler inputs
+    # tomorrow.
+    print("[6/6] derived metrics (race predictions, LT, training scores, etc.)")
     today_iso = today.isoformat()
 
     def try_one(label, fn):
@@ -232,34 +272,6 @@ def main() -> int:
     for label, fn in ops:
         if not try_one(label, fn):
             break
-    print()
-
-    # ---------- [6/6] athlete baseline ----------
-    # All the inputs it depends on (daily summaries, activities,
-    # training scores, race predictions, lactate threshold) were just
-    # refreshed above. Compute the consolidated baseline + multi-method
-    # threshold analysis once, here, so skill invocations on the web MCP
-    # can serve it from cache in <1s instead of recomputing (~14s).
-    print("[6/6] athlete_baseline — compute + cache consolidated baseline")
-    try:
-        baseline = garmin.get_athlete_baseline(force_refresh=True)
-        mm = baseline.get("multi_method", {}) or {}
-        flags = {k: v.get("flag") for k, v in mm.items() if v.get("flag")}
-        if flags:
-            print(f"  computed — {len(flags)} disagreement flags:")
-            for metric, flag_text in flags.items():
-                print(f"    {metric}: {flag_text[:120]}")
-        else:
-            print(f"  computed — no threshold disagreements flagged")
-        ksc = baseline.get("key_session_counts", {})
-        if ksc:
-            print(f"  key sessions: run {ksc.get('run_key')}/{ksc.get('run_total')}, "
-                  f"bike {ksc.get('bike_key')}/{ksc.get('bike_total')}, "
-                  f"swim {ksc.get('swim_key')}/{ksc.get('swim_total')}")
-    except Exception as ex:  # noqa: BLE001
-        print(f"  ERROR: {str(ex)[:200]}", file=sys.stderr)
-        if is_rate_limit(ex):
-            print("  (non-fatal — web MCP will serve previous day's baseline)", file=sys.stderr)
     print()
 
     # ---------- summary ----------
