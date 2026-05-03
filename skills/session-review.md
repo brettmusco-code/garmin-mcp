@@ -17,11 +17,13 @@
 Deep analysis of one training session. Depth on signals, not on restating metrics.
 
 **Data to pull:**
-1. `get_athlete_baseline` — current LT HR, FTP (run and bike), CSS (swim), VDOT. Use for zone-vs-target comparisons and "is this close to my threshold" reasoning.
+1. `get_athlete_baseline` — pre-computed nightly (~300ms). Use `multi_method.{run_lt_hr|run_ftp|bike_ftp|swim_css}.consensus` and `.confidence_interval_80pct` for zone/target comparisons.
 2. If `activity_id` provided: `get_activity_details(activity_id)` directly.
    If blank: `get_activities(limit=1)` → get its `activityId` → then `get_activity_details`.
 3. `get_activities(limit=20)` — for similar-session comparison.
 4. `get_daily_summaries` for the session date — recovery state that day.
+
+**If `get_athlete_baseline` returns `{"error": "..."}`:** Note "⚠️ Baseline cache empty" at the top and skip the CI-band comparison in the Signals section. Still complete the session analysis from activity details + comparison sessions.
 
 **Output format** — use markdown directly. **Do NOT wrap the response in triple-backticks or code blocks.** Chat output, not a document.
 

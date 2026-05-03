@@ -13,13 +13,15 @@
 Weekly training review. Denser than `/morning` — weekly patterns need a fuller picture — but still chat-formatted, not padded.
 
 **Data to pull in parallel:**
-1. `get_athlete_baseline` — fresh physiology and per-sport fitness trends from the last 60 days. Use for the FITNESS TRAJECTORY section and all baseline references.
+1. `get_athlete_baseline` — pre-computed nightly (~300ms). Includes 90-day per-sport fitness trends, multi-method thresholds with CI + flags, key_session_counts, race predictions, staleness. Use for FITNESS TRAJECTORY section and all baseline references.
 2. `get_activities` — this week (today - 7 → today) AND last week (today - 14 → today - 7).
 3. `get_daily_summaries` — last 7 days with `[sleep, hrv, rhr, training_readiness, stats_and_body, stress, nutrition_food_log, nutrition_meals, body_battery_events]`.
 4. `get_scheduled_workouts` — today → today + 7.
 5. `get_weekly_summaries` — 4 weeks for `[intensity_minutes, stress, steps]`.
 6. `analyze_training_period` — this week's totals.
 7. For key sessions: `get_activity_details(activityId)` for `ambient_weather`.
+
+**If `get_athlete_baseline` returns `{"error": "..."}`:** Note "⚠️ Baseline cache empty — trigger daily-refresh workflow" at the top, then complete the review from activities + daily summaries alone. Skip the FITNESS TRAJECTORY and multi-method sections.
 
 **Output format** — markdown headings directly. **Do NOT wrap in triple-backticks or code blocks.**
 

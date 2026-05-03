@@ -13,12 +13,14 @@
 Generate a daily training summary. Depth where it matters, tight everywhere else.
 
 **Data to pull (in parallel where possible):**
-1. `get_athlete_baseline` — returns current VO2max, LT HR, FTP, race predictions, per-sport fitness. Use these for targets/baselines instead of any hardcoded values.
+1. `get_athlete_baseline` — pre-computed nightly (returns in ~300ms). Includes VO2max, LT HR, FTP, race predictions, per-sport fitness (90-day window), multi-method thresholds with flags and CI, LT1 aerobic threshold, staleness_days, key_session_counts. Use this for every physiology reference — never hardcode numbers.
 2. `get_daily_summaries` for the last 2 days with metrics `[training_readiness, hrv, rhr, sleep, stats_and_body, training_status, morning_readiness, body_battery_events, nutrition_food_log, nutrition_meals]`. If any metric returns an error, omit and note "not available" inline — don't let it fail the whole summary.
 3. `get_activities` for today - 3 → today (catches yesterday + today).
 4. `get_scheduled_workouts` today → today + 7.
 5. For today's scheduled workout: call `get_workout_by_id(workoutId)` to get actual interval structure — don't infer from title.
 6. For yesterday's activity: call `get_activity_details(activityId)` to get `ambient_weather` (Open-Meteo, not Garmin watch reading).
+
+**If `get_athlete_baseline` returns `{"error": "..."}`:** The nightly refresh hasn't populated the cache. Note this at the top of the output ("⚠️ Baseline cache empty — trigger daily-refresh workflow"), then proceed with the remaining data and skip any baseline-derived sections (multi-method flags, LT1, consensus comparisons).
 
 **Output format** — use markdown headings and bullets directly. **Do NOT wrap the response in triple-backticks or code blocks.** This is chat output, not a document.
 
