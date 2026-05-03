@@ -1,5 +1,3 @@
-## Skill config for claude.ai
-
 **Name:** `session-review`
 
 **Description:** Deep post-session analysis — pacing, zones, weather impact, fitness signals, next-session implications

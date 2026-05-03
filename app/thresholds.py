@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import math
 import statistics
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Iterable
 
 
@@ -391,6 +391,162 @@ def critical_power_fit(activities: list[dict]) -> dict | None:
             f"buckets (IF-scaled): " +
             ", ".join(f"{t//60}min={round(p)}W" for t, p in sorted_buckets)
         ),
+    }
+
+
+def if_weighted_median(values_with_ifs: list[tuple[float, float]]) -> float | None:
+    """Weighted median where each value's weight is its source IF.
+
+    A 20-min peak from an IF 0.92 session tells us more about threshold
+    capability than a 20-min peak from an IF 0.72 endurance ride. Weight
+    each candidate by its source IF squared (emphasizes threshold-like
+    sessions) before taking the median.
+
+    Input: list of (value, source_if) tuples.
+    """
+    if not values_with_ifs:
+        return None
+    # Use IF^2 to strongly favor high-IF sessions.
+    weighted = [(v, (ifv ** 2) if ifv else 0.25) for v, ifv in values_with_ifs]
+    weighted.sort(key=lambda t: t[0])
+    total_w = sum(w for _, w in weighted)
+    if total_w <= 0:
+        return None
+    cumulative = 0.0
+    for v, w in weighted:
+        cumulative += w
+        if cumulative >= total_w / 2:
+            return v
+    return weighted[-1][0]
+
+
+def efficiency_factor_trend(
+    activities: list[dict],
+    today: date,
+    recent_days: int = 30,
+    baseline_days: int = 90,
+) -> dict | None:
+    """Track efficiency factor (NP / avg HR) drift over time.
+
+    EF rising = more power at the same HR = aerobic fitness improvement.
+    A consistent 3-5% rise in EF over 30d is ~equivalent to a 3-5% FTP
+    rise, even without any explicit FTP test. This is the key method
+    for tracking fitness drift from endurance / sweet-spot training
+    alone (no tests required).
+
+    Returns {"recent_ef": float, "baseline_ef": float, "delta_pct": float,
+             "implied_ftp_change_pct": float, "n_recent": int, ...}
+    """
+    recent_cutoff = today - timedelta(days=recent_days)
+    baseline_cutoff = today - timedelta(days=baseline_days)
+
+    def _ef(a: dict) -> float | None:
+        np = a.get("normPower") or a.get("avgPower")
+        hr = a.get("averageHR")
+        dur = a.get("duration") or 0
+        # Only count rides with reliable data: ≥30 min, HR present
+        if not (np and hr and dur >= 1800 and hr >= 100):
+            return None
+        return np / hr
+
+    recent_efs = []
+    baseline_efs = []
+    for a in activities:
+        ad = _parse_activity_date(a)
+        if not ad:
+            continue
+        ef = _ef(a)
+        if ef is None:
+            continue
+        if ad >= recent_cutoff:
+            recent_efs.append(ef)
+        elif ad >= baseline_cutoff:
+            baseline_efs.append(ef)
+
+    if len(recent_efs) < 3 or len(baseline_efs) < 3:
+        return None
+
+    recent_ef = statistics.median(recent_efs)
+    baseline_ef = statistics.median(baseline_efs)
+    delta_pct = ((recent_ef - baseline_ef) / baseline_ef) * 100
+
+    return {
+        "recent_ef": round(recent_ef, 3),
+        "baseline_ef": round(baseline_ef, 3),
+        "recent_n": len(recent_efs),
+        "baseline_n": len(baseline_efs),
+        "recent_window_days": recent_days,
+        "baseline_window_days": baseline_days,
+        "delta_pct": round(delta_pct, 1),
+        "implied_ftp_change_pct": round(delta_pct, 1),
+        "interpretation": (
+            "Rising EF = more power at same HR = fitness improving. "
+            "A 3-5% rise suggests a similar % rise in FTP, even without "
+            "explicit testing."
+        ),
+    }
+
+
+def power_duration_curve(activities: list[dict], today: date,
+                         window_days: int = 90) -> dict | None:
+    """Build the 90-day power-duration curve.
+
+    For each standard duration bucket (5/10/20/30/40/60 min), finds the
+    best IF-scaled power across all rides in the window. Returns the
+    full curve plus a timestamp/source for each point.
+
+    Useful for:
+      - Spotting durations where fitness has drifted up (new peaks)
+      - Providing per-duration evidence to the CP fit
+      - Surfacing "you're getting stronger at [duration]" insights
+    """
+    cutoff = today - timedelta(days=window_days)
+    duration_keys = [
+        (300, "maxAvgPower_300"),
+        (600, "maxAvgPower_600"),
+        (1200, "maxAvgPower_1200"),
+        (1800, "maxAvgPower_1800"),
+        (2400, "maxAvgPower_2400"),
+        (3600, "maxAvgPower_3600"),
+    ]
+
+    # For each duration, track the best IF-scaled peak + its source ride.
+    best_for_dur: dict[int, tuple[float, dict, float, bool]] = {}
+    # Value: (scaled_power, source_ride, raw_power, was_scaled)
+
+    for a in activities:
+        ad = _parse_activity_date(a)
+        if not ad or ad < cutoff:
+            continue
+        ride_if = a.get("intensityFactor")
+        for t_sec, key in duration_keys:
+            raw = a.get(key)
+            if not raw or raw <= 0:
+                continue
+            scaled, was_scaled = _scale_peak_by_if(raw, ride_if, t_sec)
+            prev = best_for_dur.get(t_sec)
+            if prev is None or scaled > prev[0]:
+                best_for_dur[t_sec] = (scaled, a, raw, was_scaled)
+
+    if len(best_for_dur) < 3:
+        return None
+
+    curve = []
+    for t_sec in sorted(best_for_dur.keys()):
+        scaled, src, raw, was_scaled = best_for_dur[t_sec]
+        sd = _parse_activity_date(src)
+        curve.append({
+            "duration_min": t_sec // 60,
+            "power_w": round(scaled),
+            "raw_power_w": round(raw),
+            "if_scaled": was_scaled,
+            "source_activity": src.get("activityName", "?"),
+            "source_if": round(src.get("intensityFactor") or 0, 2),
+            "days_ago": (today - sd).days if sd else None,
+        })
+    return {
+        "window_days": window_days,
+        "curve": curve,
     }
 
 
@@ -1047,16 +1203,55 @@ def bike_ftp_methods(
     spread = _spread(all_vals)
     flag = _flag_from_spread(methods, garmin_bike_ftp, large_spread_threshold=10.0)
 
+    # IF-weighted consensus: pair each method's value with an estimated
+    # source IF. Methods derived from high-IF sessions (race, FTP test)
+    # weight more than those from low-IF sessions (endurance, tempo).
+    # For Garmin's reported value we use 1.0 (trust its own process).
+    method_ifs: list[tuple[float, float]] = []
+    for m in methods:
+        if m.get("value") is None:
+            continue
+        name = m.get("name", "")
+        # Assign a source IF per method name. Numbers chosen to roughly
+        # reflect the evidence quality each method is built on.
+        if name == "garmin":
+            src_if = 1.0  # trust Garmin's own internal reasoning
+        elif name == "critical_power_fit":
+            src_if = 0.95  # mathematical fit, high-quality evidence
+        elif name == "tte_adjusted_ftp":
+            src_if = 0.90  # based on 20-min + 60-min bests
+        elif name == "best_60min_power_if_scaled":
+            src_if = 0.88  # depends on whether 60-min source was threshold
+        elif name == "top_20pct_of_20min_peaks":
+            src_if = 0.85  # robust but doesn't know what each session was
+        elif name == "np_if_scaled_long_effort":
+            src_if = 0.80  # least direct — NP from endurance rides
+        else:
+            src_if = 0.75
+        method_ifs.append((m["value"], src_if))
+    weighted_consensus = if_weighted_median(method_ifs)
+
+    # Efficiency factor trend — tracks whether your Z2/endurance rides
+    # show rising aerobic fitness even without an explicit test.
+    ef_trend = efficiency_factor_trend(ride_activities, today)
+
+    # Full 90-day power-duration curve — shows where fitness is peaking
+    # vs. where it's thin.
+    pd_curve = power_duration_curve(ride_activities, today, window_days=90)
+
     return {
         "garmin_value": garmin_bike_ftp,
         "methods": methods,
         "consensus": consensus,
+        "if_weighted_consensus": round(weighted_consensus) if weighted_consensus else None,
         "confidence_interval_80pct": list(ci) if ci else None,
         "ci_note": ci_note,
         "spread": spread,
         "flag": flag,
         "clean_rides_used": len(clean_rides),
         "total_rides_evaluated": len(ride_activities),
+        "fitness_drift": ef_trend,
+        "power_duration_curve_90d": pd_curve,
     }
 
 

@@ -61,8 +61,10 @@ Key session this week: {workout + when}. Next quality window: {day}.
 - {Gap/risk trend — keep honest}
 
 Baseline: {from get_athlete_baseline — VO2max run/bike · run FTP W (W/kg) · LT HR (with LT1 aerobic if analyzing Z2 work) · bike FTP W · CSS sec/100m · endurance score (class) · hill score (class).
+- For bike FTP, prefer multi_method.bike_ftp.if_weighted_consensus over consensus (weights high-IF evidence more).
 - If multi_method.*.flag is non-null for any threshold, append "⚠️ {flag}" inline with that metric.
-- If key_session_counts shows e.g. <3 key rides or <2 key runs, note "baseline from limited key sessions — consider scheduling a test."
+- If multi_method.bike_ftp.fitness_drift has delta_pct ≥ +2%, note "bike fitness trending up {X}% over last 30d (EF-based, no test needed)". If ≤ -2%, flag as "fitness trending down {X}%".
+- If key_session_counts shows <3 key rides or <2 key runs, note "baseline from limited key sessions — consider scheduling a test."
 - Flag any staleness_days field >14 days with "(N days old — may not reflect current fitness)".}
 ```
 

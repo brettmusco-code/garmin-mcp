@@ -1,5 +1,3 @@
-## Skill config for claude.ai
-
 **Name:** `weekly`
 
 **Description:** Sunday review — volume, intensity, load trajectory, next-week plan, and macro targets
@@ -65,6 +63,8 @@ Scheduled: {summary}. Planned load: {TSS estimate}. Key session: {which + why}. 
 - Endurance {prev → curr} ({±}), VO2max {prev → curr}, hill {prev → curr}
 - Race: 5K {prev→curr}, 10K {prev→curr}, half {prev→curr}, mar {prev→curr}
 - Multi-method check: {for each multi_method.*.flag that fires, a 1-line call-out. Also note consensus CI if tight (spread <3% of value) vs wide (spread >10% of value). Wide CI = uncertain baseline = a field test would materially improve precision.}
+- Bike fitness drift: {from multi_method.bike_ftp.fitness_drift — if delta_pct ≥ 2%, report "efficiency rising {X}% (recent vs 90d baseline, N rides) — threshold capability likely up {X}%, no test needed." If ≤ -2%, flag fatigue/regression. If <2% absolute, "stable."}
+- Power-duration spotlight: {from multi_method.bike_ftp.power_duration_curve_90d.curve — pick the duration where the best effort is most recent (smallest days_ago). "Strongest recent peak: {N}min @ {P}W from {activity_name} ({days_ago}d ago)."}
 - Key session density: {from key_session_counts — "{run_key}/{run_total} key runs, {bike_key}/{bike_total} key rides, {swim_key}/{swim_total} key swims in last 90d". Flag if any sport <3 key sessions — baseline from that sport is under-supported.}
 - {1-line verdict on where training is heading}
 ```
