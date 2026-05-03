@@ -74,9 +74,9 @@ Read: {base-heavy / tempo-heavy / VO2-heavy / spiky}
 - {Session 2 — same}
 - {Session 3 — same}
 
-**Adherence:** {planned N sessions → executed M. Note any missed}.
-**Worked:** {2 specific observations}
-**Drifted:** {2 specific observations}
+- **Adherence:** {planned N sessions → executed M. Note any missed}.
+- **Worked:** {2 specific observations}
+- **Drifted:** {2 specific observations}
 
 ## What Changed vs Last Week
 - {Delta 1: concrete number from prior /weekly snapshot. e.g., "Bike FTP consensus 323W → 325W (+2W)"}
@@ -86,12 +86,11 @@ Read: {base-heavy / tempo-heavy / VO2-heavy / spiky}
 
 ## 📈 Fitness Trajectory (4 weeks)
 - Per-sport key metrics with 4-week prev → curr Δ:
-  - Run: VDOT {prev → curr} ({±}), best 5K split {prev → curr}, weekly miles avg {prev → curr}
-  - Bike: FTP consensus {prev → curr} ({±W}), EF drift {±%}, best 20-min peak {prev → curr}
-  - Swim: CSS {prev → curr} ({±s/100m}), best 1000m {prev → curr}
-- Race predictions: 5K {prev→curr}, 10K {prev→curr}, half {prev→curr}, mar {prev→curr}
-- Multi-method flags (if any from `multi_method.*.flag`)
-- Key-session density: run {run_key}/{run_total}, bike {bike_key}/{bike_total}, swim {swim_key}/{swim_total} in last 90d. Flag any sport with <3 key sessions — baseline from that sport is under-supported.
+  - **Run:** VDOT {prev → curr} ({±}), weekly miles avg {prev → curr}
+  - **Bike:** FTP consensus {prev → curr} ({±W}), EF drift {±%}, best 20-min peak {prev → curr}
+  - **Swim:** CSS {prev → curr} ({±s/100m}), best 1000m {prev → curr}
+- **Race predictions:** 5K {prev→curr}, 10K {prev→curr}, half {prev→curr}, mar {prev→curr}
+- **Multi-method flags:** (if any from `multi_method.*.flag`)
 - 1-line verdict on trajectory.
 
 ## 🏁 Race Countdown — {Event Name} ({target distance}, {YYYY-MM-DD})
@@ -99,26 +98,42 @@ Read: {base-heavy / tempo-heavy / VO2-heavy / spiky}
 
 - {N} weeks out.
 - Current prediction from baseline: {time}. Goal time (from memory): {time}. Gap: {±Xs}.
-- Race-specific fitness needed: {based on distance — for a half-mar: threshold pace + 90min endurance; for a half-IM: bike FTP + run 90min off bike; etc.}
-- What this week's training contributed to the goal: {concrete}.
-- Next week's priority for race prep: {single focus}.
-- Taper start: {date — typically 2-3 weeks out for half, 3 weeks for marathon/half-IM}.
+- **Race-specific fitness needed:** {based on distance — for a half-mar: threshold pace + 90min endurance; for a half-IM: bike FTP + run 90min off bike; etc.}
+- **What this week's training contributed to the goal:** {concrete}.
+- **Next week's priority for race prep:** {single focus}.
+- **Taper start:** {date — typically 2-3 weeks out for half, 3 weeks for marathon/half-IM}.
 
 ## 🔋 HRV-Guided Readiness Forecast
-- This week's avg HRV: {n} (prior week avg: {n}, trajectory {±}).
-- Baseline weekly HRV: {from baseline context or 30d avg}.
+- **Avg HRV:** {n} (prior week avg: {n}, trajectory {±}).
+- **Baseline weekly HRV:** {from baseline context or 30d avg}.
 - **Key session prediction:** {hardest scheduled workout this week, and its projected readiness}. Based on HRV trajectory + last 2 nights' deep sleep + recovery time drift. "Project readiness {n}/100 by {day}. GO if it lands ≥60 AND HRV holds ≥{n}, MODIFY if 40-60, SWAP if <40."
-- Sleep-training coupling: {correlation or note — "sleep duration dropped with load rise this week" is actionable}.
+- **Sleep-training coupling:** {correlation or note — "sleep duration dropped with load rise this week" is actionable}.
 
 ## 🍽️ Nutrition — Last Week Review + Next Week Plan
 
-**Review of last 7 days** (from cached nutrition_food_log):
-- Avg daily intake: {kcal} · P {g} / C {g} / F {g}
-- Avg daily expenditure: {BMR + session kcal from activities}
-- Avg daily delta: {±n kcal/day}. Weekly total: {±n kcal}.
-- Protein target hit: {M/7 days at ≥1.6 g/kg}. Carbs: {under/met/over on hard days}.
-- Days logged: {n/7}. If <4 days logged, flag and note the plan relies on assumed intake.
-- **Goal alignment:** {from project memory goal — did last week's delta move me toward target? e.g., "goal: lose 2kg by 7/4. Required weekly deficit: 2000 kcal. Actual: -1400. Off-pace by 600/wk — need +85 kcal/day deficit OR add 1 hard session."}
+**Review of last 7 days** — read from `nutrition_food_log` at these exact paths:
+- **Consumed:** `nutrition_food_log[date].dailyNutritionContent` → `.calories`, `.protein`, `.carbs`, `.fat` (all grams except kcal)
+- **Garmin target:** `nutrition_food_log[date].dailyNutritionGoals.adjustedCalories` (adjusted for that day's activity)
+- **Foods logged count:** `len(nutrition_food_log[date].loggedFoodsWithServingSizes)` — if 0, treat the day as unlogged even if dailyNutritionContent has zero values
+
+For each day in the last 7: extract consumed kcal/P/C/F. Days with 0 foods logged OR missing dailyNutritionContent → flag as "not logged."
+
+Report as a table:
+
+| Date | Foods | Consumed kcal | Goal kcal | P / C / F (g) | Delta |
+|---|---|---|---|---|---|
+| Mon | {n} | {n or "—"} | {goal} | {P/C/F} | {consumed − goal} |
+| ... | | | | | |
+
+Then synthesize:
+- **Days logged:** {n/7}. If <4, flag and note the plan relies on assumed intake for the remaining days.
+- **Avg daily intake (logged days only):** {kcal} · P {g} / C {g} / F {g}
+- **Avg daily expenditure:** {BMR + session kcal from activities}. BMR estimate: Mifflin-St Jeor (weight_kg × 10 + height_cm × 6.25 − age × 5 + 5 for male / −161 for female). If height/age unknown, use a default of BMR ≈ weight_kg × 22 for endurance athletes.
+- **Avg daily delta:** {intake − expenditure}. Weekly total delta: {sum}.
+- **Protein target hit:** {M/N logged days at ≥1.6 g/kg of baseline.weight_kg}.
+- **Carb adequacy on hard days:** for each day with a hard session, did carbs meet 5-7 g/kg? List any that fell short.
+- **Goal alignment:** from project memory weight goal. If "lose 2kg by DATE": required weekly deficit = (2 × 7700 / weeks_remaining). Compare to actual weekly delta. Report as: "Required: -N kcal/wk. Actual: -N kcal/wk. Off-pace by N — need +X kcal/day deficit OR +Y min extra Z2."
+- **Under-logging suspicion:** if a day shows consumed kcal < 1200 AND ≥1hr of hard training that day, flag as "likely under-logged — missed meals/snacks." Don't let those days bias the avg downward.
 
 **Next 7 days:**
 Check project instructions for my current weight goal. If the goal is older than 4 weeks, appears met/expired, or target date passed, ask me to confirm before using it. If no goal is set, ask.
@@ -134,6 +149,7 @@ For each scheduled workout this week: filter `get_activities` (last 90d) to matc
 Carb ratio C: 3 g/kg rest · 4 g/kg easy · 5-6 g/kg tempo/SST · 7-8 g/kg threshold/VO2 or ride >2h.
 
 **Weekly totals:** {sum target intake · sum protein · sum carbs} vs goal-required sum. Flag if off by >10%.
+
 
 **Fueling windows** (any session ≥75min or ≥Z3): pre 40-60g carbs 60-90min prior; during 30-60g carbs/hr; post 20-30g protein + 50-70g carb within 60min.
 
