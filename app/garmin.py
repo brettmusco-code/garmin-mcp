@@ -1095,10 +1095,10 @@ def analyze_sleep_trend(enddate: str | date, days: int = 30) -> dict[str, Any]:
 
 
 def get_athlete_baseline(force_refresh: bool = False) -> dict[str, Any]:
-    """Current physiology snapshot, derived from the freshest Garmin data
-    available. Replaces hardcoded VO2max/FTP/LT values in project
-    instructions — skills call this at the top of their data-gather step
-    so baselines are always current rather than stale.
+    """Current physiology snapshot with multi-method threshold cross-
+    validation. Computed once/night by daily_refresh.py and served from
+    R2 during skill invocations so /morning, /weekly, /session-review
+    return in <1s instead of 10-15s.
 
     Aggregates:
       - VO2max (run + bike) from max_metrics
@@ -1106,17 +1106,42 @@ def get_athlete_baseline(force_refresh: bool = False) -> dict[str, Any]:
       - Endurance + hill scores from training_score
       - Weight from body_composition
       - Race predictions (5K/10K/half/marathon)
-      - Staleness days per field so callers know how fresh each value is
-      - Derived W/kg and inferred cycling FTP
+      - Sport-specific 90-day fitness (run/bike/swim)
+      - Multi-method threshold analysis with CI, flags, LT1 derivation
+      - staleness_days per field
 
-    Cached 6h (refreshed every few /morning calls). Pass force_refresh=true
-    to bypass.
+    Caching:
+      - Under GARMIN_READONLY=true (web service): always serves from R2,
+        NEVER attempts live Garmin calls. Returns whatever's there even
+        if technically stale.
+      - Under normal mode (nightly Action): TTL is 36h so nightly can
+        drift a few hours late without causing a recompute. Pass
+        force_refresh=true (as the nightly does) to bypass and rebuild.
     """
     cache_args = {"v": 2}  # bump when baseline schema changes
     key_parts = ["latest"]
+
+    # Readonly mode: always serve from R2. Never attempt live Garmin
+    # calls — this is the web MCP path. If cache is genuinely empty,
+    # return a clear error payload instead of a misleading partial.
+    if READONLY_MODE:
+        hit = cache.get("athlete_baseline", cache_args, key_parts=key_parts,
+                        ttl_seconds=IMMUTABLE_TTL)
+        if hit is not None:
+            return hit
+        return {
+            "error": (
+                "No baseline in cache yet. The nightly refresh job computes "
+                "this — if it failed or hasn't run since deploy, trigger "
+                "daily-refresh from GitHub Actions."
+            ),
+            "as_of": date.today().isoformat(),
+        }
+
+    # Live mode (nightly Action): 36h TTL unless force_refresh=true.
     if not force_refresh:
         hit = cache.get("athlete_baseline", cache_args, key_parts=key_parts,
-                        ttl_seconds=6 * 3600)
+                        ttl_seconds=36 * 3600)
         if hit is not None:
             return hit
 

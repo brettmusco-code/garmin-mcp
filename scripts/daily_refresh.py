@@ -234,11 +234,40 @@ def main() -> int:
             break
     print()
 
+    # ---------- [6/6] athlete baseline ----------
+    # All the inputs it depends on (daily summaries, activities,
+    # training scores, race predictions, lactate threshold) were just
+    # refreshed above. Compute the consolidated baseline + multi-method
+    # threshold analysis once, here, so skill invocations on the web MCP
+    # can serve it from cache in <1s instead of recomputing (~14s).
+    print("[6/6] athlete_baseline — compute + cache consolidated baseline")
+    try:
+        baseline = garmin.get_athlete_baseline(force_refresh=True)
+        mm = baseline.get("multi_method", {}) or {}
+        flags = {k: v.get("flag") for k, v in mm.items() if v.get("flag")}
+        if flags:
+            print(f"  computed — {len(flags)} disagreement flags:")
+            for metric, flag_text in flags.items():
+                print(f"    {metric}: {flag_text[:120]}")
+        else:
+            print(f"  computed — no threshold disagreements flagged")
+        ksc = baseline.get("key_session_counts", {})
+        if ksc:
+            print(f"  key sessions: run {ksc.get('run_key')}/{ksc.get('run_total')}, "
+                  f"bike {ksc.get('bike_key')}/{ksc.get('bike_total')}, "
+                  f"swim {ksc.get('swim_key')}/{ksc.get('swim_total')}")
+    except Exception as ex:  # noqa: BLE001
+        print(f"  ERROR: {str(ex)[:200]}", file=sys.stderr)
+        if is_rate_limit(ex):
+            print("  (non-fatal — web MCP will serve previous day's baseline)", file=sys.stderr)
+    print()
+
     # ---------- summary ----------
     print("Cache totals:")
     for tool in ("daily_summary", "activities_month", "calendar_month",
                  "workout_by_id", "race_predictions", "lactate_threshold",
-                 "training_score", "personal_records", "body_composition"):
+                 "training_score", "personal_records", "body_composition",
+                 "athlete_baseline"):
         count = cache.count_keys(tool_prefix=tool)
         print(f"  {tool}: {count}")
 

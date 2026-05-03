@@ -90,6 +90,17 @@ def main() -> int:
     except Exception as ex:  # noqa: BLE001
         print(f"  ERROR: {str(ex)[:200]}", file=sys.stderr)
 
+    # Refresh athlete baseline — new activities in the last hour may
+    # shift thresholds (e.g. a hard interval session boosts the recency-
+    # weighted 20-min power candidate). Cheap because most underlying
+    # data is already cached from steps 1-3 above.
+    print("[4/4] athlete_baseline — recompute with fresh activity data")
+    try:
+        garmin.get_athlete_baseline(force_refresh=True)
+        print("  ok")
+    except Exception as ex:  # noqa: BLE001
+        print(f"  ERROR: {str(ex)[:200]}", file=sys.stderr)
+
     return 0
 
 
