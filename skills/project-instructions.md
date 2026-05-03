@@ -45,6 +45,37 @@ fresh each value is — flag any baseline >14 days old.
 - Lose Xkg by Y-date: compute weeks remaining, daily deficit = (X × 7700 / weeks) / 7. Cap at 500 kcal/day. Never drop below BMR × 1.2. Protein 1.8-2.0 g/kg.
 - Gain: +300-500 kcal/day, carb-led, protein 1.6-1.8 g/kg.
 
+## Race target (for countdown + race-specific analysis)
+
+**Current race target:** {RACE-TARGET — update when registered/changed. Example: "Patriot Half (70.3, 2026-06-15), goal sub-5:30" or "none — base training only".}
+
+**Race priorities within the year:** {optional list of A-race / B-race ordering}
+
+**Review triggers — ask me to confirm/update if:**
+- The target race date has passed
+- Less than 4 weeks remain and no recent mention of the race in conversation
+- A new race has been hinted at in conversation but not recorded here
+
+## Prior weekly snapshot (for WHAT CHANGED trajectory comparison)
+
+Each time the `/weekly` skill runs, it ends with a "Save for next week" JSON block. Copy that block here, replacing the previous week's snapshot, so the next `/weekly` run can compute deltas.
+
+**Last weekly snapshot:**
+```json
+{
+  "date": null,
+  "bike_ftp_consensus": null,
+  "run_vdot": null,
+  "css_sec_per_100m": null,
+  "weekly_km": {"bike": null, "run": null, "swim": null},
+  "ctl": null, "atl": null, "tsb": null,
+  "race_predictions": {},
+  "hrv_avg": null,
+  "avg_daily_kcal_intake": null,
+  "weekly_kcal_delta": null
+}
+```
+
 ## Multi-sport context
 
 I'm a triathlete (cycling-heavy base with running and swimming). The
