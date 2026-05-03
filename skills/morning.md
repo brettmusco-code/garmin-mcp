@@ -12,7 +12,7 @@ Generate a daily training summary. Depth where it matters, tight everywhere else
 
 **Data to pull (in parallel where possible):**
 1. `get_athlete_baseline` — pre-computed nightly (returns in ~300ms). Includes VO2max, LT HR, FTP, race predictions, per-sport fitness (90-day window), multi-method thresholds with flags and CI, LT1 aerobic threshold, staleness_days, key_session_counts. Use this for every physiology reference — never hardcode numbers.
-2. `get_daily_summaries` for the last 2 days with metrics `[training_readiness, hrv, rhr, sleep, stats_and_body, training_status, morning_readiness, body_battery_events, nutrition_food_log, nutrition_meals]`. If any metric returns an error for TODAY specifically, that means the morning refresh job hit a Garmin rate limit — note "⚠️ Today's {metric} unavailable (Garmin rate-limited refresh)" in the Recovery section and use YESTERDAY's end-of-day values as your best proxy. Do NOT invent today's values.
+2. `get_daily_summaries` for the last 2 days with metrics `[training_readiness, hrv, rhr, sleep, stats_and_body, training_status, morning_readiness, body_battery_events, nutrition_food_log, nutrition_meals]`. If any metric returns an error, omit and note "not available" inline — don't let it fail the whole summary.
 3. `get_activities` for today - 3 → today (catches yesterday + today).
 4. `get_scheduled_workouts` today → today + 7.
 5. For today's scheduled workout: call `get_workout_by_id(workoutId)` to get actual interval structure — don't infer from title.
@@ -32,7 +32,7 @@ Use this structure literally. Section headers as H2 (##), bullets as `-`.
 ## Recovery: {🟢 READY / 🟡 CAUTION / 🔴 REST} ({readiness}/100)
 
 - HRV {n}, sleep {h}h/{score}, RHR {bpm}{, body battery trend if notable}
-- Recovery time: {h}h remaining — {what it means for today}
+- Recovery time: {training_readiness.recoveryTime / 60}h remaining — {interpretation}  *(Garmin's recoveryTime is in MINUTES; always divide by 60. Never report raw minutes as "hours".)*
 - Limiting factor: {lowest readiness contributor with %}
 
 ## Yesterday
@@ -61,10 +61,8 @@ Key session this week: {workout + when}. Next quality window: {day}.
 - {Gap/risk trend — keep honest}
 
 Baseline: {from get_athlete_baseline — VO2max run/bike · run FTP W (W/kg) · LT HR (with LT1 aerobic if analyzing Z2 work) · bike FTP W · CSS sec/100m · endurance score (class) · hill score (class).
-- For bike FTP, prefer multi_method.bike_ftp.if_weighted_consensus over consensus (weights high-IF evidence more).
 - If multi_method.*.flag is non-null for any threshold, append "⚠️ {flag}" inline with that metric.
-- If multi_method.bike_ftp.fitness_drift has delta_pct ≥ +2%, note "bike fitness trending up {X}% over last 30d (EF-based, no test needed)". If ≤ -2%, flag as "fitness trending down {X}%".
-- If key_session_counts shows <3 key rides or <2 key runs, note "baseline from limited key sessions — consider scheduling a test."
+- If key_session_counts shows e.g. <3 key rides or <2 key runs, note "baseline from limited key sessions — consider scheduling a test."
 - Flag any staleness_days field >14 days with "(N days old — may not reflect current fitness)".}
 ```
 
@@ -72,7 +70,6 @@ Baseline: {from get_athlete_baseline — VO2max run/bike · run FTP W (W/kg) · 
 
 - **Render as chat with markdown headings, NOT a code block. No wrapping triple-backticks.**
 - Commit to a verdict. No hedging.
-- Before writing the "Yesterday" section, verify the activities you're describing are from YESTERDAY (today - 1). Do NOT conflate days. If the skill invocation runs on Sunday, "yesterday" is Saturday, NOT Friday. Reference today's actual date from the data tools, not memory.
 - Skip boring/normal metrics — only include what moves the read.
 - Derive pacing targets from baseline values returned by get_athlete_baseline (LT HR, run FTP, VDOT, bike FTP inferred). Never echo Garmin's generic zones.
 - Prefer `ambient_weather` over Garmin's watch weather.
