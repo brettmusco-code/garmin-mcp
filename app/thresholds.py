@@ -275,6 +275,125 @@ def aerobic_decoupling_clean(a: dict) -> bool:
     return True
 
 
+def _scale_peak_by_if(peak: float, ride_if: float | None,
+                      duration_s: int) -> tuple[float, bool]:
+    """Scale a rolling-best power peak to its threshold-equivalent when
+    the whole session was ridden at sweet-spot / sub-threshold intensity.
+
+    Rationale: a 20-min peak within a sweet-spot session at IF 0.88 is
+    probably only slightly above the session's IF — the rider isn't
+    doing a hidden VO2max effort within a sweet-spot block. Without
+    scaling, we'd treat the 20-min peak as threshold-level when it's
+    actually sub-threshold.
+
+    Scaling rule: if ride IF < 0.95, scale peak UP by (0.95 / IF).
+    Cap scaling at 15% to avoid absurd inferences from mis-calibrated IF.
+
+    Duration matters: for very short intervals (≤5 min), the peak is
+    typically well above the session IF regardless (VO2max efforts
+    appear in any ride). Don't scale those.
+
+    Returns (scaled_peak, was_scaled).
+    """
+    if ride_if is None or ride_if >= 0.95:
+        return peak, False
+    if duration_s <= 300:  # 5 min or less: peak is intensity-independent
+        return peak, False
+    if ride_if < 0.70:  # recovery or easy — peaks aren't threshold signals
+        return peak, False
+    scaler = 0.95 / ride_if
+    scaler = min(scaler, 1.15)  # cap 15% upscale
+    return peak * scaler, True
+
+
+def critical_power_fit(activities: list[dict]) -> dict | None:
+    """Fit the Monod-Scherrer critical power model across multiple
+    activities: P(t) = CP + W' / t, where t is in seconds.
+
+    Uses rolling-best power for several time buckets from each ride,
+    IF-scaled for sub-threshold sessions. Then fits CP across all of
+    them. CP is directly interpretable as sustainable power (≈ FTP).
+
+    Key insight: when a ride's overall IF is 0.88 (sweet spot), its
+    20-min peak might be ~295W but the equivalent THRESHOLD 20-min
+    would be ~310W. Scale peaks by IF before fitting to avoid
+    systematically under-estimating FTP from sub-threshold sessions.
+
+    Returns {"cp": W, "w_prime": J, "n_points": n, "source": ...} or None.
+    """
+    duration_keys = [
+        (300, "maxAvgPower_300"),
+        (600, "maxAvgPower_600"),
+        (1200, "maxAvgPower_1200"),
+        (1800, "maxAvgPower_1800"),
+        (2400, "maxAvgPower_2400"),
+        (3600, "maxAvgPower_3600"),
+    ]
+    # Points with IF-scaling applied so sub-threshold sessions contribute
+    # their threshold-equivalent peak rather than the raw sub-threshold.
+    points: list[tuple[int, float]] = []
+    scaled_count = 0
+    for a in activities:
+        ride_if = a.get("intensityFactor")
+        for t_sec, key in duration_keys:
+            p = a.get(key)
+            if p and p > 0:
+                scaled_p, was_scaled = _scale_peak_by_if(p, ride_if, t_sec)
+                if was_scaled:
+                    scaled_count += 1
+                points.append((t_sec, scaled_p))
+    if len(points) < 3:
+        return None
+
+    best_by_dur: dict[int, float] = {}
+    for t, p in points:
+        if p > best_by_dur.get(t, 0):
+            best_by_dur[t] = p
+
+    # Drop the very short (5-10 min) buckets if longer ones exist —
+    # short-duration power is VO2max-limited, not threshold-limited, and
+    # pulls the CP fit upward. Keep only 20+ min for FTP estimation.
+    long_points = [(t, p) for t, p in best_by_dur.items() if t >= 1200]
+    if len(long_points) < 2:
+        # Fall back to all points if we don't have enough long ones
+        long_points = list(best_by_dur.items())
+        if len(long_points) < 2:
+            return None
+
+    # Two-parameter linear regression: P = CP + W' * (1/t)
+    # Rewrite as y = a + b*x where y = P, x = 1/t, a = CP, b = W'
+    xs = [1.0 / t for t, _ in long_points]
+    ys = [p for _, p in long_points]
+    n = len(xs)
+    x_mean = sum(xs) / n
+    y_mean = sum(ys) / n
+    num = sum((x - x_mean) * (y - y_mean) for x, y in zip(xs, ys))
+    den = sum((x - x_mean) ** 2 for x in xs)
+    if den == 0:
+        return None
+    w_prime = num / den
+    cp = y_mean - w_prime * x_mean
+
+    # Sanity: CP must be positive and below the shortest-duration best
+    if cp <= 0 or cp > max(p for _, p in long_points):
+        return None
+
+    sorted_buckets = sorted(long_points)
+    return {
+        "cp": round(cp),
+        "w_prime_joules": round(w_prime),
+        "n_points": len(long_points),
+        "buckets_used_s": [t for t, _ in sorted_buckets],
+        "best_powers_used": {f"{t//60}min": round(p) for t, p in sorted_buckets},
+        "scaled_peaks": scaled_count,
+        "source": (
+            f"Monod-Scherrer CP fit across {len(long_points)} duration "
+            f"buckets (IF-scaled): " +
+            ", ".join(f"{t//60}min={round(p)}W" for t, p in sorted_buckets)
+        ),
+    }
+
+
 def tte_adjusted_ftp(activities: list[dict]) -> dict | None:
     """Time-to-exhaustion adjusted FTP for cycling.
 
@@ -284,24 +403,28 @@ def tte_adjusted_ftp(activities: list[dict]) -> dict | None:
     reduction). If you've barely held 85% of 20-min best for 40 min, TTE
     is shorter and 0.95 overestimates FTP.
 
+    Peaks are IF-scaled: if the ride they came from was sub-threshold
+    overall, scale up to the threshold-equivalent power.
+
     Returns {"ftp": w, "tte_minutes": n, "source": str} or None if we
     lack the data.
     """
-    best_20min = max(
-        (a.get("maxAvgPower_1200") for a in activities if a.get("maxAvgPower_1200")),
-        default=None,
-    )
+    # IF-scaled best at each duration
+    def _if_scaled_max(key: str, duration_s: int) -> float | None:
+        vals = []
+        for a in activities:
+            p = a.get(key)
+            if not p:
+                continue
+            scaled, _ = _scale_peak_by_if(p, a.get("intensityFactor"), duration_s)
+            vals.append(scaled)
+        return max(vals) if vals else None
+
+    best_20min = _if_scaled_max("maxAvgPower_1200", 1200)
     if not best_20min:
         return None
-
-    best_40min = max(
-        (a.get("maxAvgPower_2400") for a in activities if a.get("maxAvgPower_2400")),
-        default=None,
-    )
-    best_60min = max(
-        (a.get("maxAvgPower_3600") for a in activities if a.get("maxAvgPower_3600")),
-        default=None,
-    )
+    best_40min = _if_scaled_max("maxAvgPower_2400", 2400)
+    best_60min = _if_scaled_max("maxAvgPower_3600", 3600)
 
     # Ratio of best 60-min to best 20-min tells us TTE profile.
     if best_60min:
@@ -806,6 +929,54 @@ def bike_ftp_methods(
             "confidence": "high",
             "source": tte["source"],
             "notes": f"TTE {tte['tte_minutes']} min. Adjusts Coggan reducer based on actual power-duration profile.",
+        })
+
+    # Method 2.5: Critical Power model fit across multiple ride durations.
+    # Uses Garmin's rolling-best power arrays (best 5/10/20/30/40/60 min
+    # WITHIN each ride) across all clean recent rides. Captures the true
+    # sub-interval peak power at each duration regardless of whether the
+    # session overall was at threshold or sweet spot.
+    cp_fit = critical_power_fit(clean_rides)
+    if cp_fit:
+        methods.append({
+            "name": "critical_power_fit",
+            "value": cp_fit["cp"],
+            "delta_vs_garmin": round(cp_fit["cp"] - garmin_bike_ftp) if garmin_bike_ftp else None,
+            "confidence": "high",
+            "source": cp_fit["source"],
+            "notes": (
+                f"Monod-Scherrer CP model. W' = {cp_fit['w_prime_joules']}J. "
+                "Uses sub-intervals, not whole-session averages — immune to "
+                "the sweet-spot-ride-mislabeled-as-FTP problem."
+            ),
+        })
+
+    # Method 2.6: Best 20-min power across multiple sessions — 80th
+    # percentile rather than single max. Captures robust threshold
+    # capability even if a couple of rides had outlier spikes.
+    all_20min = sorted(
+        (a.get("maxAvgPower_1200") for a in clean_rides if a.get("maxAvgPower_1200")),
+        reverse=True,
+    )
+    if len(all_20min) >= 3:
+        # Take the 80th percentile of top values — robust to outliers
+        # but still represents peak capability. Index: 80% from top.
+        idx = max(0, int(len(all_20min) * 0.2))
+        p80 = all_20min[idx]
+        coggan_p80 = round(p80 * 0.95)
+        methods.append({
+            "name": "top_20pct_of_20min_peaks",
+            "value": coggan_p80,
+            "delta_vs_garmin": round(coggan_p80 - garmin_bike_ftp) if garmin_bike_ftp else None,
+            "confidence": "medium",
+            "source": (
+                f"80th percentile of {len(all_20min)} rides' best 20-min "
+                f"power ({round(p80)}W) × 0.95 = {coggan_p80}W"
+            ),
+            "notes": (
+                "Robust to outliers — if one ride had a 20-min spike that "
+                "wasn't a genuine test, this method isn't skewed by it."
+            ),
         })
 
     # Method 3: Best 60-min power — scaled up to FTP-equivalent by the
