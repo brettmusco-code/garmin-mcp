@@ -1,28 +1,28 @@
-"""Multi-method threshold and VO2max estimation with key-session filtering.
+"""Multi-method threshold and VO2max estimation.
 
-Thresholds (FTP, LT HR, VO2max, CSS) should reflect what you can do on a
-hard, focused effort — not the average of every activity. A 5-min power
-spike during a recovery ride or a fast 1-km split in an easy run isn't
-a real performance test; including those data points pollutes the
-estimate.
+Garmin exposes single point estimates for VO2max, LT HR, FTP, CSS. These
+can drift or lag real fitness. We cross-validate each with independent
+methods — Jack Daniels VDOT, Coggan 20-min test, Karvonen HRR, Mader
+power-to-VO2, Ginn-Mackenzie CSS — and surface the consensus + a flag
+when Garmin materially disagrees with observed performance.
 
-Helpers filter to "key sessions" — intervals, tempo, threshold, time
-trials, races — before extracting peak values. See is_key_* helpers.
+Accuracy techniques applied (not just averaging):
+  - KEY-SESSION FILTERING: only races/TTs/intervals/tempo/threshold
+    count. Easy/recovery sessions are excluded so their pace/power
+    spikes don't pollute estimates. See is_key_run/ride/swim.
+  - RECENCY WEIGHTING: each candidate scored by value × 0.5^(age/30d),
+    so recent peak efforts dominate over 3-month-old ones.
+  - AEROBIC DECOUPLING FILTER (bike FTP): rides where HR behavior
+    suggests a sustained effort — not a brief spike or blowup.
+  - TTE-ADJUSTED FTP (bike): 60/20-min power ratio picks the right
+    Coggan reducer (0.93-0.97 instead of blanket 0.95).
+  - HEAT CORRECTION (run VO2max): detected race efforts are corrected
+    back to neutral-temp equivalents before VDOT calculation.
+  - LT2 → LT1 derivation: LT1 (aerobic threshold, Z2 cap) ≈ LT2 × 0.92.
+  - CONFIDENCE INTERVALS: 80% CI from method percentiles when ≥3
+    methods produced values.
 
 Each threshold helper returns a dict:
-
-Garmin exposes single point estimates for VO2max, LT HR, FTP, CSS, etc.
-Those are convenient but can drift — Garmin's VO2max algorithm is
-sensitive to a few recent hard efforts and lags reality when training
-shifts. By computing the same targets via multiple independent methods
-(Jack Daniels VDOT, Coggan power tests, Karvonen HR, Mader equation,
-etc.) we can:
-
-  1. Cross-validate Garmin's number
-  2. Flag when Garmin is stale or out of date
-  3. Give the LLM a richer picture for pacing recommendations
-
-Each helper returns a dict:
 
     {
       "garmin_value": float | None,
@@ -32,9 +32,11 @@ Each helper returns a dict:
          "source": str, "notes": str},
         ...
       ],
-      "consensus": float | None,         # median of all methods incl. Garmin
-      "spread": float | None,            # max - min (flag large spreads)
-      "flag": str | None,                # "consider Garmin update" etc.
+      "consensus": float | None,           # median of all methods
+      "confidence_interval_80pct": [lo, hi] | None,
+      "ci_note": str,                      # why CI may be None
+      "spread": float | None,              # max - min
+      "flag": str | None,                  # "consider Garmin update" etc.
     }
 """
 from __future__ import annotations
@@ -148,7 +150,9 @@ def _spread(xs: list[float]) -> float | None:
 def _flag_from_spread(methods: list[dict], garmin_value: float | None,
                       large_spread_threshold: float) -> str | None:
     """If most non-Garmin methods agree on a different value than Garmin,
-    suggest the user might consider a fitness check."""
+    suggest the user might consider a fitness check. Only flags when
+    ALL non-Garmin methods point in the same direction (consistent
+    disagreement), not when methods are mixed."""
     if garmin_value is None:
         return None
     other_vals = [m["value"] for m in methods
@@ -156,14 +160,23 @@ def _flag_from_spread(methods: list[dict], garmin_value: float | None,
     if len(other_vals) < 2:
         return None
     other_median = statistics.median(other_vals)
-    if abs(other_median - garmin_value) >= large_spread_threshold:
-        direction = "higher" if other_median > garmin_value else "lower"
-        return (
-            f"Non-Garmin methods agree around {round(other_median, 1)} but "
-            f"Garmin says {garmin_value}. Recent performance suggests actual "
-            f"value is {direction}. Consider a fitness check or updated field test."
-        )
-    return None
+    delta = other_median - garmin_value
+    if abs(delta) < large_spread_threshold:
+        return None
+    # Only flag if the majority of non-Garmin methods agree on the direction.
+    same_direction = sum(
+        1 for v in other_vals
+        if (v > garmin_value) == (delta > 0)
+    )
+    if same_direction / len(other_vals) < 0.6:
+        return None
+    direction = "higher" if delta > 0 else "lower"
+    return (
+        f"{same_direction}/{len(other_vals)} non-Garmin methods agree around "
+        f"{round(other_median, 1)} — {round(abs(delta), 1)} units {direction} "
+        f"than Garmin's {garmin_value}. Consider a field test if sessions feel "
+        f"off vs. current zones."
+    )
 
 
 def _pace_to_speed_m_min(seconds_per_km: float) -> float:
@@ -396,20 +409,24 @@ def heat_corrected_time(time_seconds: float,
     )
 
 
-def confidence_interval(values: list[float]) -> tuple[float | None, tuple[float, float] | None]:
-    """Return (point_estimate, (low, high)) 80% CI from a list of method
-    values. Uses simple percentile approach (20th, 80th). Returns None
-    for CI if fewer than 3 values."""
+def confidence_interval(values: list[float]) -> tuple[float | None, tuple[float, float] | None, str]:
+    """Return (point_estimate, (low, high) 80% CI, note).
+
+    Uses simple percentile approach (20th, 80th). Returns None for CI
+    when fewer than 3 values exist — the note explains why in that case.
+    """
     clean = [v for v in values if isinstance(v, (int, float))]
+    n = len(clean)
     if not clean:
-        return None, None
+        return None, None, "no methods produced a value"
     point = round(statistics.median(clean), 1)
-    if len(clean) < 3:
-        return point, None
+    if n < 3:
+        return point, None, f"only {n} method{'s' if n != 1 else ''} — CI requires ≥3"
     sorted_v = sorted(clean)
     low = sorted_v[max(0, int(len(sorted_v) * 0.2))]
     high = sorted_v[min(len(sorted_v) - 1, int(len(sorted_v) * 0.8))]
-    return point, (round(low, 1), round(high, 1))
+    note = f"80% CI across {n} methods"
+    return point, (round(low, 1), round(high, 1)), note
 
 
 def lt_to_lt1(lt2: float | None) -> float | None:
@@ -553,7 +570,7 @@ def run_vo2max_methods(
 
     # Compute consensus + spread + CI + flag
     all_vals = [m["value"] for m in methods if m["value"] is not None]
-    consensus, ci = confidence_interval(all_vals)
+    consensus, ci, ci_note = confidence_interval(all_vals)
     spread = _spread(all_vals)
     flag = _flag_from_spread(methods, garmin_vo2max, large_spread_threshold=1.0)
 
@@ -562,6 +579,7 @@ def run_vo2max_methods(
         "methods": methods,
         "consensus": consensus,
         "confidence_interval_80pct": list(ci) if ci else None,
+        "ci_note": ci_note,
         "spread": spread,
         "flag": flag,
     }
@@ -640,7 +658,7 @@ def run_lt_hr_methods(
         })
 
     all_vals = [m["value"] for m in methods if m["value"] is not None]
-    consensus, ci = confidence_interval(all_vals)
+    consensus, ci, ci_note = confidence_interval(all_vals)
     spread = _spread(all_vals)
     flag = _flag_from_spread(methods, garmin_lt_hr, large_spread_threshold=3.0)
 
@@ -660,6 +678,7 @@ def run_lt_hr_methods(
         "methods": methods,
         "consensus": consensus,
         "confidence_interval_80pct": list(ci) if ci else None,
+        "ci_note": ci_note,
         "spread": spread,
         "flag": flag,
         "lt1_aerobic_threshold_bpm": lt1,
@@ -723,7 +742,7 @@ def run_ftp_methods(
         })
 
     all_vals = [m["value"] for m in methods if m["value"] is not None]
-    consensus, ci = confidence_interval(all_vals)
+    consensus, ci, ci_note = confidence_interval(all_vals)
     spread = _spread(all_vals)
     flag = _flag_from_spread(methods, garmin_run_ftp, large_spread_threshold=10.0)
 
@@ -732,6 +751,7 @@ def run_ftp_methods(
         "methods": methods,
         "consensus": consensus,
         "confidence_interval_80pct": list(ci) if ci else None,
+        "ci_note": ci_note,
         "spread": spread,
         "flag": flag,
     }
@@ -821,7 +841,7 @@ def bike_ftp_methods(
         })
 
     all_vals = [m["value"] for m in methods if m["value"] is not None]
-    consensus, ci = confidence_interval(all_vals)
+    consensus, ci, ci_note = confidence_interval(all_vals)
     spread = _spread(all_vals)
     flag = _flag_from_spread(methods, garmin_bike_ftp, large_spread_threshold=10.0)
 
@@ -830,6 +850,7 @@ def bike_ftp_methods(
         "methods": methods,
         "consensus": consensus,
         "confidence_interval_80pct": list(ci) if ci else None,
+        "ci_note": ci_note,
         "spread": spread,
         "flag": flag,
         "clean_rides_used": len(clean_rides),
@@ -886,7 +907,7 @@ def bike_vo2max_methods(
         })
 
     all_vals = [m["value"] for m in methods if m["value"] is not None]
-    consensus, ci = confidence_interval(all_vals)
+    consensus, ci, ci_note = confidence_interval(all_vals)
     spread = _spread(all_vals)
     flag = _flag_from_spread(methods, garmin_vo2max_bike, large_spread_threshold=2.0)
 
@@ -895,6 +916,7 @@ def bike_vo2max_methods(
         "methods": methods,
         "consensus": consensus,
         "confidence_interval_80pct": list(ci) if ci else None,
+        "ci_note": ci_note,
         "spread": spread,
         "flag": flag,
     }
@@ -971,7 +993,7 @@ def swim_css_methods(
         })
 
     all_vals = [m["value"] for m in methods if m["value"] is not None]
-    consensus, ci = confidence_interval(all_vals)
+    consensus, ci, ci_note = confidence_interval(all_vals)
     spread = _spread(all_vals)
     flag = None
     # For swimming, no Garmin CSS to compare against — just flag large spread.
@@ -983,6 +1005,7 @@ def swim_css_methods(
         "methods": methods,
         "consensus": consensus,
         "confidence_interval_80pct": list(ci) if ci else None,
+        "ci_note": ci_note,
         "spread": spread,
         "flag": flag,
     }

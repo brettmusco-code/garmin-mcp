@@ -52,7 +52,8 @@ Avg HR {bpm} / max {bpm} · Pwr {W avg, NP, IF if ride} · TSS {n} · TE aerobic
 
 ## Signals
 - {1-2 concrete fitness or fatigue signals with numbers}
-- {If session was near or above threshold, compare observed HR/power to the relevant multi_method.{run_vo2max|run_lt_hr|run_ftp|bike_ftp}.consensus. If observed > Garmin's but matches consensus, flag that Garmin's number may be stale.}
+- {If session was at/above threshold, compare observed HR/power to multi_method.{run_vo2max|run_lt_hr|run_ftp|bike_ftp}.consensus and confidence_interval_80pct. Note whether observed is inside/above/below the CI band.}
+- {If multi_method.*.flag is non-null AND this session contributed to the disagreement, call that out specifically.}
 
 ## Next
 Recovery: {h hours to next hard session}. {Plan adjustment if any.}

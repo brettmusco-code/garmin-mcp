@@ -62,7 +62,8 @@ Scheduled: {summary}. Planned load: {TSS estimate}. Key session: {which + why}. 
 ## 📈 Fitness Trajectory (4 weeks)
 - Endurance {prev → curr} ({±}), VO2max {prev → curr}, hill {prev → curr}
 - Race: 5K {prev→curr}, 10K {prev→curr}, half {prev→curr}, mar {prev→curr}
-- Multi-method check: {for any multi_method.*.flag that fires, mention it in 1 line — e.g., "Garmin VO2max N but M methods suggest N±Δ. Field test or accept Garmin is lagging."}
+- Multi-method check: {for each multi_method.*.flag that fires, a 1-line call-out. Also note consensus CI if tight (spread <3% of value) vs wide (spread >10% of value). Wide CI = uncertain baseline = a field test would materially improve precision.}
+- Key session density: {from key_session_counts — "{run_key}/{run_total} key runs, {bike_key}/{bike_total} key rides, {swim_key}/{swim_total} key swims in last 90d". Flag if any sport <3 key sessions — baseline from that sport is under-supported.}
 - {1-line verdict on where training is heading}
 ```
 

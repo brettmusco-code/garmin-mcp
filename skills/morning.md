@@ -60,7 +60,10 @@ Key session this week: {workout + when}. Next quality window: {day}.
 - {Trend 2: same}
 - {Gap/risk trend — keep honest}
 
-Baseline: {from get_athlete_baseline — VO2max run/bike · run FTP W (W/kg) · LT HR · endurance score (class) · hill score (class). If multi_method.*.flag is non-null for any threshold, append "⚠️ {flag}". Flag any field >14 days stale.}
+Baseline: {from get_athlete_baseline — VO2max run/bike · run FTP W (W/kg) · LT HR (with LT1 aerobic if analyzing Z2 work) · bike FTP W · CSS sec/100m · endurance score (class) · hill score (class).
+- If multi_method.*.flag is non-null for any threshold, append "⚠️ {flag}" inline with that metric.
+- If key_session_counts shows e.g. <3 key rides or <2 key runs, note "baseline from limited key sessions — consider scheduling a test."
+- Flag any staleness_days field >14 days with "(N days old — may not reflect current fitness)".}
 ```
 
 ### Rules
