@@ -808,36 +808,67 @@ def bike_ftp_methods(
             "notes": f"TTE {tte['tte_minutes']} min. Adjusts Coggan reducer based on actual power-duration profile.",
         })
 
-    # Method 3: Best 60-min power, recency-weighted — if a genuine 60-min
-    # effort exists recently, that IS FTP directly.
-    val_60, winner_60 = weighted_best(clean_rides, "maxAvgPower_3600", today,
-                                      half_life_days=30, higher_is_better=True)
-    if val_60:
+    # Method 3: Best 60-min power — scaled up to FTP-equivalent by the
+    # ride's intensity factor. A 60-min @ 273W at IF 0.90 is sweet spot,
+    # NOT FTP — FTP would be 273 / 0.90 ≈ 303W. Only take the raw value
+    # as FTP when IF ≥ 0.95 (true threshold effort).
+    # Pre-filter: only include rides where the 60-min power came from a
+    # threshold-intensity effort, not a tempo/sweet-spot block.
+    threshold_60min_rides = [
+        a for a in clean_rides
+        if a.get("maxAvgPower_3600")
+        and (a.get("intensityFactor") or 0) >= 0.85
+    ]
+    val_60, winner_60 = weighted_best(threshold_60min_rides, "maxAvgPower_3600",
+                                      today, half_life_days=30, higher_is_better=True)
+    if val_60 and winner_60:
+        if_val = winner_60.get("intensityFactor") or 0.95
+        # FTP equivalent: raw 60-min power / IF. If IF was 0.90 (sweet
+        # spot), scale up. If IF was 1.00 (race/threshold), no change.
+        # Cap the scaler at the 60-min rating (1.0) — can't have FTP
+        # below the power sustained at threshold.
+        ftp_equiv = val_60 / max(if_val, 0.85)
+        # Cap upward scaling at 15% to avoid absurd inferences from a
+        # poorly-calibrated IF (if the rider's prior FTP estimate was
+        # way off, IF will be misleading).
+        if ftp_equiv > val_60 * 1.15:
+            ftp_equiv = val_60 * 1.15
         age = (today - _parse_activity_date(winner_60)).days if _parse_activity_date(winner_60) else None
         methods.append({
-            "name": "best_60min_power_recency_weighted",
-            "value": round(val_60),
-            "delta_vs_garmin": round(val_60 - garmin_bike_ftp) if garmin_bike_ftp else None,
-            "confidence": "high",
-            "source": f"Recency-weighted best 60-min avg power ({round(val_60)}W, {age}d ago: {winner_60.get('activityName','?')})",
-            "notes": "Direct critical-power observation. IS FTP if the hour was at threshold.",
+            "name": "best_60min_power_if_scaled",
+            "value": round(ftp_equiv),
+            "delta_vs_garmin": round(ftp_equiv - garmin_bike_ftp) if garmin_bike_ftp else None,
+            "confidence": "high" if if_val >= 0.95 else "medium",
+            "source": (
+                f"60-min avg power ({round(val_60)}W, IF {if_val:.2f}, "
+                f"{age}d ago: {winner_60.get('activityName','?')}) / "
+                f"IF → FTP equivalent {round(ftp_equiv)}W"
+            ),
+            "notes": (
+                "60-min power scaled by intensity factor. Raw 60-min IS FTP "
+                "only if ridden at threshold (IF ≥0.95). Sweet spot (IF "
+                "0.85-0.94) gets scaled up to the threshold equivalent."
+            ),
         })
 
-    # Method 4: NP from a long sustained effort × 0.97
+    # Method 4: NP from a long sustained effort. NP × 0.97 assumes the
+    # ride was ridden AT threshold. For sub-threshold rides, scale by IF.
     long_rides = [a for a in clean_rides
-                  if (a.get("duration") or 0) >= 2400 and a.get("normPower")]
+                  if (a.get("duration") or 0) >= 2400 and a.get("normPower")
+                  and (a.get("intensityFactor") or 0) >= 0.85]
     val_np, winner_np = weighted_best(long_rides, "normPower", today,
                                       half_life_days=30, higher_is_better=True)
-    if val_np:
-        np_based = round(val_np * 0.97)
+    if val_np and winner_np:
+        if_val = winner_np.get("intensityFactor") or 0.95
+        np_based = round(val_np / max(if_val, 0.85))
         age = (today - _parse_activity_date(winner_np)).days if _parse_activity_date(winner_np) else None
         methods.append({
-            "name": "np_adjusted_long_effort_recency_weighted",
+            "name": "np_if_scaled_long_effort",
             "value": np_based,
             "delta_vs_garmin": round(np_based - garmin_bike_ftp) if garmin_bike_ftp else None,
             "confidence": "medium",
-            "source": f"Best NP ({round(val_np)}W) from ≥40min ride × 0.97, {age}d ago",
-            "notes": "NP-adjusted floor. Lower bound on FTP if the ride was paced aggressively.",
+            "source": f"NP {round(val_np)}W from ≥40min ride (IF {if_val:.2f}, {age}d ago) / IF → {np_based}W FTP",
+            "notes": "NP scaled by intensity factor. Sub-threshold efforts scaled up to threshold equivalent.",
         })
 
     all_vals = [m["value"] for m in methods if m["value"] is not None]
