@@ -14,8 +14,14 @@ Flow:
                  → extract to temp dir
                  → client.login(temp_dir) sets garth._garth_home = temp_dir
                  → if loaded from env (first deploy), also push to R2
-  token refresh  → garth.Client.refresh_oauth2 (patched) writes updated
-                   tokens to temp dir AND uploads to R2
+  api call       → garth checks if oauth2_token.expired; if fresh
+                   (remaining validity > REFRESH_SKIP_MARGIN_SEC), SKIP
+                   the refresh entirely. This is the key rate-limit
+                   mitigation — most container starts find a still-valid
+                   token in R2 and bypass the OAuth exchange endpoint.
+  token refresh  → only when necessary: garth.Client.refresh_oauth2
+                   (patched) writes updated tokens to disk AND uploads
+                   to R2 so the next container sees the fresh token.
 """
 from __future__ import annotations
 
@@ -25,10 +31,17 @@ import logging
 import os
 import tarfile
 import tempfile
+import time
 
 import garth
 
 from . import cache
+
+# Skip refresh if OAuth2 token has at least this much time left.
+# Garmin OAuth2 tokens live for 3600s (1h); requests take ~1-5s. We want
+# to avoid the "token expires mid-request" race while still letting all
+# containers in a 1hr window share the same refresh.
+REFRESH_SKIP_MARGIN_SEC = 600  # 10 minutes of buffer
 
 logger = logging.getLogger(__name__)
 
@@ -108,17 +121,53 @@ def persist_tokens_dir(directory: str) -> None:
     _save_to_r2(_tar_dir(directory))
 
 
-# Patch garth.Client.refresh_oauth2 so refreshed tokens get uploaded.
-# Every garth.Client instance (including the one inside Garmin) inherits this.
+# Patch garth.Client.refresh_oauth2 so:
+#   1. We SKIP calling Garmin's exchange endpoint if the existing OAuth2
+#      token still has >REFRESH_SKIP_MARGIN_SEC of validity remaining.
+#      This is the main rate-limit mitigation — multiple containers
+#      within the same ~50 min window reuse the same token instead of
+#      each triggering an exchange call.
+#   2. When we DO refresh (token actually expired), persist the new
+#      token to R2 immediately so the NEXT container starts with the
+#      fresh token and won't need its own refresh.
 _original_refresh = garth.Client.refresh_oauth2
 
 
+def _token_still_valid(token) -> tuple[bool, int]:
+    """Return (is_valid, seconds_until_expiry). Missing/invalid token
+    returns (False, 0)."""
+    if token is None:
+        return False, 0
+    expires_at = getattr(token, "expires_at", None)
+    if expires_at is None:
+        return False, 0
+    remaining = int(expires_at - time.time())
+    return remaining > REFRESH_SKIP_MARGIN_SEC, remaining
+
+
 def _patched_refresh(self):
+    # Short-circuit: if the current OAuth2 token is still fresh enough,
+    # don't contact Garmin's exchange endpoint at all. This is what
+    # keeps us under Garmin's aggressive per-account rate limit.
+    valid, remaining = _token_still_valid(getattr(self, "oauth2_token", None))
+    if valid:
+        logger.info(
+            "oauth2 token still valid (%ds remaining) — skipping refresh",
+            remaining,
+        )
+        return self.oauth2_token
+
+    # Otherwise proceed with the real refresh.
+    logger.info("oauth2 token expired or near expiry — calling refresh")
     result = _original_refresh(self)
+
+    # Persist the freshly-refreshed token to R2 so other containers can
+    # reuse it within the 1-hour window.
     home = getattr(self, "_garth_home", None)
     if home:
         try:
             persist_tokens_dir(str(home))
+            logger.info("refreshed oauth2 token persisted to R2")
         except Exception as ex:  # noqa: BLE001
             logger.warning("post-refresh R2 persist failed: %s", ex)
     return result
