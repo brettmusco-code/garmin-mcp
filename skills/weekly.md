@@ -33,10 +33,40 @@ Weekly training review. Denser than `/morning` — weekly patterns need a fuller
 📊 WEEK IN REVIEW — {Mon DD} to {Sun DD}
 
 ## Training Week
-Volume: Bike {km} ({±%}) · Run {km} ({±%}) · Swim {km} ({±%}) · Strength {n} · Total {h}h vs {h}h prior week.
-Intensity: Z1-Z2 {%} / Z3 {%} / Z4-Z5 {%} · Read: {base-heavy / tempo-heavy / VO2-heavy / spiky}.
-Load: Acute {n} → {n prior} ({±%}), ACWR {ratio} ({sweet-spot/risk}), ramp {±%}/wk.
-Form: CTL {n} (chronic/fitness), ATL {n} (acute/fatigue), TSB {n} ({fresh/neutral/overloaded}). {1-line interpretation.}
+
+**Volume** (miles — convert from Garmin meters: m ÷ 1609.344; swim stays in meters for context)
+
+| Sport | This week | Last week | Δ | Sessions |
+|---|---|---|---|---|
+| Bike | {mi} | {mi} | {±%} | {n} |
+| Run | {mi} | {mi} | {±%} | {n} |
+| Swim | {m} | {m} | {±%} | {n} |
+| Strength | — | — | — | {n} vs {n} |
+| **Total hours** | {h}h | {h}h | {±%} | — |
+
+**Intensity mix**
+
+| Zone | Hours | % of total |
+|---|---|---|
+| Z1-Z2 (base) | {h} | {%} |
+| Z3 (tempo) | {h} | {%} |
+| Z4-Z5 (threshold+) | {h} | {%} |
+| Anaerobic TE | — | {sum} |
+
+Read: {base-heavy / tempo-heavy / VO2-heavy / spiky}
+
+**Load & Form**
+
+| Metric | Value | Prior week | Interpretation |
+|---|---|---|---|
+| Acute load (7d) | {n} | {n} | {±%} |
+| ACWR | {ratio} | — | {sweet-spot 0.8-1.3 / risk zone} |
+| Ramp rate | {±%}/wk | — | {safe <10% / risk >15%} |
+| CTL (42d fitness) | {n} | {n} | {±} |
+| ATL (7d fatigue) | {n} | {n} | {±} |
+| TSB (freshness) | {n} | {n} | {fresh >+5 / neutral -10 to +5 / overloaded <-20 / high-risk <-30} |
+
+{1-line interpretation of the form picture — fresh enough for key session? Or dig-out-of-fatigue week?}
 
 ## Execution
 **Key sessions:**
@@ -56,12 +86,12 @@ Form: CTL {n} (chronic/fitness), ATL {n} (acute/fatigue), TSB {n} ({fresh/neutra
 
 ## 📈 Fitness Trajectory (4 weeks)
 - Per-sport key metrics with 4-week prev → curr Δ:
-  - Run: VDOT {prev → curr} ({±}), best 5K split {prev → curr}, weekly km avg {prev → curr}
+  - Run: VDOT {prev → curr} ({±}), best 5K split {prev → curr}, weekly miles avg {prev → curr}
   - Bike: FTP consensus {prev → curr} ({±W}), EF drift {±%}, best 20-min peak {prev → curr}
   - Swim: CSS {prev → curr} ({±s/100m}), best 1000m {prev → curr}
 - Race predictions: 5K {prev→curr}, 10K {prev→curr}, half {prev→curr}, mar {prev→curr}
 - Multi-method flags (if any from `multi_method.*.flag`)
-- Key-session density: run {run_key}/{run_total}, bike {bike_key}/{bike_total}, swim {swim_key}/{swim_total} in last 90d. Flag sports with <3 key sessions.
+- Key-session density: run {run_key}/{run_total}, bike {bike_key}/{bike_total}, swim {swim_key}/{swim_total} in last 90d. Flag any sport with <3 key sessions — baseline from that sport is under-supported.
 - 1-line verdict on trajectory.
 
 ## 🏁 Race Countdown — {Event Name} ({target distance}, {YYYY-MM-DD})
@@ -117,7 +147,7 @@ Carb ratio C: 3 g/kg rest · 4 g/kg easy · 5-6 g/kg tempo/SST · 7-8 g/kg thres
     "bike_ftp_consensus": N,
     "run_vdot": N,
     "css_sec_per_100m": N,
-    "weekly_km": {bike, run, swim},
+    "weekly_miles": {"bike": N, "run": N, "swim_meters": N},
     "ctl": N, "atl": N, "tsb": N,
     "race_predictions": {...},
     "hrv_avg": N,
@@ -130,7 +160,7 @@ Carb ratio C: 3 g/kg rest · 4 g/kg easy · 5-6 g/kg tempo/SST · 7-8 g/kg thres
 ### Rules
 
 - **Render as chat markdown. No wrapping code block.**
-- Volumes in km, round to 0.1.
+- Volumes in **miles**, round to 0.1 (bike + run). Swim stays in meters — swimmers don't think in miles. Convert Garmin's meters: miles = m / 1609.344.
 - Flag ACWR outside 0.8-1.3 with specific intervention.
 - Next-week load from scheduled workout types: recovery=20 TSS, base=60, threshold=90, VO2=100, long=120+.
 - Nutrition reflects baseline.weight_kg + current weight goal from project memory. Never hardcode weight.

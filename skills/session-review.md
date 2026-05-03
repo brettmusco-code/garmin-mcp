@@ -72,7 +72,7 @@ Recovery: {h hours to next hard session}. {Plan adjustment if any.}
 ### Weather interpretation
 
 Apparent temp effect on same-effort HR/pace:
-- <40°F: paces slow 5-10s/km, HR low until warmed
+- <40°F: paces slow 8-16s/mi, HR low until warmed
 - 40-60°F: ideal hard-effort conditions
 - 60-70°F: neutral baseline
 - 70-78°F: HR +3-5 bpm at same pace

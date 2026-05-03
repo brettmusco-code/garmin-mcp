@@ -44,7 +44,7 @@ TL added: {n}. Fueling: {kcal in/out · P/C/F OR "not logged"}.
 
 - Intent: {1 line — what it's for in the arc}
 - Structure: {intervals/sets/duration}
-- Targets: HR {zones}, {pwr watts OR pace min/km}
+- Targets: HR {zones}, {pwr watts OR pace min/mi}
 - **Verdict: {GO / MODIFY / SWAP / REST}** — {1-2 sentences tying readiness to demands}
 
 ## Load & Outlook

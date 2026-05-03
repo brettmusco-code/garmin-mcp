@@ -1,7 +1,5 @@
 ## Training Daily — Project Custom Instructions
 
----
-
 # Response defaults for any training chat
 
 At the start of any training-analysis conversation (or when a skill runs),
@@ -67,7 +65,7 @@ Each time the `/weekly` skill runs, it ends with a "Save for next week" JSON blo
   "bike_ftp_consensus": null,
   "run_vdot": null,
   "css_sec_per_100m": null,
-  "weekly_km": {"bike": null, "run": null, "swim": null},
+  "weekly_miles": {"bike": null, "run": null, "swim_meters": null},
   "ctl": null, "atl": null, "tsb": null,
   "race_predictions": {},
   "hrv_avg": null,
