@@ -103,17 +103,10 @@ def main() -> int:
     except Exception as ex:  # noqa: BLE001
         print(f"  ERROR: {str(ex)[:200]}", file=sys.stderr)
 
-    # Refresh athlete baseline — new activities in the last hour may
-    # shift thresholds (e.g. a hard interval session boosts the recency-
-    # weighted 20-min power candidate). Cheap because most underlying
-    # data is already cached from steps 1-3 above.
-    print("[4/4] athlete_baseline — recompute with fresh activity data")
-    try:
-        garmin.get_athlete_baseline(force_refresh=True)
-        print("  ok")
-    except Exception as ex:  # noqa: BLE001
-        print(f"  ERROR: {str(ex)[:200]}", file=sys.stderr)
-
+    # Baseline (physiology snapshot) is recomputed ONCE per day by the
+    # nightly daily-refresh run. It's built from 90 days of data —
+    # adding one mid-day activity shifts thresholds by <1%, not worth
+    # the compute/rate-limit overhead on 48 runs/day.
     return 0
 
 
