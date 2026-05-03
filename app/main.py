@@ -323,6 +323,22 @@ TOOLS = [
         },
     },
     {
+        "name": "get_cycling_ftp",
+        "description": (
+            "User's cycling FTP as set in Garmin Connect (from the "
+            "latestFunctionalThresholdPower/CYCLING endpoint). The "
+            "authoritative bike FTP — matches what the user sees in their "
+            "app and drives their zones. Separate from run FTP which lives "
+            "on lactate_threshold. Cached 24h."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "force_refresh": {"type": "boolean", "description": "skip cache, default false"},
+            },
+        },
+    },
+    {
         "name": "get_athlete_baseline",
         "description": (
             "Current multi-sport physiology snapshot derived from freshest "
@@ -467,6 +483,8 @@ def _call_tool(name: str, args: dict) -> Any:
         return garmin.get_race_predictions(s, e, force_refresh=bool(args.get("force_refresh", False)))
     if name == "get_athlete_baseline":
         return garmin.get_athlete_baseline(force_refresh=bool(args.get("force_refresh", False)))
+    if name == "get_cycling_ftp":
+        return garmin.get_cycling_ftp(force_refresh=bool(args.get("force_refresh", False)))
     raise ValueError(f"Unknown tool: {name}")
 
 

@@ -525,6 +525,29 @@ def get_training_score(
     return data
 
 
+def get_cycling_ftp(force_refresh: bool = False):
+    """User's stored cycling FTP from Garmin Connect. Returned as the
+    latest value the user has set (manually via the app, or auto-detected
+    by Garmin from an FTP test). Separate from run FTP which lives on the
+    lactate_threshold endpoint.
+
+    This is the PREFERRED source of bike FTP — direct user setting. Fall
+    back to 20-min-power inference only if this returns nothing or the
+    user hasn't set it.
+
+    Cached 24h.
+    """
+    cache_args = {}
+    key_parts = ["latest"]
+    if not force_refresh:
+        hit = cache.get("cycling_ftp", cache_args, key_parts=key_parts)
+        if hit is not None:
+            return hit
+    data = _call_with_backoff(get_client().get_cycling_ftp)
+    cache.put("cycling_ftp", cache_args, data, key_parts=key_parts)
+    return data
+
+
 def get_lactate_threshold(
     startdate: str | date | None = None,
     enddate: str | date | None = None,
@@ -1384,27 +1407,58 @@ def get_athlete_baseline(force_refresh: bool = False) -> dict[str, Any]:
                     if rhr_val:
                         break
 
-        # Derive cycling FTP from best 20-min power in a KEY ride (FTP test,
-        # race, tempo, sweet-spot, threshold). Using the full activity list
-        # would pick up random 20-min power spikes from recovery/Z2 rides
-        # that aren't representative of threshold capability.
+        # Cycling FTP — prefer user's Garmin Connect setting, which is
+        # what shows up in their app zones and is what they trust. Fall
+        # back to activity-derived inference if unset.
+        user_ftp = None
+        user_ftp_date = None
+        try:
+            cftp = get_cycling_ftp()
+            # API returns either a dict or a list of dicts across Garmin versions.
+            if isinstance(cftp, list) and cftp:
+                cftp = cftp[0]
+            if isinstance(cftp, dict):
+                user_ftp = (
+                    cftp.get("functionalThresholdPower")
+                    or cftp.get("ftp")
+                    or cftp.get("value")
+                )
+                user_ftp_date = (
+                    cftp.get("ftpCreateTime")
+                    or cftp.get("calendarDate")
+                    or cftp.get("date")
+                )
+        except Exception as ex:  # noqa: BLE001
+            out["notes"].append(f"cycling_ftp endpoint failed: {str(ex)[:100]}")
+
+        # Inference fallback
         best_20min_key = max(
             (r.get("maxAvgPower_1200") for r in key_ride_acts
              if r.get("maxAvgPower_1200")),
             default=None,
         )
-        if best_20min_key:
+
+        if user_ftp:
+            out["bike_ftp_watts"] = round(user_ftp)
+            out["bike_ftp_source"] = (
+                f"Garmin Connect user-set cycling FTP (last updated "
+                f"{user_ftp_date or 'unknown'})"
+            )
+            out["staleness_days"]["bike_ftp"] = _age_days(user_ftp_date)
+            if best_20min_key:
+                out["bike_ftp_20min_inference_watts"] = round(best_20min_key * 0.95)
+        elif best_20min_key:
             out["bike_ftp_watts"] = round(best_20min_key * 0.95)
             out["bike_ftp_source"] = (
-                f"best 20-min power × 0.95 from key rides (FTP/TT/race/"
-                f"threshold) in last 90 days (n={len(key_ride_acts)} key "
-                f"rides of {len(ride_acts)} total)"
+                f"inferred from best 20-min power × 0.95 (n={len(key_ride_acts)} "
+                f"key rides of {len(ride_acts)} total) — no Garmin Connect "
+                f"cycling FTP found"
             )
         elif ftp:
             out["bike_ftp_estimated_watts"] = round(ftp * 0.75)
             out["bike_ftp_source"] = (
-                "inferred from run FTP × 0.75 (no key rides tagged as "
-                "FTP/test/race/threshold in last 90 days)"
+                "inferred from run FTP × 0.75 (no Garmin cycling FTP, no "
+                "key rides tagged as FTP/test/race/threshold in last 90 days)"
             )
 
         # --- Multi-method threshold analysis ---
