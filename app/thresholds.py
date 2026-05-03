@@ -147,6 +147,24 @@ def _spread(xs: list[float]) -> float | None:
     return round(max(vals) - min(vals), 1) if len(vals) >= 2 else None
 
 
+def _garmin_reference(garmin_value: float | None,
+                      consensus: float | None) -> dict | None:
+    """Build a 'reference only' record showing Garmin's value next to the
+    multi-method consensus, without treating Garmin as authoritative.
+    Returns None if either value is missing."""
+    if garmin_value is None or consensus is None:
+        return None
+    return {
+        "garmin": garmin_value,
+        "multi_method_consensus": consensus,
+        "delta": round(consensus - garmin_value, 1),
+        "note": (
+            "Multi-method is the source of truth. Garmin's value is "
+            "shown as reference only."
+        ),
+    }
+
+
 def _flag_from_spread(methods: list[dict], garmin_value: float | None,
                       large_spread_threshold: float) -> str | None:
     """If most non-Garmin methods agree on a different value than Garmin,
@@ -848,19 +866,18 @@ def run_vo2max_methods(
                 })
 
     # Compute consensus + spread + CI + flag
-    all_vals = [m["value"] for m in methods if m["value"] is not None]
-    consensus, ci, ci_note = confidence_interval(all_vals)
-    spread = _spread(all_vals)
-    flag = _flag_from_spread(methods, garmin_vo2max, large_spread_threshold=1.0)
+    derived_vals = [m["value"] for m in methods
+                    if m["value"] is not None and m.get("name") != "garmin"]
+    consensus, ci, ci_note = confidence_interval(derived_vals)
+    spread = _spread(derived_vals)
 
     return {
-        "garmin_value": garmin_vo2max,
         "methods": methods,
         "consensus": consensus,
         "confidence_interval_80pct": list(ci) if ci else None,
         "ci_note": ci_note,
         "spread": spread,
-        "flag": flag,
+        "garmin_reference_only": _garmin_reference(garmin_vo2max, consensus),
     }
 
 
@@ -936,10 +953,10 @@ def run_lt_hr_methods(
             "notes": "Directly observed. If much higher than Garmin's LT, Garmin may be stale.",
         })
 
-    all_vals = [m["value"] for m in methods if m["value"] is not None]
-    consensus, ci, ci_note = confidence_interval(all_vals)
-    spread = _spread(all_vals)
-    flag = _flag_from_spread(methods, garmin_lt_hr, large_spread_threshold=3.0)
+    derived_vals = [m["value"] for m in methods
+                    if m["value"] is not None and m.get("name") != "garmin"]
+    consensus, ci, ci_note = confidence_interval(derived_vals)
+    spread = _spread(derived_vals)
 
     # Aerobic threshold (LT1) derived from LT2 (lactate threshold HR).
     # Uses the consensus LT2 rather than Garmin's alone — if our multi-
@@ -953,13 +970,12 @@ def run_lt_hr_methods(
     )
 
     return {
-        "garmin_value": garmin_lt_hr,
         "methods": methods,
         "consensus": consensus,
         "confidence_interval_80pct": list(ci) if ci else None,
         "ci_note": ci_note,
         "spread": spread,
-        "flag": flag,
+        "garmin_reference_only": _garmin_reference(garmin_lt_hr, consensus),
         "lt1_aerobic_threshold_bpm": lt1,
         "lt1_note": lt1_note,
     }
@@ -1020,19 +1036,18 @@ def run_ftp_methods(
             "notes": "Direct critical-power observation. Equals FTP if you held threshold for an hour.",
         })
 
-    all_vals = [m["value"] for m in methods if m["value"] is not None]
-    consensus, ci, ci_note = confidence_interval(all_vals)
-    spread = _spread(all_vals)
-    flag = _flag_from_spread(methods, garmin_run_ftp, large_spread_threshold=10.0)
+    derived_vals = [m["value"] for m in methods
+                    if m["value"] is not None and m.get("name") != "garmin"]
+    consensus, ci, ci_note = confidence_interval(derived_vals)
+    spread = _spread(derived_vals)
 
     return {
-        "garmin_value": garmin_run_ftp,
         "methods": methods,
         "consensus": consensus,
         "confidence_interval_80pct": list(ci) if ci else None,
         "ci_note": ci_note,
         "spread": spread,
-        "flag": flag,
+        "garmin_reference_only": _garmin_reference(garmin_run_ftp, consensus),
     }
 
 
@@ -1198,25 +1213,20 @@ def bike_ftp_methods(
             "notes": "NP scaled by intensity factor. Sub-threshold efforts scaled up to threshold equivalent.",
         })
 
-    all_vals = [m["value"] for m in methods if m["value"] is not None]
-    consensus, ci, ci_note = confidence_interval(all_vals)
-    spread = _spread(all_vals)
-    flag = _flag_from_spread(methods, garmin_bike_ftp, large_spread_threshold=10.0)
+    # Consensus is built from activity-derived methods only — Garmin's
+    # reported value is shown for reference but not anchored to.
+    derived_vals = [m["value"] for m in methods
+                    if m["value"] is not None and m.get("name") != "garmin"]
+    consensus, ci, ci_note = confidence_interval(derived_vals)
+    spread = _spread(derived_vals)
 
-    # IF-weighted consensus: pair each method's value with an estimated
-    # source IF. Methods derived from high-IF sessions (race, FTP test)
-    # weight more than those from low-IF sessions (endurance, tempo).
-    # For Garmin's reported value we use 1.0 (trust its own process).
+    # IF-weighted consensus across DERIVED methods only.
     method_ifs: list[tuple[float, float]] = []
     for m in methods:
-        if m.get("value") is None:
+        if m.get("value") is None or m.get("name") == "garmin":
             continue
         name = m.get("name", "")
-        # Assign a source IF per method name. Numbers chosen to roughly
-        # reflect the evidence quality each method is built on.
-        if name == "garmin":
-            src_if = 1.0  # trust Garmin's own internal reasoning
-        elif name == "critical_power_fit":
+        if name == "critical_power_fit":
             src_if = 0.95  # mathematical fit, high-quality evidence
         elif name == "tte_adjusted_ftp":
             src_if = 0.90  # based on 20-min + 60-min bests
@@ -1231,6 +1241,19 @@ def bike_ftp_methods(
         method_ifs.append((m["value"], src_if))
     weighted_consensus = if_weighted_median(method_ifs)
 
+    # "For reference" diff from Garmin — not a flag, just information.
+    garmin_diff = None
+    if garmin_bike_ftp and consensus:
+        garmin_diff = {
+            "garmin": garmin_bike_ftp,
+            "multi_method_consensus": consensus,
+            "delta": round(consensus - garmin_bike_ftp, 1),
+            "note": (
+                "Multi-method is the source of truth. Garmin's value is "
+                "shown as reference only."
+            ),
+        }
+
     # Efficiency factor trend — tracks whether your Z2/endurance rides
     # show rising aerobic fitness even without an explicit test.
     ef_trend = efficiency_factor_trend(ride_activities, today)
@@ -1240,14 +1263,13 @@ def bike_ftp_methods(
     pd_curve = power_duration_curve(ride_activities, today, window_days=90)
 
     return {
-        "garmin_value": garmin_bike_ftp,
         "methods": methods,
         "consensus": consensus,
         "if_weighted_consensus": round(weighted_consensus) if weighted_consensus else None,
         "confidence_interval_80pct": list(ci) if ci else None,
         "ci_note": ci_note,
         "spread": spread,
-        "flag": flag,
+        "garmin_reference_only": garmin_diff,
         "clean_rides_used": len(clean_rides),
         "total_rides_evaluated": len(ride_activities),
         "fitness_drift": ef_trend,
@@ -1303,19 +1325,18 @@ def bike_vo2max_methods(
             "notes": "Linear power-to-VO2 approximation. Accurate ±3 ml/kg/min for trained cyclists.",
         })
 
-    all_vals = [m["value"] for m in methods if m["value"] is not None]
-    consensus, ci, ci_note = confidence_interval(all_vals)
-    spread = _spread(all_vals)
-    flag = _flag_from_spread(methods, garmin_vo2max_bike, large_spread_threshold=2.0)
+    derived_vals = [m["value"] for m in methods
+                    if m["value"] is not None and m.get("name") != "garmin"]
+    consensus, ci, ci_note = confidence_interval(derived_vals)
+    spread = _spread(derived_vals)
 
     return {
-        "garmin_value": garmin_vo2max_bike,
         "methods": methods,
         "consensus": consensus,
         "confidence_interval_80pct": list(ci) if ci else None,
         "ci_note": ci_note,
         "spread": spread,
-        "flag": flag,
+        "garmin_reference_only": _garmin_reference(garmin_vo2max_bike, consensus),
     }
 
 

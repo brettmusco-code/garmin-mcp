@@ -1438,28 +1438,15 @@ def get_athlete_baseline(force_refresh: bool = False) -> dict[str, Any]:
             default=None,
         )
 
+        # Stash Garmin's user-set value as reference; multi_method will
+        # compute the authoritative consensus further down.
         if user_ftp:
-            out["bike_ftp_watts"] = round(user_ftp)
-            out["bike_ftp_source"] = (
-                f"Garmin Connect user-set cycling FTP (last updated "
-                f"{user_ftp_date or 'unknown'})"
-            )
-            out["staleness_days"]["bike_ftp"] = _age_days(user_ftp_date)
-            if best_20min_key:
-                out["bike_ftp_20min_inference_watts"] = round(best_20min_key * 0.95)
-        elif best_20min_key:
-            out["bike_ftp_watts"] = round(best_20min_key * 0.95)
-            out["bike_ftp_source"] = (
-                f"inferred from best 20-min power × 0.95 (n={len(key_ride_acts)} "
-                f"key rides of {len(ride_acts)} total) — no Garmin Connect "
-                f"cycling FTP found"
-            )
-        elif ftp:
-            out["bike_ftp_estimated_watts"] = round(ftp * 0.75)
-            out["bike_ftp_source"] = (
-                "inferred from run FTP × 0.75 (no Garmin cycling FTP, no "
-                "key rides tagged as FTP/test/race/threshold in last 90 days)"
-            )
+            out["bike_ftp_garmin_setting_watts"] = round(user_ftp)
+            out["staleness_days"]["bike_ftp_garmin_setting"] = _age_days(user_ftp_date)
+        # Temporary placeholder — the real bike_ftp_watts comes from the
+        # multi_method consensus computed below (after sport_fitness).
+        if best_20min_key:
+            out["bike_ftp_20min_inference_watts"] = round(best_20min_key * 0.95)
 
         # --- Multi-method threshold analysis ---
         # Each helper returns {garmin_value, methods, consensus, spread, flag}.
@@ -1500,7 +1487,7 @@ def get_athlete_baseline(force_refresh: bool = False) -> dict[str, Any]:
                 today=today,
             ),
             "bike_ftp": thresholds.bike_ftp_methods(
-                garmin_bike_ftp=out.get("bike_ftp_watts"),
+                garmin_bike_ftp=out.get("bike_ftp_garmin_setting_watts"),
                 ride_activities=key_ride_acts,
                 today=today,
             ),
@@ -1518,6 +1505,36 @@ def get_athlete_baseline(force_refresh: bool = False) -> dict[str, Any]:
             "max_hr": observed_max_hr,
             "rhr": rhr_val,
         }
+
+        # Promote multi-method consensus to the authoritative top-level
+        # threshold values. Multi-method IS the source of truth; Garmin's
+        # value (when present) lives in the _garmin_setting_watts field
+        # for reference.
+        bike_mm = out["multi_method"].get("bike_ftp", {})
+        bike_consensus = (
+            bike_mm.get("if_weighted_consensus")
+            or bike_mm.get("consensus")
+        )
+        if bike_consensus:
+            out["bike_ftp_watts"] = round(bike_consensus)
+            out["bike_ftp_source"] = (
+                f"multi-method consensus (IF-weighted across "
+                f"{len(bike_mm.get('methods', []))} methods, excluding Garmin)"
+            )
+
+        run_vo2max_mm = out["multi_method"].get("run_vo2max", {})
+        run_vo2max_consensus = run_vo2max_mm.get("consensus")
+        if run_vo2max_consensus:
+            out["vo2max_run_consensus"] = run_vo2max_consensus
+            out["vo2max_run_garmin_value"] = out.get("vo2max_run")
+            out["vo2max_run"] = round(run_vo2max_consensus, 1)
+
+        run_lt_mm = out["multi_method"].get("run_lt_hr", {})
+        run_lt_consensus = run_lt_mm.get("consensus")
+        if run_lt_consensus:
+            out["lt_hr_consensus"] = run_lt_consensus
+            out["lt_hr_garmin_value"] = out.get("lt_hr")
+            out["lt_hr"] = round(run_lt_consensus)
     except Exception as ex:  # noqa: BLE001
         out["notes"].append(f"sport_fitness / multi_method aggregation failed: {str(ex)[:150]}")
 
