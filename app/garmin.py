@@ -605,6 +605,141 @@ def get_weekly_snapshots(weeks_back: int = 1) -> list[dict]:
     return out
 
 
+def nutrition_plan_vs_actual(days_back: int = 7) -> dict:
+    """Compare /weekly's nutrition plan (stored in the most recent weekly
+    snapshot) against actual food logged in Garmin Connect.
+
+    Returns a per-day table covering the last `days_back` days:
+      - target_kcal / target_P / target_C / target_F (from weekly snapshot
+        nutrition_plan[date])
+      - actual_kcal / actual_P / actual_C / actual_F (from
+        nutrition_food_log.dailyNutritionContent)
+      - delta per field
+      - logged_foods count (so the skill can flag "not logged")
+      - expenditure (BMR + session kcal burned)
+      - net (actual intake - expenditure)
+
+    Plus weekly totals row summing target vs actual deltas.
+    """
+    days_back = max(1, min(int(days_back), 14))
+    today_d = date.today()
+
+    # Fetch the most recent weekly snapshot — need its nutrition_plan
+    snapshots = get_weekly_snapshots(weeks_back=1)
+    plan = {}
+    plan_source_date = None
+    if snapshots:
+        snap = snapshots[0]
+        plan_source_date = snap.get("date")
+        plan = (snap.get("nutrition_plan") or {})
+
+    # Pull nutrition + activity totals for the window
+    start_d = today_d - timedelta(days=days_back - 1)
+    metrics = ["nutrition_food_log", "stats_and_body"]
+    daily = get_daily_summaries(
+        startdate=start_d.isoformat(),
+        enddate=today_d.isoformat(),
+        metrics=metrics,
+    )
+    food_log = daily.get("nutrition_food_log", {})
+    stats = daily.get("stats_and_body", {})
+
+    # Weight for protein-target math
+    weight_kg = None
+    for d_iso, payload in stats.items():
+        if isinstance(payload, dict) and "error" not in payload:
+            w = payload.get("bodyWeight") or payload.get("weight")
+            if w:
+                weight_kg = round(w / 1000.0, 1) if w > 500 else round(w, 1)
+                break
+
+    rows = []
+    sums = {"target_kcal": 0, "actual_kcal": 0, "target_p": 0, "actual_p": 0,
+            "target_c": 0, "actual_c": 0, "target_f": 0, "actual_f": 0,
+            "expenditure": 0, "days_with_target": 0, "days_logged": 0}
+
+    for i in range(days_back):
+        d = start_d + timedelta(days=i)
+        d_iso = d.isoformat()
+        day_name = d.strftime("%a")
+
+        # Target from plan (plan keys may be YYYY-MM-DD or weekday names)
+        day_plan = plan.get(d_iso) or plan.get(day_name) or {}
+
+        # Actual from cached food log
+        fl = food_log.get(d_iso)
+        consumed = {}
+        foods_count = 0
+        if isinstance(fl, dict) and "error" not in fl:
+            consumed = fl.get("dailyNutritionContent") or {}
+            foods_count = len(fl.get("loggedFoodsWithServingSizes") or [])
+
+        # Garmin's own adjusted goal (what the app shows)
+        garmin_goal = None
+        if isinstance(fl, dict):
+            goals = fl.get("dailyNutritionGoals") or {}
+            garmin_goal = goals.get("adjustedCalories") or goals.get("calories")
+
+        # Expenditure from stats_and_body (activeKilocalories + bmrKilocalories)
+        sb = stats.get(d_iso) or {}
+        expenditure = None
+        if isinstance(sb, dict) and "error" not in sb:
+            bmr = sb.get("bmrKilocalories") or 0
+            active = sb.get("activeKilocalories") or 0
+            total_kcal = sb.get("totalKilocalories")
+            expenditure = round(total_kcal or (bmr + active)) if (total_kcal or bmr or active) else None
+
+        row = {
+            "date": d_iso,
+            "day": day_name,
+            "target_kcal": day_plan.get("target_kcal") or day_plan.get("kcal"),
+            "target_p": day_plan.get("protein_g") or day_plan.get("protein"),
+            "target_c": day_plan.get("carbs_g") or day_plan.get("carbs"),
+            "target_f": day_plan.get("fat_g") or day_plan.get("fat"),
+            "target_session": day_plan.get("session") or day_plan.get("workout"),
+            "garmin_goal_kcal": garmin_goal,
+            "actual_kcal": consumed.get("calories"),
+            "actual_p": consumed.get("protein"),
+            "actual_c": consumed.get("carbs"),
+            "actual_f": consumed.get("fat"),
+            "foods_logged": foods_count,
+            "expenditure_kcal": expenditure,
+        }
+        # Deltas
+        if row["target_kcal"] is not None and row["actual_kcal"] is not None:
+            row["delta_kcal"] = round(row["actual_kcal"] - row["target_kcal"])
+        if row["target_p"] is not None and row["actual_p"] is not None:
+            row["delta_p"] = round(row["actual_p"] - row["target_p"], 1)
+        if row["actual_kcal"] is not None and expenditure is not None:
+            row["net_kcal"] = round(row["actual_kcal"] - expenditure)
+        rows.append(row)
+
+        # Accumulate
+        if row["target_kcal"]:
+            sums["days_with_target"] += 1
+            sums["target_kcal"] += row["target_kcal"]
+            sums["target_p"] += (row["target_p"] or 0)
+            sums["target_c"] += (row["target_c"] or 0)
+            sums["target_f"] += (row["target_f"] or 0)
+        if foods_count > 0 and row["actual_kcal"]:
+            sums["days_logged"] += 1
+            sums["actual_kcal"] += row["actual_kcal"]
+            sums["actual_p"] += (row["actual_p"] or 0)
+            sums["actual_c"] += (row["actual_c"] or 0)
+            sums["actual_f"] += (row["actual_f"] or 0)
+        if expenditure:
+            sums["expenditure"] += expenditure
+
+    return {
+        "window": {"start": start_d.isoformat(), "end": today_d.isoformat(), "days": days_back},
+        "plan_source_weekly_snapshot": plan_source_date,
+        "weight_kg": weight_kg,
+        "rows": rows,
+        "totals": sums,
+        "no_plan_available": plan_source_date is None or not plan,
+    }
+
+
 def get_lactate_threshold(
     startdate: str | date | None = None,
     enddate: str | date | None = None,

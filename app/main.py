@@ -399,6 +399,27 @@ TOOLS = [
             },
         },
     },
+    {
+        "name": "nutrition_plan_vs_actual",
+        "description": (
+            "Compare /weekly's nutrition plan (stored in the most recent "
+            "weekly snapshot's nutrition_plan dict) against actual food "
+            "logged in Garmin Connect. Returns per-day rows with "
+            "target/actual/delta for kcal + P/C/F, foods_logged count, "
+            "Garmin's own adjusted calorie goal, daily expenditure (BMR + "
+            "active), and net balance. Used by /morning for a one-line "
+            "yesterday-recap, and by /nutrition for the week-to-date view."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "days_back": {
+                    "type": "number",
+                    "description": "Days of history to return, 1-14. Default 7.",
+                },
+            },
+        },
+    },
 ]
 
 
@@ -532,6 +553,10 @@ def _call_tool(name: str, args: dict) -> Any:
     if name == "get_weekly_snapshots":
         return garmin.get_weekly_snapshots(
             weeks_back=int(args.get("weeks_back", 1))
+        )
+    if name == "nutrition_plan_vs_actual":
+        return garmin.nutrition_plan_vs_actual(
+            days_back=int(args.get("days_back", 7))
         )
     raise ValueError(f"Unknown tool: {name}")
 

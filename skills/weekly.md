@@ -161,7 +161,7 @@ Call `save_weekly_snapshot` with this object (stored in R2, auto-retrieved by ne
 
 ```
 {
-  "date": "YYYY-MM-DD",   // Monday of the reviewed week
+  "date": "YYYY-MM-DD",   // Monday of the upcoming week (plan starts here)
   "bike_ftp_consensus": N,
   "run_vdot": N,
   "css_sec_per_100m": N,
@@ -175,7 +175,19 @@ Call `save_weekly_snapshot` with this object (stored in R2, auto-retrieved by ne
   "protein_target_hit_days": N,
   "days_logged": N,
   "key_session_counts": {"run_key": N, "bike_key": N, "swim_key": N},
-  "priority": "base-build | threshold push | deload | race taper"
+  "priority": "base-build | threshold push | deload | race taper",
+  "nutrition_plan": {
+    // one entry PER DAY of the upcoming week, keyed by YYYY-MM-DD.
+    // These targets are what nutrition_plan_vs_actual will compare
+    // against actual food-log entries during the week.
+    "2026-05-05": {
+      "session": "ROUVY Sweet Spot Builder 90min",
+      "target_kcal": N, "protein_g": N, "carbs_g": N, "fat_g": N,
+      "notes": "hard day — fuel pre/during/post"
+    },
+    "2026-05-06": { ... }
+    // ... Mon–Sun
+  }
 }
 ```
 

@@ -17,6 +17,7 @@ Generate a daily training summary. Depth where it matters, tight everywhere else
 4. `get_scheduled_workouts` today → today + 7.
 5. For today's scheduled workout: call `get_workout_by_id(workoutId)` to get actual interval structure — don't infer from title.
 6. For yesterday's activity: call `get_activity_details(activityId)` to get `ambient_weather` (Open-Meteo, not Garmin watch reading).
+7. `nutrition_plan_vs_actual(days_back=2)` — yesterday's plan vs actual. Skip the line in output if `no_plan_available=true` or yesterday's row has no plan; otherwise include the one-line fueling recap in the Yesterday section.
 
 **If `get_athlete_baseline` returns `{"error": "..."}`:** The nightly refresh hasn't populated the cache. Note this at the top of the output ("⚠️ Baseline cache empty — trigger daily-refresh workflow"), then proceed with the remaining data and skip any baseline-derived sections (multi-method flags, LT1, consensus comparisons).
 
@@ -38,7 +39,8 @@ Use this structure literally. Section headers as H2 (##), bullets as `-`.
 ## Yesterday
 {Activity 1 — sport, duration, key metric, TE, 1-line coach take. If outdoor AND ambient temp outside 50-70°F: include temp/humidity. If indoor (ambient_weather.skipped=true): skip weather entirely.}
 {Activity 2 if any — same format}
-TL added: {n}. Fueling: {kcal in/out · P/C/F OR "not logged"}.
+TL added: {n}.
+Fueling vs plan (from `nutrition_plan_vs_actual` row for yesterday): {target N kcal / actual N / delta ±N · protein N/N} {if delta < -500 or protein > 20g short: "⚠️ under-fueled — compensate today"; if delta > +500 and session was easy: "⚠️ over — hard day coming"; else: "on plan".}  If yesterday had foods_logged=0: "not logged — can't compare to plan."
 
 ## Today: {scheduled workout title} — {sport}
 
