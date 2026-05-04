@@ -148,6 +148,8 @@ For each scheduled workout this week: filter `get_activities` (last 90d) to matc
 | Mon | {workout} | {from history, with "(median of N)" or "(est)" suffix} | {BMR×1.3 + burn + goal adj} | {weight_kg × 1.7-2.0} / {weight_kg × C} / {25% kcal / 9} | {fueling timing if hard day} |
 | ... | ... | ... | ... | ... | ... |
 
+When you emit the `nutrition_plan` object in the snapshot, include **both** `target_kcal` AND `expected_expenditure_kcal` per day. `expected_expenditure_kcal` = estimated BMR + the "Est burn" column above. This is what lets `nutrition_plan_vs_actual` auto-adjust targets mid-week when actual burn differs from plan.
+
 Carb ratio C: 3 g/kg rest · 4 g/kg easy · 5-6 g/kg tempo/SST · 7-8 g/kg threshold/VO2 or ride >2h.
 
 **Weekly totals:** {sum target intake · sum protein · sum carbs} vs goal-required sum. Flag if off by >10%.
@@ -182,9 +184,18 @@ Call `save_weekly_snapshot` with this object (stored in R2, auto-retrieved by ne
     // one entry PER DAY of the upcoming week, keyed by YYYY-MM-DD.
     // These targets are what nutrition_plan_vs_actual will compare
     // against actual food-log entries during the week.
+    //
+    // `expected_expenditure_kcal` is the TOTAL daily calorie burn
+    // we're assuming when we set `target_kcal` (BMR + expected session
+    // burn). If actual burn differs (longer ride, unplanned session,
+    // skipped day), nutrition_plan_vs_actual auto-computes an
+    // `adjusted_target_kcal` = target_kcal + (actual_expenditure -
+    // expected_expenditure). This makes the target self-correcting.
     "2026-05-05": {
       "session": "ROUVY Sweet Spot Builder 90min",
-      "target_kcal": N, "protein_g": N, "carbs_g": N, "fat_g": N,
+      "target_kcal": N,
+      "expected_expenditure_kcal": N,  // BMR (~1700) + expected session burn
+      "protein_g": N, "carbs_g": N, "fat_g": N,
       "notes": "hard day — fuel pre/during/post"
     },
     "2026-05-06": { ... }

@@ -32,19 +32,24 @@ Plan source: {plan_source_weekly_snapshot date} — {if >10 days old: "⚠️ pl
 
 ## Daily Tracking
 
-| Day | Session | Target kcal | Actual | Δ | P target / actual | Foods | Flag |
-|---|---|---|---|---|---|---|---|
-| Mon | {session} | {n} | {n or "—"} | {±n} | {n}/{n} | {count} | {⚠️ if delta <-500 or >+500 or foods=0} |
-| Tue | ... | ... | ... | ... | ... | ... | ... |
-| ... | | | | | | | |
+For each day, the "Target" column shows `adjusted_target_kcal` (plan target adjusted for actual expenditure on completed days). When the adjusted target differs from the planned target by >100 kcal, show both in the cell: "2850→3100" so the user can see how expenditure differed from plan. Use `target_kcal` only for future days or when adjusted is null.
+
+| Day | Session | Expenditure | Target (adjusted) | Actual | Δ vs adj | P (actual/target) | Foods | Flag |
+|---|---|---|---|---|---|---|---|---|
+| Mon | {session} | {n} | {plan→adjusted or just plan if future} | {n or "—"} | {±n} | {n}/{n} | {count} | {⚠️ if delta vs adjusted <-500 or >+500, or foods=0 on past day} |
+| ... | | | | | | | | |
+
+**Row interpretation note:** if `adjustment_source` is "window median expenditure (fallback — plan didn't store expected expenditure)" on any row, add a footnote: *"Targets on older plan days adjusted using window-median expenditure — less precise than when the plan stores expected burn per day."*
 
 ## Week-to-Date Totals
 
-- **Target intake:** {sum} kcal · P {n}g / C {n}g / F {n}g
-- **Actual intake:** {sum} kcal · P {n}g / C {n}g / F {n}g (from {days_logged}/{N} days logged)
-- **Expenditure:** {sum} kcal (BMR + active)
+- **Planned target:** {totals.target_kcal} kcal (static plan from /weekly)
+- **Adjusted target:** {totals.adjusted_target_kcal} kcal (accounts for actual expenditure on completed days) ← use THIS for adherence math.
+- **Actual intake:** {totals.actual_kcal} kcal · P {totals.actual_p}g / C {totals.actual_c}g / F {totals.actual_f}g (from {days_logged}/{N} days logged)
+- **Expenditure:** {totals.expenditure} kcal (BMR + active)
 - **Net (intake − expenditure):** {±n}
-- **Plan adherence:** {consistent / spotty — if days_logged < 4 of target days, call out}
+- **Adherence vs adjusted target:** {intake − adjusted_target} — within ±300 kcal = on plan; larger means a meaningful over/under.
+- **Plan-vs-adjusted difference:** {adjusted_target - target_kcal} — tells you how much harder/easier the week was than Sunday predicted. >+500 = week was unexpectedly harder (you need more food); <-500 = easier (you banked a natural deficit).
 
 ## Protein hit rate
 {M/N days at ≥1.6 g/kg of {weight_kg}kg = {target_per_day}g}. {Flag if <60% hit rate — chronic protein gap hurts recovery.}

@@ -606,20 +606,24 @@ def get_weekly_snapshots(weeks_back: int = 1) -> list[dict]:
 
 
 def nutrition_plan_vs_actual(days_back: int = 7) -> dict:
-    """Compare /weekly's nutrition plan (stored in the most recent weekly
-    snapshot) against actual food logged in Garmin Connect.
+    """Compare /weekly's nutrition plan against actual food logged +
+    actual expenditure.
 
-    Returns a per-day table covering the last `days_back` days:
-      - target_kcal / target_P / target_C / target_F (from weekly snapshot
-        nutrition_plan[date])
-      - actual_kcal / actual_P / actual_C / actual_F (from
-        nutrition_food_log.dailyNutritionContent)
-      - delta per field
-      - logged_foods count (so the skill can flag "not logged")
-      - expenditure (BMR + session kcal burned)
-      - net (actual intake - expenditure)
+    Three target concepts per day:
+      - target_kcal       : the static plan from Sunday
+      - adjusted_target   : plan + (actual expenditure - expected
+                            expenditure). Reflects what the user
+                            SHOULD have eaten given what actually
+                            happened that day. Undefined on days
+                            with no expenditure data.
+      - garmin_goal       : Garmin Connect's own daily goal
+                            (activity-adjusted in their app)
 
-    Plus weekly totals row summing target vs actual deltas.
+    adjusted_target is the most actionable for "did I eat enough
+    today?" — a planned 2800 kcal day where the user went 30min longer
+    should be 3100 kcal, not 2800.
+
+    Returns per-day rows + weekly totals + logging summary.
     """
     days_back = max(1, min(int(days_back), 14))
     today_d = date.today()
@@ -653,34 +657,26 @@ def nutrition_plan_vs_actual(days_back: int = 7) -> dict:
                 weight_kg = round(w / 1000.0, 1) if w > 500 else round(w, 1)
                 break
 
-    rows = []
-    sums = {"target_kcal": 0, "actual_kcal": 0, "target_p": 0, "actual_p": 0,
-            "target_c": 0, "actual_c": 0, "target_f": 0, "actual_f": 0,
-            "expenditure": 0, "days_with_target": 0, "days_logged": 0}
-
+    # First pass: collect per-day raw data (no adjusted target yet —
+    # need a fallback expected-expenditure baseline computed from the
+    # window for days where the plan didn't store one).
+    raw_days = []
     for i in range(days_back):
         d = start_d + timedelta(days=i)
         d_iso = d.isoformat()
         day_name = d.strftime("%a")
-
-        # Target from plan (plan keys may be YYYY-MM-DD or weekday names)
         day_plan = plan.get(d_iso) or plan.get(day_name) or {}
 
-        # Actual from cached food log
         fl = food_log.get(d_iso)
         consumed = {}
         foods_count = 0
+        garmin_goal = None
         if isinstance(fl, dict) and "error" not in fl:
             consumed = fl.get("dailyNutritionContent") or {}
             foods_count = len(fl.get("loggedFoodsWithServingSizes") or [])
-
-        # Garmin's own adjusted goal (what the app shows)
-        garmin_goal = None
-        if isinstance(fl, dict):
             goals = fl.get("dailyNutritionGoals") or {}
             garmin_goal = goals.get("adjustedCalories") or goals.get("calories")
 
-        # Expenditure from stats_and_body (activeKilocalories + bmrKilocalories)
         sb = stats.get(d_iso) or {}
         expenditure = None
         if isinstance(sb, dict) and "error" not in sb:
@@ -689,15 +685,69 @@ def nutrition_plan_vs_actual(days_back: int = 7) -> dict:
             total_kcal = sb.get("totalKilocalories")
             expenditure = round(total_kcal or (bmr + active)) if (total_kcal or bmr or active) else None
 
+        raw_days.append({
+            "date": d_iso, "day": day_name, "day_plan": day_plan,
+            "consumed": consumed, "foods_count": foods_count,
+            "garmin_goal": garmin_goal, "expenditure": expenditure,
+        })
+
+    # Fallback "expected expenditure" for adjustment: median actual
+    # expenditure from the window's completed days. If the plan stored
+    # a per-day `expected_expenditure_kcal`, we prefer that.
+    window_expenditures = [r["expenditure"] for r in raw_days if r["expenditure"]]
+    median_expenditure = None
+    if window_expenditures:
+        sv = sorted(window_expenditures)
+        median_expenditure = sv[len(sv) // 2]
+
+    rows = []
+    sums = {"target_kcal": 0, "adjusted_target_kcal": 0, "actual_kcal": 0,
+            "target_p": 0, "actual_p": 0,
+            "target_c": 0, "actual_c": 0, "target_f": 0, "actual_f": 0,
+            "expenditure": 0, "days_with_target": 0, "days_logged": 0,
+            "days_with_adjusted": 0}
+
+    for raw in raw_days:
+        d_iso = raw["date"]
+        day_plan = raw["day_plan"]
+        consumed = raw["consumed"]
+        foods_count = raw["foods_count"]
+        expenditure = raw["expenditure"]
+
+        target_kcal = day_plan.get("target_kcal") or day_plan.get("kcal")
+        expected_exp = (
+            day_plan.get("expected_expenditure_kcal")
+            or day_plan.get("planned_expenditure_kcal")
+            or median_expenditure  # fallback
+        )
+
+        # Adjusted target: shift plan target by how much actual expenditure
+        # over/under-shot the expected expenditure.
+        adjusted_target = None
+        adjustment_source = None
+        if target_kcal is not None and expenditure is not None and expected_exp:
+            adjustment = expenditure - expected_exp
+            adjusted_target = round(target_kcal + adjustment)
+            adjustment_source = (
+                "plan.expected_expenditure_kcal"
+                if (day_plan.get("expected_expenditure_kcal")
+                    or day_plan.get("planned_expenditure_kcal"))
+                else "window median expenditure (fallback — plan didn't "
+                     "store expected expenditure)"
+            )
+
         row = {
             "date": d_iso,
-            "day": day_name,
-            "target_kcal": day_plan.get("target_kcal") or day_plan.get("kcal"),
+            "day": raw["day"],
+            "target_kcal": target_kcal,
+            "expected_expenditure_kcal": expected_exp,
+            "adjusted_target_kcal": adjusted_target,
+            "adjustment_source": adjustment_source,
             "target_p": day_plan.get("protein_g") or day_plan.get("protein"),
             "target_c": day_plan.get("carbs_g") or day_plan.get("carbs"),
             "target_f": day_plan.get("fat_g") or day_plan.get("fat"),
             "target_session": day_plan.get("session") or day_plan.get("workout"),
-            "garmin_goal_kcal": garmin_goal,
+            "garmin_goal_kcal": raw["garmin_goal"],
             "actual_kcal": consumed.get("calories"),
             "actual_p": consumed.get("protein"),
             "actual_c": consumed.get("carbs"),
@@ -705,9 +755,12 @@ def nutrition_plan_vs_actual(days_back: int = 7) -> dict:
             "foods_logged": foods_count,
             "expenditure_kcal": expenditure,
         }
-        # Deltas
-        if row["target_kcal"] is not None and row["actual_kcal"] is not None:
-            row["delta_kcal"] = round(row["actual_kcal"] - row["target_kcal"])
+
+        # Deltas — both against the static plan AND against the adjusted target
+        if target_kcal is not None and row["actual_kcal"] is not None:
+            row["delta_kcal_vs_plan"] = round(row["actual_kcal"] - target_kcal)
+        if adjusted_target is not None and row["actual_kcal"] is not None:
+            row["delta_kcal_vs_adjusted"] = round(row["actual_kcal"] - adjusted_target)
         if row["target_p"] is not None and row["actual_p"] is not None:
             row["delta_p"] = round(row["actual_p"] - row["target_p"], 1)
         if row["actual_kcal"] is not None and expenditure is not None:
@@ -715,12 +768,15 @@ def nutrition_plan_vs_actual(days_back: int = 7) -> dict:
         rows.append(row)
 
         # Accumulate
-        if row["target_kcal"]:
+        if target_kcal:
             sums["days_with_target"] += 1
-            sums["target_kcal"] += row["target_kcal"]
+            sums["target_kcal"] += target_kcal
             sums["target_p"] += (row["target_p"] or 0)
             sums["target_c"] += (row["target_c"] or 0)
             sums["target_f"] += (row["target_f"] or 0)
+        if adjusted_target is not None:
+            sums["days_with_adjusted"] += 1
+            sums["adjusted_target_kcal"] += adjusted_target
         if foods_count > 0 and row["actual_kcal"]:
             sums["days_logged"] += 1
             sums["actual_kcal"] += row["actual_kcal"]

@@ -40,7 +40,11 @@ Use this structure literally. Section headers as H2 (##), bullets as `-`.
 {Activity 1 — sport, duration, key metric, TE, 1-line coach take. If outdoor AND ambient temp outside 50-70°F: include temp/humidity. If indoor (ambient_weather.skipped=true): skip weather entirely.}
 {Activity 2 if any — same format}
 TL added: {n}.
-Fueling vs plan (from `nutrition_plan_vs_actual` row for yesterday): {target N kcal / actual N / delta ±N · protein N/N} {if delta < -500 or protein > 20g short: "⚠️ under-fueled — compensate today"; if delta > +500 and session was easy: "⚠️ over — hard day coming"; else: "on plan".}  If yesterday had foods_logged=0: "not logged — can't compare to plan."
+Fueling vs plan (from `nutrition_plan_vs_actual` yesterday row):
+  - Use `adjusted_target_kcal` when present (reflects actual yesterday's expenditure, not Sunday's guess). Fall back to `target_kcal` only if `adjusted_target_kcal` is null.
+  - Report: "{adjusted N kcal / actual N / Δ ±N}" — clarify inline that the target was adjusted from the planned N to reflect actual burn (e.g., "ride went 15min long → +180 kcal target").
+  - Flags: delta vs adjusted target <-500 OR protein short >20g → "⚠️ under-fueled — compensate today"; delta >+500 and session was easy → "⚠️ over — hard day coming"; else "on plan."
+  - If yesterday had foods_logged=0: "not logged — can't compare to plan."
 
 ## Today: {scheduled workout title} — {sport}
 
