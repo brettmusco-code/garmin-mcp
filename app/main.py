@@ -360,6 +360,45 @@ TOOLS = [
             },
         },
     },
+    {
+        "name": "save_weekly_snapshot",
+        "description": (
+            "Persist a weekly summary snapshot to R2. Called at the end of "
+            "the /weekly skill to auto-save the week's key metrics (FTP, "
+            "VDOT, CSS, weekly miles, CTL/ATL/TSB, race predictions, HRV "
+            "avg, nutrition totals). Next week's /weekly retrieves this "
+            "via get_weekly_snapshots for automatic WHAT CHANGED deltas — "
+            "no manual copy-paste to project instructions needed."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "snapshot": {
+                    "type": "object",
+                    "description": "The JSON snapshot object. Must include a 'date' field (YYYY-MM-DD) used as the R2 key.",
+                },
+            },
+            "required": ["snapshot"],
+        },
+    },
+    {
+        "name": "get_weekly_snapshots",
+        "description": (
+            "Retrieve recent weekly snapshots saved by save_weekly_snapshot. "
+            "Returns a list of snapshots newest-first. weeks_back=1 for the "
+            "previous week's snapshot (typical WHAT CHANGED diff); larger "
+            "values give multi-week trajectory history."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "weeks_back": {
+                    "type": "number",
+                    "description": "How many past snapshots to return. Default 1.",
+                },
+            },
+        },
+    },
 ]
 
 
@@ -485,6 +524,15 @@ def _call_tool(name: str, args: dict) -> Any:
         return garmin.get_athlete_baseline(force_refresh=bool(args.get("force_refresh", False)))
     if name == "get_cycling_ftp":
         return garmin.get_cycling_ftp(force_refresh=bool(args.get("force_refresh", False)))
+    if name == "save_weekly_snapshot":
+        snap = args.get("snapshot")
+        if not isinstance(snap, dict):
+            raise ValueError("`snapshot` must be an object")
+        return garmin.save_weekly_snapshot(snap)
+    if name == "get_weekly_snapshots":
+        return garmin.get_weekly_snapshots(
+            weeks_back=int(args.get("weeks_back", 1))
+        )
     raise ValueError(f"Unknown tool: {name}")
 
 

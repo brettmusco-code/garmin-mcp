@@ -548,6 +548,63 @@ def get_cycling_ftp(force_refresh: bool = False):
     return data
 
 
+def save_weekly_snapshot(snapshot: dict) -> dict:
+    """Persist a /weekly summary snapshot to R2. Keyed by the 'date' field
+    in the snapshot (which should be the Monday of the week reviewed or
+    the day /weekly ran). Next week's /weekly retrieves this via
+    get_weekly_snapshots() to compute WHAT CHANGED deltas automatically.
+
+    This eliminates the manual copy-paste-to-project-instructions loop.
+
+    Returns {"saved": true, "key": "..."} on success.
+    """
+    if not isinstance(snapshot, dict):
+        raise ValueError("snapshot must be a dict")
+    snap_date = snapshot.get("date") or date.today().isoformat()
+    # Normalize to YYYY-MM-DD
+    try:
+        d = datetime.strptime(snap_date[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        d = date.today()
+        snapshot["date"] = d.isoformat()
+    key_parts = [d.isoformat()]
+    args = {"date": d.isoformat()}
+    cache.put("weekly_snapshots", args, snapshot, key_parts=key_parts)
+    return {"saved": True, "date": d.isoformat()}
+
+
+def get_weekly_snapshots(weeks_back: int = 1) -> list[dict]:
+    """Return the most recent N weekly snapshots, newest-first.
+
+    weeks_back=1 returns the single most recent snapshot (typical for
+    WHAT CHANGED deltas). Larger values enable multi-week trajectory
+    charts.
+    """
+    weeks_back = max(1, min(int(weeks_back), 52))
+    keys = cache.list_keys(tool_prefix="weekly_snapshots", limit=500)
+    # Keys look like "{PREFIX}weekly_snapshots/{YYYY-MM-DD}.json"
+    dated = []
+    for k in keys:
+        try:
+            base = k.rsplit("/", 1)[-1].replace(".json", "")
+            d = datetime.strptime(base, "%Y-%m-%d").date()
+            dated.append((d, k))
+        except (ValueError, AttributeError):
+            continue
+    dated.sort(reverse=True)
+    out = []
+    for d, _ in dated[:weeks_back]:
+        snap = cache.get(
+            "weekly_snapshots",
+            {"date": d.isoformat()},
+            key_parts=[d.isoformat()],
+            ttl_seconds=IMMUTABLE_TTL,  # snapshots are historical; never expire
+        )
+        if snap is not None:
+            out.append(snap)
+    return out
+
+
 def get_lactate_threshold(
     startdate: str | date | None = None,
     enddate: str | date | None = None,

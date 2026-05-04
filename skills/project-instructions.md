@@ -54,25 +54,11 @@ fresh each value is — flag any baseline >14 days old.
 - Less than 4 weeks remain and no recent mention of the race in conversation
 - A new race has been hinted at in conversation but not recorded here
 
-## Prior weekly snapshot (for WHAT CHANGED trajectory comparison)
+## Weekly snapshots (automatic)
 
-Each time the `/weekly` skill runs, it ends with a "Save for next week" JSON block. Copy that block here, replacing the previous week's snapshot, so the next `/weekly` run can compute deltas.
+Weekly snapshots are stored in R2 automatically. The `/weekly` skill calls `save_weekly_snapshot` at the end of each run; the next `/weekly` calls `get_weekly_snapshots(weeks_back=1)` to pull last week's snapshot for WHAT CHANGED deltas. No manual paste required.
 
-**Last weekly snapshot:**
-```json
-{
-  "date": null,
-  "bike_ftp_consensus": null,
-  "run_vdot": null,
-  "css_sec_per_100m": null,
-  "weekly_miles": {"bike": null, "run": null, "swim_meters": null},
-  "ctl": null, "atl": null, "tsb": null,
-  "race_predictions": {},
-  "hrv_avg": null,
-  "avg_daily_kcal_intake": null,
-  "weekly_kcal_delta": null
-}
-```
+Multi-week history (e.g., `get_weekly_snapshots(weeks_back=12)`) is available for ad-hoc trajectory analysis.
 
 ## Multi-sport context
 

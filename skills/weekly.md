@@ -19,7 +19,7 @@ Weekly training review. Denser than `/morning` — weekly patterns need a fuller
 6. `analyze_training_period` — this week's totals.
 7. For key sessions (top 3 hardest this week): `get_activity_details(activityId)` for `ambient_weather` + full splits.
 
-**Prior-weekly reference:** Check project memory for last week's `/weekly` summary. If present, use for the "WHAT CHANGED" section. If absent, note "first weekly run — trajectory starts from here" and save current as baseline for future comparison.
+**Prior-weekly reference:** Call `get_weekly_snapshots(weeks_back=1)` to retrieve last week's snapshot automatically from R2. If the list is non-empty, use snapshots[0] for the "WHAT CHANGED" deltas. If empty, note "first weekly run — trajectory starts from here."
 
 **Race target:** Check project memory for current race target (event, date, distance). If none, ask what I'm training for. If set, compute weeks-remaining and use for the RACE COUNTDOWN section.
 
@@ -156,21 +156,30 @@ Carb ratio C: 3 g/kg rest · 4 g/kg easy · 5-6 g/kg tempo/SST · 7-8 g/kg thres
 ## 🎯 This Week's Priority
 {Single sentence. "Base-build" / "threshold push" / "deload" / "race-week taper". Commit.}
 
-## 💾 Save for next week
-{Emit a compact JSON-like block with key values so next week's /weekly can compute deltas:
-  "weekly_snapshot": {
-    "date": "YYYY-MM-DD",
-    "bike_ftp_consensus": N,
-    "run_vdot": N,
-    "css_sec_per_100m": N,
-    "weekly_miles": {"bike": N, "run": N, "swim_meters": N},
-    "ctl": N, "atl": N, "tsb": N,
-    "race_predictions": {...},
-    "hrv_avg": N,
-    "avg_daily_kcal_intake": N,
-    "weekly_kcal_delta": N
-  }
+## 💾 Snapshot saved
+Call `save_weekly_snapshot` with this object (stored in R2, auto-retrieved by next week's /weekly — no manual paste needed):
+
+```
+{
+  "date": "YYYY-MM-DD",   // Monday of the reviewed week
+  "bike_ftp_consensus": N,
+  "run_vdot": N,
+  "css_sec_per_100m": N,
+  "weekly_miles": {"bike": N, "run": N, "swim_meters": N},
+  "ctl": N, "atl": N, "tsb": N,
+  "race_predictions": {"5k_sec": N, "10k_sec": N, "half_sec": N, "mar_sec": N},
+  "hrv_avg": N,
+  "avg_daily_kcal_intake": N,
+  "avg_daily_kcal_expenditure": N,
+  "weekly_kcal_delta": N,
+  "protein_target_hit_days": N,
+  "days_logged": N,
+  "key_session_counts": {"run_key": N, "bike_key": N, "swim_key": N},
+  "priority": "base-build | threshold push | deload | race taper"
 }
+```
+
+After successful save, acknowledge inline: "Snapshot saved for {date}. Next Sunday's /weekly will auto-compute deltas from this."
 ```
 
 ### Rules
