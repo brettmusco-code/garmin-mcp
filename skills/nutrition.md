@@ -15,8 +15,9 @@
 Mid-week nutrition check-in. Shows how well I've matched my /weekly nutrition plan so far and what I need to adjust for the rest of the week.
 
 **Data to pull:**
-1. `nutrition_plan_vs_actual(days_back={days_back or 7})` — the key tool. Returns per-day rows with target/actual/delta for kcal + P/C/F, foods_logged count, Garmin adjusted goal, expenditure, net balance. Also returns `plan_source_weekly_snapshot` (which /weekly the plan came from) and `no_plan_available` flag.
-2. `get_athlete_baseline` — for weight_kg (protein target math) and current weight goal context.
+1. `nutrition_plan_vs_actual(days_back={days_back or 7})` — the key tool. Returns per-day rows with target/actual/delta for kcal + P/C/F, foods_logged count, Garmin adjusted goal, expenditure, net balance. Also returns `plan_source_weekly_snapshot` and `no_plan_available` flag.
+2. `nutrition_trend(weeks=4)` — 4-week rollup of nutrition + weight. Returns per-week rows, weight_trajectory (start vs end kg, delta), summary (logging consistency %, intake rising/falling/stable, weight_trend).
+3. `get_athlete_baseline` — for weight_kg and weight-goal context.
 
 **If `no_plan_available=true`:** Note "⚠️ No nutrition plan from /weekly — either /weekly hasn't run yet, or the snapshot lacks a nutrition_plan field. Run /weekly on Sunday to generate one." Then fall back to expenditure-only analysis (actual intake vs expenditure, no target comparison).
 
@@ -55,8 +56,21 @@ Plan source: {plan_source_weekly_snapshot date} — {if >10 days old: "⚠️ pl
 - **Hard days coming up:** {list any planned hard session in remaining days — remind to pre-fuel if target intake for that day is above average}
 - **Under-fueled days to compensate:** {list any day from table with delta <-500 — suggest +carb tomorrow}
 
+## 📉 4-Week Trend (from `nutrition_trend`)
+
+| Week of | Avg kcal in | Avg kcal out | Daily Δ | Days logged | Avg weight | Protein ≥target |
+|---|---|---|---|---|---|---|
+| {week_start 3 weeks ago} | {n} | {n} | {±n} | {n}/7 | {kg} | {n}/7 |
+| {week_start 2 weeks ago} | ... | ... | ... | ... | ... | ... |
+| {last week} | ... | ... | ... | ... | ... | ... |
+| {this week} | ... | ... | ... | ... | ... | ... |
+
+- **Weight trajectory:** {start_weight_kg} → {end_weight_kg} ({+/− delta_kg}kg over 4w). Matches goal? {align with project-memory goal: losing on-pace / behind / ahead / stable against maintenance}.
+- **Intake trend:** {rising / stable / falling}. {Interpretation — "declining intake tracks training deload" vs "unintentional drift".}
+- **Logging consistency:** {logging_consistency_pct}% ({total_days_logged}/{total_window_days}). {Flag if <60% — can't trust the trend.}
+
 ## Recommended focus
-{Single sentence. "Hit protein target 3 more days" / "Close 1400 kcal deficit by Sunday" / "Log every meal — only 2/5 days tracked" / "On plan — keep it up."}
+{Single sentence tying together this-week adherence + the 4w trend. Examples: "Weight dropped 1.2kg in 3 weeks but intake rose — goal on track, keep logging 5+ days/wk" / "4w weight stable despite 500-kcal deficit — likely under-logging or TDEE higher than estimated" / "Protein hit <50% all 4 weeks — chronic gap, prioritize this."}
 ```
 
 ### Rules

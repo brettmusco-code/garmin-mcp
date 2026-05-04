@@ -420,6 +420,27 @@ TOOLS = [
             },
         },
     },
+    {
+        "name": "nutrition_trend",
+        "description": (
+            "Multi-week trend of nutrition adherence + weight. Returns per-"
+            "week rows (avg daily intake, expenditure, delta, days logged, "
+            "protein-hit days, avg weight) plus overall weight trajectory "
+            "(start vs end, delta) and summary (logging consistency %, "
+            "intake rising/falling/stable, weight trend). Uses cached "
+            "weekly snapshots where present, synthesizes from raw daily "
+            "data otherwise."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "weeks": {
+                    "type": "number",
+                    "description": "Weeks of history to return, 1-26. Default 4.",
+                },
+            },
+        },
+    },
 ]
 
 
@@ -557,6 +578,10 @@ def _call_tool(name: str, args: dict) -> Any:
     if name == "nutrition_plan_vs_actual":
         return garmin.nutrition_plan_vs_actual(
             days_back=int(args.get("days_back", 7))
+        )
+    if name == "nutrition_trend":
+        return garmin.nutrition_trend(
+            weeks=int(args.get("weeks", 4))
         )
     raise ValueError(f"Unknown tool: {name}")
 

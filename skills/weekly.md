@@ -12,6 +12,7 @@ Weekly training review. Denser than `/morning` — weekly patterns need a fuller
 
 **Data to pull in parallel:**
 1. `get_athlete_baseline` — pre-computed nightly (~300ms). Current + prior-week snapshots for delta comparison. Includes 90-day per-sport fitness trends, multi-method thresholds with CI + flags, key_session_counts, race predictions, fitness_drift, staleness.
+1a. `nutrition_trend(weeks=4)` — 4-week nutrition + weight rollup for the Nutrition Review section.
 2. `get_activities` — this week (today - 7 → today) AND last week (today - 14 → today - 7). Also prior 3 weeks (today - 28 → today - 7) for trend context.
 3. `get_daily_summaries` — last 14 days with `[sleep, hrv, rhr, training_readiness, stats_and_body, stress, nutrition_food_log, nutrition_meals, body_battery_events]`. 14 days so we can compare this week's nutrition/sleep/HRV averages to prior week.
 4. `get_scheduled_workouts` — today → today + 7.
@@ -133,6 +134,7 @@ Then synthesize:
 - **Protein target hit:** {M/N logged days at ≥1.6 g/kg of baseline.weight_kg}.
 - **Carb adequacy on hard days:** for each day with a hard session, did carbs meet 5-7 g/kg? List any that fell short.
 - **Goal alignment:** from project memory weight goal. If "lose 2kg by DATE": required weekly deficit = (2 × 7700 / weeks_remaining). Compare to actual weekly delta. Report as: "Required: -N kcal/wk. Actual: -N kcal/wk. Off-pace by N — need +X kcal/day deficit OR +Y min extra Z2."
+- **4-week trend** (from `nutrition_trend`): weight trajectory {start→end kg, Δ}, intake trend {rising/stable/falling}, logging consistency {%}. 1-line synthesis: is this week an outlier or part of a pattern?
 - **Under-logging suspicion:** if a day shows consumed kcal < 1200 AND ≥1hr of hard training that day, flag as "likely under-logged — missed meals/snacks." Don't let those days bias the avg downward.
 
 **Next 7 days:**

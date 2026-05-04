@@ -740,6 +740,228 @@ def nutrition_plan_vs_actual(days_back: int = 7) -> dict:
     }
 
 
+def nutrition_trend(weeks: int = 4) -> dict:
+    """4-week (or more) trend of nutrition adherence + weight.
+
+    Per week returns: avg daily intake, avg expenditure, weekly delta,
+    days logged, avg protein, protein-target-hit count, median weight.
+    Plus an overall weight trajectory and logging-consistency summary.
+
+    Data sources (prefers faster/cheaper):
+      1. Weekly snapshots from R2 if present (holds pre-computed totals)
+      2. Otherwise synthesize from raw daily nutrition_food_log +
+         stats_and_body + body_composition entries
+    """
+    weeks = max(1, min(int(weeks), 26))
+    today_d = date.today()
+    window_days = weeks * 7
+    window_start = today_d - timedelta(days=window_days - 1)
+
+    # Pull the raw data once — both paths (snapshot + synthesis) can use it
+    daily = get_daily_summaries(
+        startdate=window_start.isoformat(),
+        enddate=today_d.isoformat(),
+        metrics=["nutrition_food_log", "stats_and_body"],
+    )
+    food_log = daily.get("nutrition_food_log", {})
+    stats = daily.get("stats_and_body", {})
+
+    # Weight readings over the window — dateWeightList is daily samples
+    weight_readings: list[tuple[date, float]] = []
+    try:
+        bc = get_body_composition(
+            startdate=window_start.isoformat(),
+            enddate=today_d.isoformat(),
+        )
+        for entry in (bc.get("dateWeightList") or []):
+            try:
+                d_str = entry.get("date") or entry.get("calendarDate")
+                w_grams = entry.get("weight")
+                if d_str and w_grams:
+                    d = datetime.strptime(d_str[:10], "%Y-%m-%d").date()
+                    weight_readings.append((d, w_grams / 1000.0))
+            except (ValueError, TypeError):
+                continue
+    except Exception:  # noqa: BLE001
+        pass
+    # Fall back to stats_and_body bodyWeight field
+    if not weight_readings:
+        for d_iso, payload in stats.items():
+            if isinstance(payload, dict) and "error" not in payload:
+                w = payload.get("bodyWeight") or payload.get("weight")
+                if w:
+                    try:
+                        d = datetime.strptime(d_iso, "%Y-%m-%d").date()
+                        # stats_and_body weight is typically in grams
+                        weight_readings.append((d, w / 1000.0 if w > 500 else w))
+                    except (ValueError, TypeError):
+                        continue
+    weight_readings.sort()
+
+    # Pull available weekly snapshots for the window
+    snapshots = get_weekly_snapshots(weeks_back=weeks + 2)  # grab a few extra
+
+    # Build week buckets (Mon -> Sun, aligned so the window ends today)
+    def _week_of(d: date) -> date:
+        return d - timedelta(days=(today_d - d).days % 7)
+    week_starts = [today_d - timedelta(days=(today_d.weekday() - 0) % 7 + 7 * i)
+                   for i in range(weeks)]
+    week_starts = sorted(set(week_starts))
+    # Ensure we cover `weeks` full weeks ending at today
+    week_starts = [today_d - timedelta(days=today_d.weekday() + 7 * i) for i in range(weeks)]
+    week_starts = sorted(set(week_starts))
+
+    week_rows = []
+    baseline = get_athlete_baseline()
+    weight_kg_current = (baseline.get("weight_kg") if isinstance(baseline, dict) else None)
+
+    for ws in week_starts:
+        we = ws + timedelta(days=6)
+        week_days = [(ws + timedelta(days=i)).isoformat() for i in range(7)]
+
+        # Check if a snapshot exists for this week
+        snap_match = None
+        for s in snapshots:
+            s_date = s.get("date")
+            if not s_date:
+                continue
+            try:
+                sd = datetime.strptime(s_date[:10], "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            if ws <= sd <= we:
+                snap_match = s
+                break
+
+        if snap_match:
+            # Use pre-computed values
+            row = {
+                "week_start": ws.isoformat(),
+                "week_end": we.isoformat(),
+                "avg_daily_kcal_intake": snap_match.get("avg_daily_kcal_intake"),
+                "avg_daily_kcal_expenditure": snap_match.get("avg_daily_kcal_expenditure"),
+                "avg_daily_delta": (
+                    snap_match.get("weekly_kcal_delta", 0) / 7.0
+                    if snap_match.get("weekly_kcal_delta") is not None
+                    else None
+                ),
+                "days_logged": snap_match.get("days_logged"),
+                "protein_target_hit_days": snap_match.get("protein_target_hit_days"),
+                "source": "snapshot",
+            }
+        else:
+            # Synthesize from raw daily data
+            kcal_intake_vals = []
+            kcal_expenditure_vals = []
+            protein_vals = []
+            days_logged = 0
+            protein_hit = 0
+            protein_target_per_day = (weight_kg_current * 1.6) if weight_kg_current else None
+            for d_iso in week_days:
+                fl = food_log.get(d_iso)
+                if isinstance(fl, dict) and "error" not in fl:
+                    content = fl.get("dailyNutritionContent") or {}
+                    foods_count = len(fl.get("loggedFoodsWithServingSizes") or [])
+                    k = content.get("calories")
+                    p = content.get("protein")
+                    if foods_count > 0 and k:
+                        kcal_intake_vals.append(k)
+                        days_logged += 1
+                        if p:
+                            protein_vals.append(p)
+                            if protein_target_per_day and p >= protein_target_per_day:
+                                protein_hit += 1
+                sb = stats.get(d_iso) or {}
+                if isinstance(sb, dict) and "error" not in sb:
+                    total = sb.get("totalKilocalories")
+                    bmr = sb.get("bmrKilocalories") or 0
+                    active = sb.get("activeKilocalories") or 0
+                    e = total or (bmr + active if (bmr or active) else None)
+                    if e:
+                        kcal_expenditure_vals.append(e)
+
+            avg_intake = round(sum(kcal_intake_vals) / len(kcal_intake_vals)) if kcal_intake_vals else None
+            avg_exp = round(sum(kcal_expenditure_vals) / len(kcal_expenditure_vals)) if kcal_expenditure_vals else None
+            avg_delta = (avg_intake - avg_exp) if (avg_intake and avg_exp) else None
+            avg_protein = round(sum(protein_vals) / len(protein_vals), 1) if protein_vals else None
+
+            row = {
+                "week_start": ws.isoformat(),
+                "week_end": we.isoformat(),
+                "avg_daily_kcal_intake": avg_intake,
+                "avg_daily_kcal_expenditure": avg_exp,
+                "avg_daily_delta": avg_delta,
+                "avg_daily_protein_g": avg_protein,
+                "days_logged": days_logged,
+                "protein_target_hit_days": protein_hit,
+                "source": "synthesized",
+            }
+
+        # Attach this week's median weight
+        week_weights = [w for d, w in weight_readings if ws <= d <= we]
+        if week_weights:
+            row["avg_weight_kg"] = round(sum(week_weights) / len(week_weights), 2)
+            row["weight_readings_count"] = len(week_weights)
+        else:
+            row["avg_weight_kg"] = None
+            row["weight_readings_count"] = 0
+
+        week_rows.append(row)
+
+    # Overall weight trajectory
+    weight_trajectory = None
+    if len(weight_readings) >= 2:
+        # Use first and last 3-reading medians for noise-robust endpoints
+        first_vals = [w for _, w in weight_readings[:3]] or [weight_readings[0][1]]
+        last_vals = [w for _, w in weight_readings[-3:]] or [weight_readings[-1][1]]
+        start_weight = round(sum(first_vals) / len(first_vals), 2)
+        end_weight = round(sum(last_vals) / len(last_vals), 2)
+        weight_trajectory = {
+            "start_weight_kg": start_weight,
+            "end_weight_kg": end_weight,
+            "delta_kg": round(end_weight - start_weight, 2),
+            "readings_count": len(weight_readings),
+            "window_days": window_days,
+        }
+
+    # Summary + logging consistency
+    total_days_logged = sum(r.get("days_logged") or 0 for r in week_rows)
+    total_window_days = weeks * 7
+    logging_pct = round(100 * total_days_logged / total_window_days, 1) if total_window_days else 0
+
+    # Trend direction
+    intake_series = [r.get("avg_daily_kcal_intake") for r in week_rows if r.get("avg_daily_kcal_intake")]
+    if len(intake_series) >= 3:
+        early_avg = sum(intake_series[:len(intake_series)//2]) / max(1, len(intake_series)//2)
+        late_avg = sum(intake_series[len(intake_series)//2:]) / max(1, len(intake_series) - len(intake_series)//2)
+        intake_trend = "rising" if late_avg > early_avg * 1.03 else ("falling" if late_avg < early_avg * 0.97 else "stable")
+    else:
+        intake_trend = "insufficient data"
+
+    weight_trend = None
+    if weight_trajectory:
+        delta = weight_trajectory["delta_kg"]
+        if abs(delta) < 0.2:
+            weight_trend = "stable"
+        elif delta < 0:
+            weight_trend = f"losing ({abs(delta)}kg over {weeks}w)"
+        else:
+            weight_trend = f"gaining ({delta}kg over {weeks}w)"
+
+    return {
+        "weeks": week_rows,
+        "weight_trajectory": weight_trajectory,
+        "summary": {
+            "total_days_logged": total_days_logged,
+            "total_window_days": total_window_days,
+            "logging_consistency_pct": logging_pct,
+            "intake_trend": intake_trend,
+            "weight_trend": weight_trend,
+            "weight_kg_current": weight_kg_current,
+        },
+    }
+
+
 def get_lactate_threshold(
     startdate: str | date | None = None,
     enddate: str | date | None = None,
