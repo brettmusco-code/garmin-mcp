@@ -45,6 +45,7 @@ Fueling vs plan (from `nutrition_plan_vs_actual` yesterday row):
   - Report: "{adjusted N kcal / actual N / Δ ±N}" — clarify inline that the target was adjusted from the planned N to reflect actual burn (e.g., "ride went 15min long → +180 kcal target").
   - Flags: delta vs adjusted target <-500 OR protein short >20g → "⚠️ under-fueled — compensate today"; delta >+500 and session was easy → "⚠️ over — hard day coming"; else "on plan."
   - If yesterday had foods_logged=0: "not logged — can't compare to plan."
+  - **Never report `garmin_goal_kcal` as expenditure.** That field is Garmin's app-side daily goal (BMR + active − deficit), not measured burn. If `expenditure_kcal` is null, say "expenditure not cached (yesterday's stats_and_body missed the nightly — will catch up tonight)" rather than substituting.
 
 ## Today: {scheduled workout title} — {sport}
 

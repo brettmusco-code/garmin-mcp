@@ -36,8 +36,14 @@ For each day, the "Target" column shows `adjusted_target_kcal` (plan target adju
 
 | Day | Session | Expenditure | Target (adjusted) | Actual | Δ vs adj | P (actual/target) | Foods | Flag |
 |---|---|---|---|---|---|---|---|---|
-| Mon | {session} | {n} | {plan→adjusted or just plan if future} | {n or "—"} | {±n} | {n}/{n} | {count} | {⚠️ if delta vs adjusted <-500 or >+500, or foods=0 on past day} |
+| Mon | {session} | {expenditure_kcal if present, else "—" — NEVER substitute garmin_goal_kcal here; they're different things} | {plan→adjusted or just plan if future} | {n or "—"} | {±n} | {n}/{n} | {count} | {⚠️ if delta vs adjusted <-500 or >+500, or foods=0 on past day} |
 | ... | | | | | | | | |
+
+**Data source rules for the Expenditure column:**
+- `expenditure_kcal` (from stats_and_body totalKilocalories OR BMR+active) is real measured expenditure. Use this.
+- `garmin_goal_kcal` (from nutrition_food_log.dailyNutritionGoals.adjustedCalories) is Garmin's app-side target, which = BMR + active − user's deficit setting. NOT the same as expenditure. Do NOT put it in the Expenditure column.
+- If `expenditure_kcal` is null (common under readonly mode when stats_and_body wasn't in the nightly refresh), show "—" and add a column note: "*Expenditure missing for {date} — stats_and_body not in cache. Next nightly will backfill.*"
+- If you want to surface Garmin's goal for context, add it as a separate "Garmin goal" column or note, never labeled as expenditure.
 
 **Row interpretation note:** if `adjustment_source` is "window median expenditure (fallback — plan didn't store expected expenditure)" on any row, add a footnote: *"Targets on older plan days adjusted using window-median expenditure — less precise than when the plan stores expected burn per day."*
 
