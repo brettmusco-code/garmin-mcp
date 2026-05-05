@@ -14,9 +14,18 @@ Required env (same as daily_refresh.py):
 """
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from datetime import date
+
+# garminconnect's login() calls logger.exception("Login failed") on any
+# auth failure, which dumps a full traceback to stderr even when we
+# catch the exception downstream. For today-refresh runs that correctly
+# defer token rotation to the anchor run (ALLOW_OAUTH_REFRESH=false),
+# this stderr noise makes the log look like a real failure when it's
+# expected behavior. Raise the garminconnect logger level to quiet it.
+logging.getLogger("garminconnect").setLevel(logging.CRITICAL)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -53,11 +62,26 @@ def main() -> int:
     # 1. Today's daily summary metrics (force refresh).
     print(f"[1/3] daily summaries for today ({len(METRICS_TODAY)} metrics)")
     try:
-        garmin.get_daily_summaries(
+        result = garmin.get_daily_summaries(
             startdate=today_iso, enddate=today_iso,
             metrics=METRICS_TODAY, force_refresh=True,
         )
-        print("  ok")
+        # get_daily_summaries degrades gracefully — per-metric errors
+        # (including the ALLOW_OAUTH_REFRESH block) come back as
+        # {"error": "..."} on individual metric-day entries. Count them.
+        errored = 0
+        for m in METRICS_TODAY:
+            payload = result.get(m, {}).get(today_iso)
+            if isinstance(payload, dict) and "error" in payload:
+                errored += 1
+        ok_count = len(METRICS_TODAY) - errored
+        if errored == 0:
+            print(f"  ok ({ok_count}/{len(METRICS_TODAY)} metrics refreshed)")
+        elif errored == len(METRICS_TODAY):
+            print(f"  all {errored} metrics blocked — token expired, refresh deferred to anchor run")
+            return 0  # exit cleanly
+        else:
+            print(f"  partial: {ok_count} refreshed, {errored} deferred to anchor run")
     except Exception as ex:  # noqa: BLE001
         if _is_refresh_blocked(ex):
             print("  skipped — token expired, refresh deferred to anchor run")

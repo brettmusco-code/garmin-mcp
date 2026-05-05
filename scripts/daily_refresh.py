@@ -28,9 +28,15 @@ What gets refreshed:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from datetime import date, timedelta
+
+# Silence garminconnect's logger.exception("Login failed") which dumps
+# a full traceback to stderr even when downstream code catches the
+# exception. We handle auth errors explicitly; no need for the noise.
+logging.getLogger("garminconnect").setLevel(logging.CRITICAL)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
