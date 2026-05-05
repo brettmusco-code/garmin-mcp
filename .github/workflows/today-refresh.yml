@@ -1,8 +1,12 @@
 name: today-refresh
-# Mid-day refresh — every 4 hours, repulls today's metrics + activities +
+# Mid-day refresh — every 30 min, repulls today's metrics + activities +
 # activity details. Keeps the cache current for sessions completed during
 # the day so claude.ai /weekly and /session-review can read fresh data
 # without waiting for the 3am nightly.
+#
+# Scheduled runs will NOT resume after a workflow disable+enable until
+# this file is committed. Bump the header comment to trigger GitHub's
+# schedule re-registration when needed.
 
 on:
   schedule:
