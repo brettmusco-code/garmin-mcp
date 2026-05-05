@@ -29,6 +29,7 @@ import base64
 import io
 import logging
 import os
+import sys
 import tarfile
 import tempfile
 import time
@@ -175,19 +176,33 @@ def _patched_refresh(self):
             "The next anchor run (daily-refresh) will rotate the token."
         )
 
-    # Otherwise proceed with the real refresh.
-    logger.info("oauth2 token expired or near expiry — calling refresh")
-    result = _original_refresh(self)
+    # Otherwise proceed with the real refresh. Print (not just log) so
+    # the refresh lifecycle shows up in GitHub Actions output.
+    print("[tokens] oauth2 expired — calling Garmin exchange endpoint",
+          flush=True)
+    try:
+        result = _original_refresh(self)
+    except Exception as ex:  # noqa: BLE001
+        print(f"[tokens] REFRESH FAILED: {type(ex).__name__}: {ex}",
+              file=sys.stderr, flush=True)
+        raise
+    print("[tokens] refresh succeeded — new token expires at "
+          f"{getattr(self.oauth2_token, 'expires_at', '?')}", flush=True)
 
     # Persist the freshly-refreshed token to R2 so other containers can
     # reuse it within the 1-hour window.
     home = getattr(self, "_garth_home", None)
-    if home:
+    if not home:
+        print("[tokens] WARNING: _garth_home not set — token refresh will "
+              "NOT persist to R2. Next container will hit expired cached "
+              "token.", file=sys.stderr, flush=True)
+    else:
         try:
             persist_tokens_dir(str(home))
-            logger.info("refreshed oauth2 token persisted to R2")
+            print(f"[tokens] persisted refreshed token to R2", flush=True)
         except Exception as ex:  # noqa: BLE001
-            logger.warning("post-refresh R2 persist failed: %s", ex)
+            print(f"[tokens] R2 persist FAILED: {ex}", file=sys.stderr,
+                  flush=True)
     return result
 
 
