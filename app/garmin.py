@@ -141,19 +141,28 @@ def get_client() -> Garmin:
                 "Chrome/131.0.0.0 Safari/537.36"
             )
         })
+        # IMPORTANT: use garth.load() instead of client.login(tokens_dir).
+        # client.login() eagerly fetches the user profile to "verify" the
+        # token, which burns an OAuth2 exchange call on EVERY container
+        # startup — even when all our subsequent calls will be cache hits
+        # that never touch Garmin. At ~dozens of container wakes per day
+        # across Render + GitHub Actions, that pattern trips Garmin's
+        # per-account anti-abuse heuristics (429 on exchange endpoint).
+        #
+        # garth.load() just deserializes OAuth1 + OAuth2 token state from
+        # disk — no network call. The first Garmin API call that needs
+        # auth will trigger refresh-on-demand through garth.request's
+        # expiry check, gated by our _patched_refresh.
         try:
-            client.login(tokens_dir)
+            client.garth.load(tokens_dir)
         except Exception as ex:  # noqa: BLE001
             msg = str(ex).lower()
             if "429" in msg or "too many requests" in msg or "rate limit" in msg:
                 _auth_failed_until = time.time() + AUTH_COOLDOWN_SEC
-                raise GarminRateLimitError(f"Garmin login throttled: {ex}") from ex
+                raise GarminRateLimitError(f"Garmin token load throttled: {ex}") from ex
             raise
         # Set _garth_home so garth's refresh_oauth2 dumps refreshed tokens
         # to disk. Our patched refresh (in tokens.py) then pushes them to R2.
-        # Without this, refreshed tokens stay in memory only and are lost on
-        # container restart — forcing a fresh OAuth exchange every time
-        # Render wakes the container.
         client.garth._garth_home = tokens_dir
         # Bootstrap case: first deploy loaded tokens from env — push them
         # to R2 so subsequent restarts use R2 and skip the OAuth exchange
