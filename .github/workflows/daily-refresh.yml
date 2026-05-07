@@ -5,9 +5,11 @@ name: daily-refresh
 
 on:
   schedule:
-    # 07:00 UTC = 03:00 ET (EDT) / 02:00 ET (EST). GitHub Actions cron is
-    # always UTC and doesn't honor DST, so the ET hour shifts by 1 in winter.
-    - cron: '0 7 * * *'
+    # 03:17 UTC — off-the-hour to avoid top-of-hour cron contention, and
+    # during European night / US late evening when Garmin's OAuth endpoint
+    # sees the least global traffic. GitHub Actions cron is always UTC
+    # and doesn't honor DST.
+    - cron: '17 3 * * *'
   workflow_dispatch:
 
 jobs:

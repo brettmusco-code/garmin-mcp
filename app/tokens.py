@@ -133,6 +133,19 @@ def persist_tokens_dir(directory: str) -> None:
 #      fresh token and won't need its own refresh.
 _original_refresh = garth.Client.refresh_oauth2
 
+# Process-level circuit breaker. Once Garmin 429s the OAuth exchange
+# endpoint, every subsequent Garmin API call in this run will trigger
+# another refresh attempt (garth calls ensure_oauth2 before each request).
+# Without this breaker, one 429 cascades into hundreds of hits, which
+# makes the rate limit lockout worse. Once tripped, stays tripped for
+# the life of the process — the next scheduled run starts fresh.
+_refresh_circuit_tripped: Exception | None = None
+
+
+def _is_rate_limit(ex: BaseException) -> bool:
+    s = str(ex).lower()
+    return "429" in s or "too many requests" in s
+
 
 def _token_still_valid(token) -> tuple[bool, int]:
     """Return (is_valid, seconds_until_expiry). Missing/invalid token
@@ -157,6 +170,13 @@ def _patched_refresh(self):
             remaining,
         )
         return self.oauth2_token
+
+    # Circuit breaker: if an earlier refresh in this process already got
+    # 429'd, don't keep hammering the exchange endpoint. Re-raise the
+    # cached exception so callers see the same error without making
+    # Garmin's lockout worse.
+    if _refresh_circuit_tripped is not None:
+        raise _refresh_circuit_tripped
 
     # Token IS expired. Is this container authorized to refresh? Only the
     # "anchor" run (typically the 3am nightly) should call Garmin's
@@ -185,6 +205,12 @@ def _patched_refresh(self):
     except Exception as ex:  # noqa: BLE001
         print(f"[tokens] REFRESH FAILED: {type(ex).__name__}: {ex}",
               file=sys.stderr, flush=True)
+        if _is_rate_limit(ex):
+            global _refresh_circuit_tripped
+            _refresh_circuit_tripped = ex
+            print("[tokens] circuit breaker TRIPPED — further refresh "
+                  "attempts in this run will fail fast without contacting "
+                  "Garmin.", file=sys.stderr, flush=True)
         raise
     print("[tokens] refresh succeeded — new token expires at "
           f"{getattr(self.oauth2_token, 'expires_at', '?')}", flush=True)
