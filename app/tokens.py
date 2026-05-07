@@ -160,6 +160,7 @@ def _token_still_valid(token) -> tuple[bool, int]:
 
 
 def _patched_refresh(self):
+    global _refresh_circuit_tripped
     # Short-circuit: if the current OAuth2 token is still fresh enough,
     # don't contact Garmin's exchange endpoint at all. This is what
     # keeps us under Garmin's aggressive per-account rate limit.
@@ -206,7 +207,6 @@ def _patched_refresh(self):
         print(f"[tokens] REFRESH FAILED: {type(ex).__name__}: {ex}",
               file=sys.stderr, flush=True)
         if _is_rate_limit(ex):
-            global _refresh_circuit_tripped
             _refresh_circuit_tripped = ex
             print("[tokens] circuit breaker TRIPPED — further refresh "
                   "attempts in this run will fail fast without contacting "
