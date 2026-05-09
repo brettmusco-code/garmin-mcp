@@ -10,15 +10,16 @@ name: today-refresh
 
 on:
   schedule:
-    # Every 30 min. Counter-intuitively, MORE frequent runs are safer
-    # than less frequent when paired with ALLOW_OAUTH_REFRESH=false:
-    # Garmin OAuth2 tokens live 1 hour. If runs are <50 min apart the
-    # token from the previous run is still valid, so no refresh happens
-    # at all. A 3-hour cadence guarantees token expiry between runs →
-    # every run refreshes → maximum rate-limit pressure. 30-min cadence
-    # means ~48 runs/day but only ~1 OAuth exchange/day (at the anchor
-    # daily-refresh run).
-    - cron: '*/30 * * * *'
+    # Every 2 hours. Previous cadence was 30 min (~48 runs/day) to keep
+    # the cached OAuth2 token warm between runs. But each run still calls
+    # Garmin data endpoints (force-refresh of today's summaries and
+    # activities), contributing to the per-account rolling counter that
+    # triggers 429s on the OAuth exchange endpoint. 2h cadence = ~12
+    # runs/day while still catching late-afternoon/evening sessions
+    # within 2 hours of completion. Token staleness between runs is
+    # irrelevant: ALLOW_OAUTH_REFRESH=false means today-refresh never
+    # calls exchange anyway — the anchor daily-refresh owns that.
+    - cron: '0 */2 * * *'
   workflow_dispatch:
 
 jobs:

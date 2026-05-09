@@ -43,7 +43,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app import cache, garmin  # noqa: E402
 
 DAILY_LOOKBACK_DAYS = int(os.environ.get("DAILY_LOOKBACK_DAYS", "3"))
-FORCE_REFRESH_DAYS = int(os.environ.get("FORCE_REFRESH_DAYS", "1"))
+# today_refresh runs every 2h and already force-refreshes today's daily
+# summaries. The nightly doesn't need to re-hit Garmin for data that's
+# less than 2 hours old — let the cache TTL (24h) serve it instead.
+# Set >0 only if you need to guarantee a per-night Garmin poll
+# (e.g. today_refresh is disabled).
+FORCE_REFRESH_DAYS = int(os.environ.get("FORCE_REFRESH_DAYS", "0"))
 SCHEDULED_LOOKAHEAD_DAYS = int(os.environ.get("SCHEDULED_LOOKAHEAD_DAYS", "14"))
 MAX_CONSECUTIVE_429 = int(os.environ.get("MAX_CONSECUTIVE_429", "2"))
 
@@ -174,12 +179,16 @@ def main() -> int:
     print()
 
     # ---------- [3/5] scheduled workouts ----------
+    # Cache-first: scheduled_workouts has a 24h TTL, and the nightly run
+    # cadence matches that, so cache-miss path will refresh naturally.
+    # Skipping force_refresh avoids a Garmin call on any manual re-trigger
+    # fired within the same 24h window.
     ahead_end = (today + timedelta(days=SCHEDULED_LOOKAHEAD_DAYS)).isoformat()
     print(f"[3/5] scheduled_workouts — {today} → {ahead_end}")
     scheduled = []
     try:
         scheduled = garmin.get_scheduled_workouts(
-            startdate=today.isoformat(), enddate=ahead_end, force_refresh=True
+            startdate=today.isoformat(), enddate=ahead_end, force_refresh=False
         )
         print(f"  fetched {len(scheduled)} scheduled workouts")
         consec_429 = 0
@@ -240,13 +249,13 @@ def main() -> int:
         print(f"  ERROR: {str(ex)[:200]}", file=sys.stderr)
     print()
 
-    # ---------- [6/6] derived metrics (force-refresh — may 429) ----------
-    # Force-refresh the "latest X" endpoints so tomorrow's baseline has
-    # fresher source data. These are the highest risk for 429 since
-    # race_predictions / training_score / lactate_threshold all hit
-    # Garmin. If this aborts from 429, baseline above already succeeded
-    # with today's data — no data loss, just slightly staler inputs
-    # tomorrow.
+    # ---------- [6/6] derived metrics (cache-first) ----------
+    # These all have 24h TTLs. Cache-first means cache-miss triggers a
+    # real Garmin call naturally; a still-fresh cache entry (from a
+    # manual re-trigger earlier in the day) is reused without burning
+    # quota. The "latest X" endpoints are the most rate-sensitive in
+    # the whole refresh — race_predictions / training_score /
+    # lactate_threshold have been the historical 429 offenders.
     print("[6/6] derived metrics (race predictions, LT, training scores, etc.)")
     today_iso = today.isoformat()
 
@@ -265,14 +274,14 @@ def main() -> int:
             return True
 
     ops = [
-        ("race_predictions",   lambda: garmin.get_race_predictions(force_refresh=True)),
-        ("lactate_threshold",  lambda: garmin.get_lactate_threshold(force_refresh=True)),
-        ("hill_score",         lambda: garmin.get_training_score("hill", startdate=today_iso, force_refresh=True)),
-        ("endurance_score",    lambda: garmin.get_training_score("endurance", startdate=today_iso, force_refresh=True)),
-        ("personal_records",   lambda: garmin.get_personal_records(force_refresh=True)),
+        ("race_predictions",   lambda: garmin.get_race_predictions(force_refresh=False)),
+        ("lactate_threshold",  lambda: garmin.get_lactate_threshold(force_refresh=False)),
+        ("hill_score",         lambda: garmin.get_training_score("hill", startdate=today_iso, force_refresh=False)),
+        ("endurance_score",    lambda: garmin.get_training_score("endurance", startdate=today_iso, force_refresh=False)),
+        ("personal_records",   lambda: garmin.get_personal_records(force_refresh=False)),
         ("body_composition",   lambda: garmin.get_body_composition(
             startdate=(today - timedelta(days=30)).isoformat(),
-            enddate=today_iso, force_refresh=True,
+            enddate=today_iso, force_refresh=False,
         )),
     ]
     for label, fn in ops:
