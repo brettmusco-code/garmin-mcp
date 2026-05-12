@@ -1,11 +1,11 @@
 """Lightweight mid-day refresh — re-pulls TODAY's activities and their
 details, plus today's daily summary metrics. Everything else (historical
-days, scheduled workouts, derived metrics) stays as the 3am nightly set it.
+days, scheduled workouts, derived metrics) stays as the nightly set it.
 
-Runs every 4 hours via GitHub Actions so that a session finished at, say,
-3pm is cached by ~6pm instead of waiting until tomorrow's 3am nightly.
+Runs every 2 hours via GitHub Actions so that a session finished at, say,
+3pm is cached by ~5pm instead of waiting until the next nightly run.
 
-Scope kept minimal on purpose — 1 container/4 hours × tiny call volume is
+Scope kept minimal on purpose — 1 container/2 hours × tiny call volume is
 well under any rate limit.
 
 Required env (same as daily_refresh.py):
@@ -21,10 +21,8 @@ from datetime import date
 
 # garminconnect's login() calls logger.exception("Login failed") on any
 # auth failure, which dumps a full traceback to stderr even when we
-# catch the exception downstream. For today-refresh runs that correctly
-# defer token rotation to the anchor run (ALLOW_OAUTH_REFRESH=false),
-# this stderr noise makes the log look like a real failure when it's
-# expected behavior. Raise the garminconnect logger level to quiet it.
+# catch the exception downstream. We handle auth explicitly below, so
+# raise the garminconnect logger level to keep Actions output readable.
 logging.getLogger("garminconnect").setLevel(logging.CRITICAL)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -40,10 +38,13 @@ METRICS_TODAY = [
 
 
 def _is_refresh_blocked(ex: BaseException) -> bool:
-    """True if the exception is the 'ALLOW_OAUTH_REFRESH=false' trip —
-    expected when an hourly run finds an expired token and correctly
-    defers the refresh to the anchor daily-refresh run."""
+    """True if this run is configured as cache-only and cannot refresh OAuth."""
     return "ALLOW_OAUTH_REFRESH" in str(ex)
+
+
+def _is_rate_limit(ex_or_msg) -> bool:
+    s = str(ex_or_msg).lower()
+    return "429" in s or "too many requests" in s or "rate limit" in s
 
 
 def main() -> int:
@@ -59,6 +60,25 @@ def main() -> int:
     today_iso = today.isoformat()
     print(f"=== today_refresh {today_iso} ===")
 
+    # 0. Refresh OAuth once up front if needed. This avoids discovering an
+    # expired token inside the daily-summary fanout, where multiple worker
+    # threads could otherwise try to authenticate at the same time.
+    print("[0/3] OAuth preflight")
+    try:
+        garmin.ensure_oauth_ready()
+        print("  ok")
+    except Exception as ex:  # noqa: BLE001
+        if _is_refresh_blocked(ex):
+            print(
+                "  ERROR: OAuth token expired but ALLOW_OAUTH_REFRESH=false. "
+                "today-refresh must be refresh-authorized to guarantee "
+                "2-hour cache updates.",
+                file=sys.stderr,
+            )
+        else:
+            print(f"  ERROR: OAuth preflight failed: {str(ex)[:200]}", file=sys.stderr)
+        return 1
+
     # 1. Today's daily summary metrics (force refresh).
     print(f"[1/3] daily summaries for today ({len(METRICS_TODAY)} metrics)")
     try:
@@ -66,27 +86,51 @@ def main() -> int:
             startdate=today_iso, enddate=today_iso,
             metrics=METRICS_TODAY, force_refresh=True,
         )
-        # get_daily_summaries degrades gracefully — per-metric errors
-        # (including the ALLOW_OAUTH_REFRESH block) come back as
-        # {"error": "..."} on individual metric-day entries. Count them.
+        # get_daily_summaries degrades gracefully — per-metric errors come
+        # back as {"error": "..."} on individual metric-day entries. Count
+        # them so an all-error no-op does not look like a fresh cache update.
         errored = 0
+        blocked = 0
+        rate_limited = 0
         for m in METRICS_TODAY:
             payload = result.get(m, {}).get(today_iso)
             if isinstance(payload, dict) and "error" in payload:
                 errored += 1
+                if _is_refresh_blocked(Exception(payload["error"])):
+                    blocked += 1
+                if _is_rate_limit(payload["error"]):
+                    rate_limited += 1
         ok_count = len(METRICS_TODAY) - errored
         if errored == 0:
             print(f"  ok ({ok_count}/{len(METRICS_TODAY)} metrics refreshed)")
+        elif rate_limited:
+            print(
+                f"  ERROR: {rate_limited} metric(s) hit rate limits — "
+                "stopping refresh to avoid compounding the throttle window",
+                file=sys.stderr,
+            )
+            return 1
         elif errored == len(METRICS_TODAY):
-            print(f"  all {errored} metrics blocked — token expired, refresh deferred to anchor run")
-            return 0  # exit cleanly
+            if blocked == errored:
+                print(
+                    f"  ERROR: all {errored} metrics blocked — token expired "
+                    "and this run is not refresh-authorized",
+                    file=sys.stderr,
+                )
+            else:
+                print(f"  ERROR: all {errored} metrics failed", file=sys.stderr)
+            return 1
         else:
-            print(f"  partial: {ok_count} refreshed, {errored} deferred to anchor run")
+            print(f"  partial: {ok_count} refreshed, {errored} failed")
     except Exception as ex:  # noqa: BLE001
         if _is_refresh_blocked(ex):
-            print("  skipped — token expired, refresh deferred to anchor run")
-            return 0  # exit cleanly; not an error
+            print(
+                "  ERROR: token expired and this run is not refresh-authorized",
+                file=sys.stderr,
+            )
+            return 1
         print(f"  ERROR: {str(ex)[:200]}", file=sys.stderr)
+        return 1
 
     # 2. Current month's activities (force refresh to pick up new ones).
     print(f"[2/3] current month activities ({today.year}-{today.month:02d})")
@@ -95,9 +139,20 @@ def main() -> int:
         print("  ok")
     except Exception as ex:  # noqa: BLE001
         if _is_refresh_blocked(ex):
-            print("  skipped — token expired, refresh deferred to anchor run")
-            return 0
+            print(
+                "  ERROR: token expired and this run is not refresh-authorized",
+                file=sys.stderr,
+            )
+            return 1
+        if _is_rate_limit(ex):
+            print(
+                "  ERROR: activities hit rate limits — stopping refresh to "
+                "avoid compounding the throttle window",
+                file=sys.stderr,
+            )
+            return 1
         print(f"  ERROR: {str(ex)[:200]}", file=sys.stderr)
+        return 1
 
     # 3. Activity details for today AND yesterday.
     # GitHub Actions runs in UTC. A session completed at 6pm ET on May 1
@@ -116,21 +171,29 @@ def main() -> int:
             aid = act.get("activityId")
             if not aid:
                 continue
+            start_ts = str(act.get("startTimeLocal") or act.get("startTimeGMT") or "")
+            force_detail = start_ts.startswith(today_iso)
             try:
-                # force_refresh=True for today's; yesterday's is likely already
-                # cached from the nightly — still safe to refresh once since
-                # we only run every 4h.
-                garmin.get_activity_details(str(aid), force_refresh=True)
-                print(f"    activity {aid}: refreshed")
+                # Force-refresh today's details because new uploads can keep
+                # settling. For yesterday, use cache-first: it still fetches
+                # when missing but avoids re-pulling the same immutable
+                # details every 2 hours.
+                garmin.get_activity_details(str(aid), force_refresh=force_detail)
+                action = "refreshed" if force_detail else "cached/fetched"
+                print(f"    activity {aid}: {action}")
             except Exception as ex:  # noqa: BLE001
                 print(f"    activity {aid}: ERROR {str(ex)[:120]}", file=sys.stderr)
+                if _is_rate_limit(ex):
+                    return 1
     except Exception as ex:  # noqa: BLE001
         print(f"  ERROR: {str(ex)[:200]}", file=sys.stderr)
+        if _is_rate_limit(ex):
+            return 1
 
     # Baseline (physiology snapshot) is recomputed ONCE per day by the
     # nightly daily-refresh run. It's built from 90 days of data —
     # adding one mid-day activity shifts thresholds by <1%, not worth
-    # the compute/rate-limit overhead on 48 runs/day.
+    # the compute/rate-limit overhead on 12 runs/day.
     return 0
 
 

@@ -12,6 +12,10 @@ on:
     - cron: '17 3 * * *'
   workflow_dispatch:
 
+concurrency:
+  group: garmin-refresh
+  cancel-in-progress: false
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
@@ -36,4 +40,10 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           GARMIN_READONLY: "false"
+          # Scheduled refreshes should fail fast on Garmin 429s. Retrying
+          # through an account throttle tends to extend the throttle window.
+          GARMIN_RATE_LIMIT_MAX_RETRIES: "0"
+          # This job does real Garmin reads, so it may rotate OAuth when
+          # the access token is expired.
+          ALLOW_OAUTH_REFRESH: "true"
         run: python scripts/daily_refresh.py

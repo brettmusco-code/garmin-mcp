@@ -31,8 +31,8 @@ MAX_RANGE_DAYS = 366
 FAN_OUT_WORKERS = 2
 JITTER_MIN_SEC = 0.1
 JITTER_MAX_SEC = 0.25
-RATE_LIMIT_MAX_RETRIES = 4
-RATE_LIMIT_BASE_DELAY_SEC = 2.0
+RATE_LIMIT_MAX_RETRIES = int(os.environ.get("GARMIN_RATE_LIMIT_MAX_RETRIES", "2"))
+RATE_LIMIT_BASE_DELAY_SEC = float(os.environ.get("GARMIN_RATE_LIMIT_BASE_DELAY_SEC", "2.0"))
 # Immutable historical data (completed activities, past daily summaries).
 # ~100 years in seconds; effectively infinite for our purposes. Use
 # force_refresh=true to bypass if you ever need to re-fetch.
@@ -174,6 +174,18 @@ def get_client() -> Garmin:
                 pass  # logged inside persist_tokens_dir
         _client = client
         return client
+
+
+def ensure_oauth_ready() -> None:
+    """Ensure the loaded Garmin OAuth2 access token is usable.
+
+    The patched garth refresh method is intentionally idempotent: it skips
+    Garmin's exchange endpoint when the token is still fresh enough, and
+    rotates/persists the token when it is expired or inside the safety
+    margin. Calling it once before fan-out keeps an expired token from
+    being discovered concurrently by worker threads.
+    """
+    get_client().garth.refresh_oauth2()
 
 
 def _coerce_date(d: str | date) -> date:

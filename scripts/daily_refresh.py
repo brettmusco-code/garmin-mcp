@@ -1,9 +1,8 @@
 """Nightly refresh — Python version (bypasses MCP readonly mode).
 
 Runs in the GitHub Action's container. Imports app.garmin directly and
-calls its cached functions with force_refresh=True for today's data and
-the current month's activities. Writes everything to R2 so the readonly
-web service can serve it.
+warms the R2 cache so the readonly web service can serve Garmin data
+without making live Garmin calls.
 
 Required env (from GitHub Action secrets):
   GARTH_TOKENS_B64        Fresh garth OAuth tokens
@@ -45,7 +44,7 @@ from app import cache, garmin  # noqa: E402
 DAILY_LOOKBACK_DAYS = int(os.environ.get("DAILY_LOOKBACK_DAYS", "3"))
 # today_refresh runs every 2h and already force-refreshes today's daily
 # summaries. The nightly doesn't need to re-hit Garmin for data that's
-# less than 2 hours old — let the cache TTL (24h) serve it instead.
+# still inside the cache TTL — let the cache TTL (24h) serve it instead.
 # Set >0 only if you need to guarantee a per-night Garmin poll
 # (e.g. today_refresh is disabled).
 FORCE_REFRESH_DAYS = int(os.environ.get("FORCE_REFRESH_DAYS", "0"))
@@ -151,7 +150,7 @@ def main() -> int:
     print()
 
     # ---------- [2/5] activities (current month, NON-force-refresh) ----------
-    # today_refresh.py runs every 3 hours and force-refreshes the current
+    # today_refresh.py runs every 2 hours and force-refreshes the current
     # month. The nightly just warms anything uncached — it's wasteful to
     # have both jobs force-refresh. Each force_refresh=True is a Garmin
     # API call; avoiding them reduces pressure on the rate limiter.

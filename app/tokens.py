@@ -12,7 +12,7 @@ Storage:
 Flow:
   startup        → load R2 (or fall back to GARTH_TOKENS_B64 env)
                  → extract to temp dir
-                 → client.login(temp_dir) sets garth._garth_home = temp_dir
+                 → client.garth.load(temp_dir) + set garth._garth_home
                  → if loaded from env (first deploy), also push to R2
   api call       → garth checks if oauth2_token.expired; if fresh
                    (remaining validity > REFRESH_SKIP_MARGIN_SEC), SKIP
@@ -27,12 +27,14 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import logging
 import os
 import sys
 import tarfile
 import tempfile
 import time
+from threading import Lock
 
 import garth
 
@@ -43,14 +45,20 @@ from . import cache
 # to avoid the "token expires mid-request" race while still letting all
 # containers in a 1hr window share the same refresh.
 REFRESH_SKIP_MARGIN_SEC = 600  # 10 minutes of buffer
+OAUTH_429_COOLDOWN_SEC = int(os.environ.get("OAUTH_429_COOLDOWN_SEC", str(4 * 3600)))
 
 logger = logging.getLogger(__name__)
 
 TOKENS_SUBKEY = "auth/garth_tokens.tar.gz"
+COOLDOWN_SUBKEY = "auth/oauth_refresh_cooldown.json"
 
 
 def _r2_key() -> str:
     return cache.PREFIX + TOKENS_SUBKEY
+
+
+def _cooldown_key() -> str:
+    return cache.PREFIX + COOLDOWN_SUBKEY
 
 
 def _load_from_r2() -> bytes | None:
@@ -122,6 +130,71 @@ def persist_tokens_dir(directory: str) -> None:
     _save_to_r2(_tar_dir(directory))
 
 
+def _load_cooldown_remaining() -> tuple[int, str | None]:
+    """Return active R2 OAuth cooldown as (seconds_remaining, reason)."""
+    if not cache.enabled():
+        return 0, None
+    try:
+        obj = cache._client().get_object(Bucket=cache.BUCKET, Key=_cooldown_key())  # noqa: SLF001
+        payload = json.loads(obj["Body"].read())
+    except Exception as ex:  # noqa: BLE001
+        msg = str(ex).lower()
+        if "nosuchkey" not in msg and "not found" not in msg and "404" not in msg:
+            logger.warning("oauth cooldown load from R2 failed: %s", ex)
+        return 0, None
+
+    try:
+        until = float(payload.get("until", 0))
+    except (TypeError, ValueError):
+        return 0, None
+    remaining = int(until - time.time())
+    if remaining <= 0:
+        return 0, None
+    return remaining, payload.get("reason")
+
+
+def _save_cooldown(ex: BaseException) -> None:
+    """Persist an OAuth exchange cooldown so later processes fail fast."""
+    if not cache.enabled() or OAUTH_429_COOLDOWN_SEC <= 0:
+        return
+    now = time.time()
+    payload = {
+        "created_at": now,
+        "until": now + OAUTH_429_COOLDOWN_SEC,
+        "reason": str(ex)[:500],
+    }
+    try:
+        cache._client().put_object(  # noqa: SLF001
+            Bucket=cache.BUCKET,
+            Key=_cooldown_key(),
+            Body=json.dumps(payload).encode(),
+            ContentType="application/json",
+        )
+        print(
+            "[tokens] OAuth exchange cooldown saved to R2 for "
+            f"{OAUTH_429_COOLDOWN_SEC}s",
+            file=sys.stderr,
+            flush=True,
+        )
+    except Exception as save_ex:  # noqa: BLE001
+        logger.warning("oauth cooldown save to R2 failed: %s", save_ex)
+
+
+def _try_load_fresh_r2_token(client) -> tuple[bool, int]:
+    """Reload tokens from R2 in case another process refreshed first."""
+    data = _load_from_r2()
+    if data is None:
+        return False, 0
+    tokens_dir = _extract(data)
+    try:
+        client.load(tokens_dir)
+        client._garth_home = tokens_dir
+    except Exception as ex:  # noqa: BLE001
+        logger.warning("reload of garth tokens from R2 failed: %s", ex)
+        return False, 0
+    return _token_still_valid(getattr(client, "oauth2_token", None))
+
+
 # Patch garth.Client.refresh_oauth2 so:
 #   1. We SKIP calling Garmin's exchange endpoint if the existing OAuth2
 #      token still has >REFRESH_SKIP_MARGIN_SEC of validity remaining.
@@ -140,6 +213,7 @@ _original_refresh = garth.Client.refresh_oauth2
 # makes the rate limit lockout worse. Once tripped, stays tripped for
 # the life of the process — the next scheduled run starts fresh.
 _refresh_circuit_tripped: Exception | None = None
+_refresh_lock = Lock()
 
 
 def _is_rate_limit(ex: BaseException) -> bool:
@@ -179,57 +253,91 @@ def _patched_refresh(self):
     if _refresh_circuit_tripped is not None:
         raise _refresh_circuit_tripped
 
-    # Token IS expired. Is this container authorized to refresh? Only the
-    # "anchor" run (typically the 3am nightly) should call Garmin's
-    # exchange endpoint. Hourly/sub-hourly runs that find an expired
-    # token should fail fast and let the anchor run deal with it on its
-    # next scheduled execution.
-    allow = os.environ.get("ALLOW_OAUTH_REFRESH", "true").lower() in ("1", "true", "yes")
-    if not allow:
-        logger.info(
-            "oauth2 token expired, but ALLOW_OAUTH_REFRESH is false — "
-            "skipping refresh (anchor run will handle it)"
-        )
-        raise RuntimeError(
-            "OAuth2 token expired and this run is not authorized to "
-            "refresh (ALLOW_OAUTH_REFRESH=false). This prevents multiple "
-            "concurrent refreshes from compounding rate-limit pressure. "
-            "The next anchor run (daily-refresh) will rotate the token."
-        )
+    # The first Garmin calls in a refresh job fan out across worker
+    # threads. If the shared token is expired, more than one thread can
+    # enter garth's refresh path at once. Serialize the actual exchange
+    # and re-check after acquiring the lock so one expired token produces
+    # at most one Garmin OAuth exchange in this process.
+    with _refresh_lock:
+        valid, remaining = _token_still_valid(getattr(self, "oauth2_token", None))
+        if valid:
+            logger.info(
+                "oauth2 token refreshed by another thread (%ds remaining) — "
+                "skipping refresh",
+                remaining,
+            )
+            return self.oauth2_token
 
-    # Otherwise proceed with the real refresh. Print (not just log) so
-    # the refresh lifecycle shows up in GitHub Actions output.
-    print("[tokens] oauth2 expired — calling Garmin exchange endpoint",
-          flush=True)
-    try:
-        result = _original_refresh(self)
-    except Exception as ex:  # noqa: BLE001
-        print(f"[tokens] REFRESH FAILED: {type(ex).__name__}: {ex}",
-              file=sys.stderr, flush=True)
-        if _is_rate_limit(ex):
-            _refresh_circuit_tripped = ex
-            print("[tokens] circuit breaker TRIPPED — further refresh "
-                  "attempts in this run will fail fast without contacting "
-                  "Garmin.", file=sys.stderr, flush=True)
-        raise
-    print("[tokens] refresh succeeded — new token expires at "
-          f"{getattr(self.oauth2_token, 'expires_at', '?')}", flush=True)
+        if _refresh_circuit_tripped is not None:
+            raise _refresh_circuit_tripped
 
-    # Persist the freshly-refreshed token to R2 so other containers can
-    # reuse it within the 1-hour window.
-    home = getattr(self, "_garth_home", None)
-    if not home:
-        print("[tokens] WARNING: _garth_home not set — token refresh will "
-              "NOT persist to R2. Next container will hit expired cached "
-              "token.", file=sys.stderr, flush=True)
-    else:
+        valid, remaining = _try_load_fresh_r2_token(self)
+        if valid:
+            print(
+                "[tokens] loaded fresher OAuth2 token from R2 "
+                f"({remaining}s remaining) — skipping exchange",
+                flush=True,
+            )
+            return self.oauth2_token
+
+        cooldown_remaining, reason = _load_cooldown_remaining()
+        if cooldown_remaining > 0:
+            raise RuntimeError(
+                "Garmin OAuth exchange in cooldown for "
+                f"{cooldown_remaining}s after recent 429/rate limit. "
+                f"Last error: {reason or 'unknown'}"
+            )
+
+        # Token IS expired. Is this container authorized to refresh? Refresh
+        # jobs may opt in; the readonly web service and other cache-only
+        # paths fail fast so user traffic cannot amplify rate-limit pressure.
+        allow = os.environ.get("ALLOW_OAUTH_REFRESH", "true").lower() in ("1", "true", "yes")
+        if not allow:
+            logger.info(
+                "oauth2 token expired, but ALLOW_OAUTH_REFRESH is false — "
+                "skipping refresh (anchor run will handle it)"
+            )
+            raise RuntimeError(
+                "OAuth2 token expired and this run is not authorized to "
+                "refresh (ALLOW_OAUTH_REFRESH=false). This prevents multiple "
+                "concurrent refreshes from compounding rate-limit pressure. "
+                "The next refresh-authorized run will rotate the token."
+            )
+
+        # Otherwise proceed with the real refresh. Print (not just log) so
+        # the refresh lifecycle shows up in GitHub Actions output.
+        print("[tokens] oauth2 expired — calling Garmin exchange endpoint",
+              flush=True)
         try:
-            persist_tokens_dir(str(home))
-            print(f"[tokens] persisted refreshed token to R2", flush=True)
+            result = _original_refresh(self)
         except Exception as ex:  # noqa: BLE001
-            print(f"[tokens] R2 persist FAILED: {ex}", file=sys.stderr,
-                  flush=True)
-    return result
+            print(f"[tokens] REFRESH FAILED: {type(ex).__name__}: {ex}",
+                  file=sys.stderr, flush=True)
+            if _is_rate_limit(ex):
+                _refresh_circuit_tripped = ex
+                _save_cooldown(ex)
+                print("[tokens] circuit breaker TRIPPED — further refresh "
+                      "attempts in this run will fail fast without contacting "
+                      "Garmin.", file=sys.stderr, flush=True)
+            raise
+        print("[tokens] refresh succeeded — new token expires at "
+              f"{getattr(self.oauth2_token, 'expires_at', '?')}", flush=True)
+
+        # Persist the freshly-refreshed token to R2 so other containers can
+        # reuse it within the 1-hour window.
+        home = getattr(self, "_garth_home", None)
+        if not home:
+            print("[tokens] WARNING: _garth_home not set — token refresh will "
+                  "NOT persist to R2. Next container will hit expired cached "
+                  "token.", file=sys.stderr, flush=True)
+        else:
+            try:
+                persist_tokens_dir(str(home))
+                print(f"[tokens] persisted refreshed token to R2", flush=True)
+            except Exception as ex:  # noqa: BLE001
+                print(f"[tokens] R2 persist FAILED: {ex}", file=sys.stderr,
+                      flush=True)
+        return result
 
 
 garth.Client.refresh_oauth2 = _patched_refresh

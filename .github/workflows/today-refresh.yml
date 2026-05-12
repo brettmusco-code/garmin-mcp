@@ -1,5 +1,5 @@
 name: today-refresh
-# Mid-day refresh — every 30 min, repulls today's metrics + activities +
+# Mid-day refresh — every 2 hours, repulls today's metrics + activities +
 # activity details. Keeps the cache current for sessions completed during
 # the day so claude.ai /weekly and /session-review can read fresh data
 # without waiting for the 3am nightly.
@@ -10,17 +10,17 @@ name: today-refresh
 
 on:
   schedule:
-    # Every 2 hours. Previous cadence was 30 min (~48 runs/day) to keep
-    # the cached OAuth2 token warm between runs. But each run still calls
-    # Garmin data endpoints (force-refresh of today's summaries and
-    # activities), contributing to the per-account rolling counter that
-    # triggers 429s on the OAuth exchange endpoint. 2h cadence = ~12
-    # runs/day while still catching late-afternoon/evening sessions
-    # within 2 hours of completion. Token staleness between runs is
-    # irrelevant: ALLOW_OAUTH_REFRESH=false means today-refresh never
-    # calls exchange anyway — the anchor daily-refresh owns that.
+    # Every 2 hours. Garmin OAuth2 access tokens live about 1 hour, so a
+    # mid-day job that actually refreshes Garmin data must be allowed to
+    # rotate OAuth when it wakes up. Keep the cadence modest so we get
+    # useful same-day cache updates without creating dozens of exchange
+    # attempts from GitHub's rotating runners.
     - cron: '0 */2 * * *'
   workflow_dispatch:
+
+concurrency:
+  group: garmin-refresh
+  cancel-in-progress: false
 
 jobs:
   refresh:
@@ -46,9 +46,12 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           GARMIN_READONLY: "false"
-          # Only the daily-refresh anchor run may contact Garmin's
-          # OAuth exchange endpoint. This run skips refresh and reads
-          # whatever R2 has. If the token is expired, the next daily-
-          # refresh will rotate it (3am ET).
-          ALLOW_OAUTH_REFRESH: "false"
+          # Scheduled refreshes should fail fast on Garmin 429s. Retrying
+          # through an account throttle tends to extend the throttle window.
+          GARMIN_RATE_LIMIT_MAX_RETRIES: "0"
+          # Today-refresh does real Garmin reads. Because access tokens
+          # last ~1h and this job runs every 2h, it must be allowed to
+          # rotate OAuth. Workflow concurrency + the in-process token
+          # lock keep that to one exchange attempt per run.
+          ALLOW_OAUTH_REFRESH: "true"
         run: python scripts/today_refresh.py
