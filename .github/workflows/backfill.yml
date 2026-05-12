@@ -50,6 +50,9 @@ jobs:
           # Backfill already paces requests and aborts on consecutive 429s;
           # do not add hidden per-call retry storms underneath it.
           GARMIN_RATE_LIMIT_MAX_RETRIES: "0"
+          # Garmin OAuth 429s can persist for many hours. Once seen, keep
+          # scheduled jobs from probing the exchange endpoint again today.
+          OAUTH_429_COOLDOWN_SEC: "86400"
           # Backfill does live Garmin reads too; serialize it with the
           # scheduled refresh jobs so OAuth rotation has one owner.
           ALLOW_OAUTH_REFRESH: "true"

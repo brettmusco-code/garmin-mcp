@@ -49,6 +49,9 @@ jobs:
           # Scheduled refreshes should fail fast on Garmin 429s. Retrying
           # through an account throttle tends to extend the throttle window.
           GARMIN_RATE_LIMIT_MAX_RETRIES: "0"
+          # Garmin OAuth 429s can persist for many hours. Once seen, keep
+          # scheduled jobs from probing the exchange endpoint again today.
+          OAUTH_429_COOLDOWN_SEC: "86400"
           # Today-refresh does real Garmin reads. Because access tokens
           # last ~1h and this job runs every 2h, it must be allowed to
           # rotate OAuth. Workflow concurrency + the in-process token

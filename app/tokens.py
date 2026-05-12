@@ -45,7 +45,10 @@ from . import cache
 # to avoid the "token expires mid-request" race while still letting all
 # containers in a 1hr window share the same refresh.
 REFRESH_SKIP_MARGIN_SEC = 600  # 10 minutes of buffer
-OAUTH_429_COOLDOWN_SEC = int(os.environ.get("OAUTH_429_COOLDOWN_SEC", str(4 * 3600)))
+# Garmin's OAuth exchange throttle can last much longer than a normal API
+# backoff window. Once it appears, keep later processes from probing auth
+# again for a full day unless explicitly overridden.
+OAUTH_429_COOLDOWN_SEC = int(os.environ.get("OAUTH_429_COOLDOWN_SEC", str(24 * 3600)))
 
 logger = logging.getLogger(__name__)
 
