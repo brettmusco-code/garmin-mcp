@@ -27,7 +27,7 @@ logging.getLogger("garminconnect").setLevel(logging.CRITICAL)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app import cache, garmin  # noqa: E402
+from app import cache, garmin, tokens  # noqa: E402
 
 METRICS_TODAY = [
     "steps", "sleep", "stress", "rhr", "hrv",
@@ -54,6 +54,18 @@ def main() -> int:
         return 1
     if not cache.enabled():
         print("ERROR: R2 cache not configured.", file=sys.stderr)
+        return 1
+
+    # Abort before touching Garmin if an API 429 cooldown is active.
+    api_remaining, api_reason = tokens.load_api_429_cooldown_remaining()
+    if api_remaining > 0:
+        hrs = api_remaining // 3600
+        mins = (api_remaining % 3600) // 60
+        print(
+            f"ERROR: Garmin API 429 cooldown active — {hrs}h {mins}m remaining. "
+            f"Last error: {api_reason or 'unknown'}. Skipping today_refresh.",
+            file=sys.stderr,
+        )
         return 1
 
     today = date.today()

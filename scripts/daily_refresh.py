@@ -39,7 +39,7 @@ logging.getLogger("garminconnect").setLevel(logging.CRITICAL)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from app import cache, garmin  # noqa: E402
+from app import cache, garmin, tokens  # noqa: E402
 
 DAILY_LOOKBACK_DAYS = int(os.environ.get("DAILY_LOOKBACK_DAYS", "3"))
 # today_refresh runs every 2h and already force-refreshes today's daily
@@ -80,6 +80,33 @@ def main() -> int:
 
     if not cache.enabled():
         print("ERROR: R2 cache not configured.", file=sys.stderr)
+        return 1
+
+    # Abort before touching Garmin if either cooldown is still active.
+    # This prevents the nightly run from re-hammering Garmin immediately after
+    # the previous run's 429s and extending the throttle window further.
+    api_remaining, api_reason = tokens.load_api_429_cooldown_remaining()
+    if api_remaining > 0:
+        hrs = api_remaining // 3600
+        mins = (api_remaining % 3600) // 60
+        print(
+            f"ERROR: Garmin API 429 cooldown active — {hrs}h {mins}m remaining. "
+            f"Last error: {api_reason or 'unknown'}. "
+            "Skipping refresh to let Garmin's throttle window reset.",
+            file=sys.stderr,
+        )
+        return 1
+
+    oauth_remaining, oauth_reason = tokens.load_cooldown_remaining()
+    if oauth_remaining > 0:
+        hrs = oauth_remaining // 3600
+        mins = (oauth_remaining % 3600) // 60
+        print(
+            f"ERROR: Garmin OAuth 429 cooldown active — {hrs}h {mins}m remaining. "
+            f"Last error: {oauth_reason or 'unknown'}. "
+            "Skipping refresh to let Garmin's throttle window reset.",
+            file=sys.stderr,
+        )
         return 1
 
     today = date.today()

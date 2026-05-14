@@ -213,12 +213,37 @@ def _daterange(s: date, e: date) -> list[str]:
     return [(s + timedelta(days=i)).isoformat() for i in range(n)]
 
 
+# Process-level circuit breaker for regular Garmin API calls. Once any call
+# exhausts its retry budget on a 429, this flag is set so every subsequent
+# _call_with_backoff invocation in this process fails immediately — no more
+# Garmin traffic in this run. Also persists to R2 via
+# tokens.save_api_429_cooldown so the NEXT nightly process aborts at startup
+# rather than re-hammering Garmin before even a single cache miss.
+_api_circuit_tripped: GarminRateLimitError | None = None
+_api_circuit_lock = Lock()
+
+
+def _trip_api_circuit(ex: GarminRateLimitError) -> None:
+    global _api_circuit_tripped
+    with _api_circuit_lock:
+        if _api_circuit_tripped is None:
+            _api_circuit_tripped = ex
+            try:
+                tokens.save_api_429_cooldown(ex)
+            except Exception:  # noqa: BLE001
+                pass
+
+
 def _call_with_backoff(fn, *args, **kwargs):
     """Run `fn` with jittered delay + exponential backoff on 429s.
 
     Raises GarminRateLimitError / GarminAuthError / GarminNotFoundError for
     classified errors after exhausting retries; re-raises other exceptions.
     """
+    # Fail fast if a 429 already tripped the process circuit breaker.
+    if _api_circuit_tripped is not None:
+        raise _api_circuit_tripped
+
     time.sleep(random.uniform(JITTER_MIN_SEC, JITTER_MAX_SEC))
     attempt = 0
     while True:
@@ -233,6 +258,8 @@ def _call_with_backoff(fn, *args, **kwargs):
                 attempt += 1
                 continue
             if classified is not None:
+                if isinstance(classified, GarminRateLimitError):
+                    _trip_api_circuit(classified)
                 raise classified from ex
             raise
 
