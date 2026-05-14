@@ -206,8 +206,18 @@ def ensure_oauth_ready() -> None:
     rotates/persists the token when it is expired or inside the safety
     margin. Calling it once before fan-out keeps an expired token from
     being discovered concurrently by worker threads.
+
+    Wraps the underlying garth call through _classify_exception so that
+    callers see GarminRateLimitError (with soft=True for empty-body
+    responses) instead of raw JSONDecodeError / HTTPError.
     """
-    get_client().garth.refresh_oauth2()
+    try:
+        get_client().garth.refresh_oauth2()
+    except Exception as ex:  # noqa: BLE001
+        classified = _classify_exception(ex)
+        if classified is not None:
+            raise classified from ex
+        raise
 
 
 def _coerce_date(d: str | date) -> date:
