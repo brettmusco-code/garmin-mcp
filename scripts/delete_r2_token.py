@@ -54,9 +54,12 @@ def main() -> int:
     ok = _delete_key(client, tokens._r2_key()) and ok  # noqa: SLF001
     if hasattr(tokens, "_cooldown_key"):
         ok = _delete_key(client, tokens._cooldown_key()) and ok  # noqa: SLF001
+    if hasattr(tokens, "_api_cooldown_key"):
+        ok = _delete_key(client, tokens._api_cooldown_key()) and ok  # noqa: SLF001
 
     if ok:
-        print("Done. Next run will load from GARTH_TOKENS_B64 env var.")
+        print("Done. Next run will load from GARTH_TOKENS_B64 env var "
+              "and both 429 cooldowns are cleared.")
         return 0
     return 1
 
