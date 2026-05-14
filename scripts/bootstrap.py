@@ -29,19 +29,29 @@ def main() -> int:
         password=password,
         prompt_mfa=lambda: input("MFA code from email: ").strip(),
     )
-    # Override default UA — Garmin throttles the lib's default iOS UA heavily.
-    client.garth.sess.headers.update({
-        "User-Agent": (
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/131.0.0.0 Safari/537.36"
-        )
-    })
+    # In newer garminconnect, .garth is lazy-initialized inside login().
+    # Try the pre-login UA override (older API); fall back silently if missing.
+    chrome_ua = (
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/131.0.0.0 Safari/537.36"
+    )
+    try:
+        client.garth.sess.headers.update({"User-Agent": chrome_ua})
+    except AttributeError:
+        pass  # newer API — set it after login
+
     try:
         client.login()
     except GarminConnectAuthenticationError as e:
         print(f"\nLogin failed: {e}", file=sys.stderr)
         return 1
+
+    # Set the UA on the (now-initialized) garth session for any follow-up calls.
+    try:
+        client.garth.sess.headers.update({"User-Agent": chrome_ua})
+    except AttributeError:
+        pass
 
     tokens_dir = Path(tempfile.mkdtemp(prefix="garth-bootstrap-"))
     client.garth.dump(str(tokens_dir))
