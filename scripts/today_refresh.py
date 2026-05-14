@@ -59,11 +59,22 @@ def _cached_activity_count(year: int, month: int) -> int:
 
 
 def _oauth_preflight() -> bool:
-    """Return True if OAuth is ready, False (and print error) otherwise."""
+    """Return True if OAuth is ready (or transiently soft-throttled), False
+    on a hard failure. Empty-body responses from Garmin's CDN classify as
+    soft rate-limit; let the run continue since downstream calls have
+    their own per-endpoint error handling and may succeed."""
     try:
         garmin.ensure_oauth_ready()
         print("  OAuth ok")
         return True
+    except garmin.GarminRateLimitError as ex:
+        if getattr(ex, "soft", False):
+            print(f"  OAuth soft-throttled (proceeding): {str(ex)[:150]}",
+                  file=sys.stderr)
+            return True
+        print(f"  ERROR: OAuth preflight rate-limited: {str(ex)[:200]}",
+              file=sys.stderr)
+        return False
     except Exception as ex:  # noqa: BLE001
         print(f"  ERROR: OAuth preflight failed: {str(ex)[:200]}", file=sys.stderr)
         return False
