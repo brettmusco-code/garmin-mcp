@@ -45,7 +45,14 @@ POST_SYNC_METRICS = [
 
 def _is_rate_limit(ex_or_msg) -> bool:
     s = str(ex_or_msg).lower()
-    return "429" in s or "too many requests" in s or "rate limit" in s
+    return (
+        "429" in s
+        or "too many requests" in s
+        or "rate limit" in s
+        # Soft-throttle (CDN empty-body) — same root cause, different surface
+        or "soft throttle" in s
+        or "expecting value" in s
+    )
 
 
 def _cached_activity_count(year: int, month: int) -> int:
