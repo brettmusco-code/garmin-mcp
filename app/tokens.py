@@ -46,14 +46,22 @@ from . import cache
 # containers in a 1hr window share the same refresh.
 REFRESH_SKIP_MARGIN_SEC = 600  # 10 minutes of buffer
 # Garmin's OAuth exchange throttle can last much longer than a normal API
-# backoff window. Once it appears, keep later processes from probing auth
-# again for a full day unless explicitly overridden.
-OAUTH_429_COOLDOWN_SEC = int(os.environ.get("OAUTH_429_COOLDOWN_SEC", str(24 * 3600)))
+# backoff window. 48h (vs. prior 24h) gives Garmin's throttle window time
+# to fully reset before we attempt another exchange. Set
+# OAUTH_429_COOLDOWN_SEC=0 to disable (not recommended).
+OAUTH_429_COOLDOWN_SEC = int(os.environ.get("OAUTH_429_COOLDOWN_SEC", str(48 * 3600)))
+# Separate cooldown for regular Garmin API calls (activities, daily
+# summaries, etc.). When any API call exhausts its retries on a 429,
+# this flag is persisted to R2 so subsequent refresh runs abort before
+# making a single Garmin call — instead of re-hammering and extending
+# Garmin's throttle window further.
+API_429_COOLDOWN_SEC = int(os.environ.get("GARMIN_API_429_COOLDOWN_SEC", str(48 * 3600)))
 
 logger = logging.getLogger(__name__)
 
 TOKENS_SUBKEY = "auth/garth_tokens.tar.gz"
 COOLDOWN_SUBKEY = "auth/oauth_refresh_cooldown.json"
+API_COOLDOWN_SUBKEY = "auth/api_429_cooldown.json"
 
 
 def _r2_key() -> str:
@@ -62,6 +70,10 @@ def _r2_key() -> str:
 
 def _cooldown_key() -> str:
     return cache.PREFIX + COOLDOWN_SUBKEY
+
+
+def _api_cooldown_key() -> str:
+    return cache.PREFIX + API_COOLDOWN_SUBKEY
 
 
 def _load_from_r2() -> bytes | None:
@@ -133,8 +145,8 @@ def persist_tokens_dir(directory: str) -> None:
     _save_to_r2(_tar_dir(directory))
 
 
-def _load_cooldown_remaining() -> tuple[int, str | None]:
-    """Return active R2 OAuth cooldown as (seconds_remaining, reason)."""
+def load_cooldown_remaining() -> tuple[int, str | None]:
+    """Return active R2 OAuth exchange cooldown as (seconds_remaining, reason)."""
     if not cache.enabled():
         return 0, None
     try:
@@ -181,6 +193,69 @@ def _save_cooldown(ex: BaseException) -> None:
         )
     except Exception as save_ex:  # noqa: BLE001
         logger.warning("oauth cooldown save to R2 failed: %s", save_ex)
+
+
+def load_api_429_cooldown_remaining() -> tuple[int, str | None]:
+    """Return active R2 API-call 429 cooldown as (seconds_remaining, reason).
+
+    This is separate from the OAuth exchange cooldown. It trips when any
+    regular Garmin API call (activities, daily summaries, etc.) exhausts its
+    retries on a 429 and persists across process boundaries so subsequent
+    refresh runs abort before making a single call to Garmin.
+    """
+    if not cache.enabled():
+        return 0, None
+    try:
+        obj = cache._client().get_object(Bucket=cache.BUCKET, Key=_api_cooldown_key())  # noqa: SLF001
+        payload = json.loads(obj["Body"].read())
+    except Exception as ex:  # noqa: BLE001
+        msg = str(ex).lower()
+        if "nosuchkey" not in msg and "not found" not in msg and "404" not in msg:
+            logger.warning("api 429 cooldown load from R2 failed: %s", ex)
+        return 0, None
+
+    try:
+        until = float(payload.get("until", 0))
+    except (TypeError, ValueError):
+        return 0, None
+    remaining = int(until - time.time())
+    if remaining <= 0:
+        return 0, None
+    return remaining, payload.get("reason")
+
+
+def save_api_429_cooldown(ex: BaseException) -> None:
+    """Persist an API-call 429 cooldown to R2 so later processes fail fast.
+
+    Called by garmin._call_with_backoff when a Garmin API call exhausts its
+    retry budget on a 429. The flag remains active for API_429_COOLDOWN_SEC
+    (default 48 h) so nightly/hourly refresh jobs abort at startup without
+    hammering Garmin further.
+    """
+    if not cache.enabled() or API_429_COOLDOWN_SEC <= 0:
+        return
+    now = time.time()
+    payload = {
+        "created_at": now,
+        "until": now + API_429_COOLDOWN_SEC,
+        "reason": str(ex)[:500],
+    }
+    try:
+        cache._client().put_object(  # noqa: SLF001
+            Bucket=cache.BUCKET,
+            Key=_api_cooldown_key(),
+            Body=json.dumps(payload).encode(),
+            ContentType="application/json",
+        )
+        print(
+            "[tokens] Garmin API 429 cooldown saved to R2 for "
+            f"{API_429_COOLDOWN_SEC}s — refresh jobs will abort at startup "
+            "until it expires.",
+            file=sys.stderr,
+            flush=True,
+        )
+    except Exception as save_ex:  # noqa: BLE001
+        logger.warning("api 429 cooldown save to R2 failed: %s", save_ex)
 
 
 def _try_load_fresh_r2_token(client) -> tuple[bool, int]:
@@ -283,7 +358,7 @@ def _patched_refresh(self):
             )
             return self.oauth2_token
 
-        cooldown_remaining, reason = _load_cooldown_remaining()
+        cooldown_remaining, reason = load_cooldown_remaining()
         if cooldown_remaining > 0:
             raise RuntimeError(
                 "Garmin OAuth exchange in cooldown for "

@@ -29,10 +29,15 @@ _lock = Lock()
 
 MAX_RANGE_DAYS = 366
 FAN_OUT_WORKERS = 2
-JITTER_MIN_SEC = 0.1
-JITTER_MAX_SEC = 0.25
 RATE_LIMIT_MAX_RETRIES = int(os.environ.get("GARMIN_RATE_LIMIT_MAX_RETRIES", "2"))
 RATE_LIMIT_BASE_DELAY_SEC = float(os.environ.get("GARMIN_RATE_LIMIT_BASE_DELAY_SEC", "2.0"))
+# Minimum gap between the start of consecutive Garmin API calls across the
+# whole process (thread-safe). Prevents the refresh jobs from hitting Garmin
+# as a burst. 1s default; set GARMIN_MIN_CALL_INTERVAL_SEC=0 to disable.
+GARMIN_MIN_CALL_INTERVAL_SEC = float(os.environ.get("GARMIN_MIN_CALL_INTERVAL_SEC", "1.0"))
+# Per-call jitter on top of the minimum gap (avoids perfectly synchronized
+# runs from two processes making calls at exactly the same moment).
+GARMIN_CALL_JITTER_SEC = float(os.environ.get("GARMIN_CALL_JITTER_SEC", "0.5"))
 # Immutable historical data (completed activities, past daily summaries).
 # ~100 years in seconds; effectively infinite for our purposes. Use
 # force_refresh=true to bypass if you ever need to re-fetch.
@@ -213,13 +218,58 @@ def _daterange(s: date, e: date) -> list[str]:
     return [(s + timedelta(days=i)).isoformat() for i in range(n)]
 
 
+# Global rate limiter — enforces GARMIN_MIN_CALL_INTERVAL_SEC between the
+# start of any two consecutive Garmin API calls within this process. The lock
+# ensures FAN_OUT_WORKERS threads can't both fire a call at the same instant.
+_rate_limit_lock = Lock()
+_last_garmin_call_time: float = 0.0
+
+
+def _rate_limit_sleep() -> None:
+    global _last_garmin_call_time
+    if GARMIN_MIN_CALL_INTERVAL_SEC <= 0:
+        return
+    with _rate_limit_lock:
+        now = time.time()
+        wait = (_last_garmin_call_time + GARMIN_MIN_CALL_INTERVAL_SEC) - now
+        if wait > 0:
+            time.sleep(wait)
+        time.sleep(random.uniform(0, GARMIN_CALL_JITTER_SEC))
+        _last_garmin_call_time = time.time()
+
+
+# Process-level circuit breaker for regular Garmin API calls. Once any call
+# exhausts its retry budget on a 429, this flag is set so every subsequent
+# _call_with_backoff invocation in this process fails immediately — no more
+# Garmin traffic in this run. Also persists to R2 via
+# tokens.save_api_429_cooldown so the NEXT nightly process aborts at startup
+# rather than re-hammering Garmin before even a single cache miss.
+_api_circuit_tripped: GarminRateLimitError | None = None
+_api_circuit_lock = Lock()
+
+
+def _trip_api_circuit(ex: GarminRateLimitError) -> None:
+    global _api_circuit_tripped
+    with _api_circuit_lock:
+        if _api_circuit_tripped is None:
+            _api_circuit_tripped = ex
+            try:
+                tokens.save_api_429_cooldown(ex)
+            except Exception:  # noqa: BLE001
+                pass
+
+
 def _call_with_backoff(fn, *args, **kwargs):
     """Run `fn` with jittered delay + exponential backoff on 429s.
 
     Raises GarminRateLimitError / GarminAuthError / GarminNotFoundError for
     classified errors after exhausting retries; re-raises other exceptions.
     """
-    time.sleep(random.uniform(JITTER_MIN_SEC, JITTER_MAX_SEC))
+    # Fail fast if a 429 already tripped the process circuit breaker.
+    if _api_circuit_tripped is not None:
+        raise _api_circuit_tripped
+
+    _rate_limit_sleep()
     attempt = 0
     while True:
         try:
@@ -233,6 +283,8 @@ def _call_with_backoff(fn, *args, **kwargs):
                 attempt += 1
                 continue
             if classified is not None:
+                if isinstance(classified, GarminRateLimitError):
+                    _trip_api_circuit(classified)
                 raise classified from ex
             raise
 
