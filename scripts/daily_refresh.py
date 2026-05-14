@@ -122,8 +122,14 @@ def main() -> int:
         force = i < FORCE_REFRESH_DAYS
         print(f"  day {d} (force_refresh={force})")
         try:
+            # bypass_no_data=True so the anchor run retries any metric-day
+            # whose cache entry is a sentinel from an earlier soft-throttle.
+            # This is the once-per-day "second chance" for data that wasn't
+            # ready when today_refresh tried earlier (morning_readiness
+            # before sleep finished processing, etc.).
             result = garmin.get_daily_summaries(
-                startdate=d, enddate=d, metrics=METRICS, force_refresh=force
+                startdate=d, enddate=d, metrics=METRICS,
+                force_refresh=force, bypass_no_data=True,
             )
             # Count per-metric outcomes
             errs = 0

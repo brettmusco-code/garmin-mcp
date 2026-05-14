@@ -44,6 +44,14 @@ GARMIN_CALL_JITTER_SEC = float(os.environ.get("GARMIN_CALL_JITTER_SEC", "0.5"))
 # force_refresh=true to bypass if you ever need to re-fetch.
 IMMUTABLE_TTL = 100 * 365 * 24 * 3600
 
+# How long to honor a "no data" sentinel from a soft-throttle response.
+# Short enough that endpoints which produce data later in the day
+# (morning_readiness after sleep processing, body_battery as the day
+# accumulates) still get picked up. Long enough that we don't
+# re-hammer Garmin every 6h refresh when the data genuinely isn't
+# there yet.
+NO_DATA_SOFT_THROTTLE_TTL_SEC = 4 * 3600
+
 # Readonly mode — set GARMIN_READONLY=true in the web service's env to
 # disable all live Garmin calls. The nightly GitHub Action runs in normal
 # mode (not readonly) and is the sole writer to R2. The web MCP only reads
@@ -1361,18 +1369,41 @@ def get_training_plan_by_id(plan_id: str | int, adaptive: bool = False):
 
 
 
+def _is_no_data_sentinel(payload: Any) -> bool:
+    """True if `payload` is a no-data marker written after a soft throttle
+    or empty Garmin response. Sentinels are short-lived cache entries that
+    let frequent refreshes skip endpoints which clearly aren't returning
+    data yet (e.g. morning_readiness before sleep finishes processing)."""
+    return isinstance(payload, dict) and payload.get("_no_data") is True
+
+
+def _sentinel_expired(sentinel: dict) -> bool:
+    """True if a no-data sentinel is past NO_DATA_SOFT_THROTTLE_TTL_SEC."""
+    ts = sentinel.get("ts")
+    if not isinstance(ts, (int, float)):
+        return True  # malformed — re-fetch
+    return (time.time() - ts) > NO_DATA_SOFT_THROTTLE_TTL_SEC
+
+
 def get_daily_summaries(
     startdate: str | date,
     enddate: str | date,
     metrics: list[str],
     force_refresh: bool = False,
+    bypass_no_data: bool = False,
 ) -> dict[str, Any]:
     """Fan out one or more per-day Garmin endpoints across a date range.
 
     Returns: { metric: { date: data_or_error, ... }, ... }
 
     Caching: per (metric, date) cached in S3 (if configured). Set
-    `force_refresh=True` to bypass the cache.
+    `force_refresh=True` to bypass the cache entirely.
+
+    `bypass_no_data=True` re-fetches metric-days whose cache entry is a
+    no-data sentinel (written when a previous call hit a soft throttle or
+    empty body). Use this in the daily anchor refresh so morning data
+    that arrived late still gets captured, while the every-6h refresh
+    leaves the sentinel alone for its TTL.
     """
     if not metrics:
         raise ValueError("metrics must be a non-empty list")
@@ -1403,6 +1434,15 @@ def get_daily_summaries(
                     ttl_seconds=ttl,
                 )
                 if hit is not None:
+                    # No-data sentinel: surface as cached miss unless the
+                    # sentinel has expired (its own short TTL) or the
+                    # caller asked to bypass it (daily anchor run).
+                    if _is_no_data_sentinel(hit):
+                        if bypass_no_data or _sentinel_expired(hit):
+                            tasks.append((m, d))
+                            continue
+                        result[m][d] = hit
+                        continue
                     result[m][d] = hit
                     continue
             tasks.append((m, d))
@@ -1435,6 +1475,24 @@ def get_daily_summaries(
                 key_parts=[metric, d],
             )
             return metric, d, data
+        except GarminRateLimitError as ex:
+            # Soft throttle = empty body. Cache a sentinel so subsequent
+            # refreshes within NO_DATA_SOFT_THROTTLE_TTL_SEC skip this
+            # metric-day instead of re-hitting Garmin. Hard 429s also
+            # write the sentinel so we don't retry within the TTL — the
+            # circuit breaker handles process-level abort separately.
+            sentinel = {
+                "_no_data": True,
+                "reason": "soft_throttle" if ex.soft else "rate_limited",
+                "ts": time.time(),
+            }
+            cache.put(
+                "daily_summary",
+                {"metric": metric, "date": d},
+                sentinel,
+                key_parts=[metric, d],
+            )
+            return metric, d, {"error": str(ex)}
         except Exception as ex:  # noqa: BLE001
             return metric, d, {"error": str(ex)}
 
