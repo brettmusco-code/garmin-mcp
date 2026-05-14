@@ -12,6 +12,7 @@ Auth model:
 """
 from __future__ import annotations
 
+import json
 import os
 import random
 import time
@@ -60,9 +61,16 @@ class GarminAuthError(GarminError):
 
 
 class GarminRateLimitError(GarminError):
-    def __init__(self, message: str, retry_after: float | None = None):
+    def __init__(self, message: str, retry_after: float | None = None,
+                 soft: bool = False):
         super().__init__(message)
         self.retry_after = retry_after
+        # `soft` distinguishes empty-body (CDN soft throttle) from a real
+        # 429. Soft signals should drive local backoff/retry but not trip
+        # the process-level circuit breaker — they're noisy but the run
+        # often recovers on retry, and stopping the whole refresh on the
+        # first one is too aggressive.
+        self.soft = soft
 
 
 class GarminNotFoundError(GarminError):
@@ -83,6 +91,15 @@ def _classify_exception(exc: BaseException) -> GarminError | None:
         return GarminAuthError(str(exc))
     if "404" in msg or "not found" in msg or status == 404:
         return GarminNotFoundError(str(exc))
+    # Empty-body 200 responses surface as JSONDecodeError ("Expecting value:
+    # line 1 column 1 (char 0)") because garth/garminconnect call .json() on
+    # an empty payload. Garmin's CDN returns these as a soft throttle —
+    # less aggressive than 429 but the same root cause. Treat them as a
+    # rate-limit signal so backoff/circuit-breaker logic kicks in.
+    if isinstance(exc, json.JSONDecodeError) or "expecting value" in msg:
+        return GarminRateLimitError(
+            f"empty body (soft throttle): {exc}", soft=True
+        )
     return None
 
 # Whitelist of per-date methods we expose via get_daily_summaries.
@@ -283,7 +300,7 @@ def _call_with_backoff(fn, *args, **kwargs):
                 attempt += 1
                 continue
             if classified is not None:
-                if isinstance(classified, GarminRateLimitError):
+                if isinstance(classified, GarminRateLimitError) and not classified.soft:
                     _trip_api_circuit(classified)
                 raise classified from ex
             raise
