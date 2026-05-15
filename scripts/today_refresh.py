@@ -115,28 +115,38 @@ def run_live() -> int:
     today_iso = date.today().isoformat()
     print(f"[1/1] Live metrics ({len(LIVE_METRICS)}): {', '.join(LIVE_METRICS)}")
     try:
+        # force_refresh=False so we honor any no-data sentinels written
+        # by an earlier run within the last NO_DATA_SOFT_THROTTLE_TTL_SEC
+        # (4h). Today's data is still picked up via the 24h TTL on real
+        # cached values; sentinels short-circuit the Garmin call when
+        # we already know the endpoint is throttled.
         result = garmin.get_daily_summaries(
             startdate=today_iso, enddate=today_iso,
-            metrics=LIVE_METRICS, force_refresh=True,
+            metrics=LIVE_METRICS, force_refresh=False,
         )
         rate_limited = sum(
             1 for m in LIVE_METRICS
             if _is_rate_limit((result.get(m, {}).get(today_iso) or {}).get("error", ""))
         )
-        if rate_limited:
-            print(f"  ERROR: {rate_limited} metric(s) rate-limited", file=sys.stderr)
-            return 1
         errors = sum(
             1 for m in LIVE_METRICS
             if "error" in (result.get(m, {}).get(today_iso) or {})
         )
         ok = len(LIVE_METRICS) - errors
-        print(f"  {ok}/{len(LIVE_METRICS)} refreshed" +
-              (f", {errors} errors" if errors else ""))
+        status = f"  {ok}/{len(LIVE_METRICS)} refreshed"
+        if errors:
+            status += f", {errors} errors"
+        if rate_limited:
+            status += f" ({rate_limited} rate-limited — sentinel cached)"
+        print(status)
     except Exception as ex:  # noqa: BLE001
         print(f"  ERROR: {str(ex)[:200]}", file=sys.stderr)
         return 1
 
+    # Soft throttles are a normal Garmin-side state, not a workflow
+    # failure — the sentinel cache prevents re-hitting the same endpoint
+    # within its TTL, and the daily anchor run will retry. Always return
+    # 0 unless something genuinely broke (handled above).
     return 0
 
 
@@ -166,9 +176,13 @@ def run_workout_check() -> int:
         print(f"  {prev_count} → {new_count} "
               f"({'NEW +' + str(new_count - prev_count) if activity_synced else 'no change'})")
     except Exception as ex:  # noqa: BLE001
+        # Rate-limit (hard or soft) on activity detection is non-fatal —
+        # the activities-month cache TTL is 24h so we'll pick up new
+        # activities on the next refresh anyway. Don't fail the workflow.
         if _is_rate_limit(ex):
-            print(f"  ERROR: rate limited — stopping: {str(ex)[:150]}", file=sys.stderr)
-            return 1
+            print(f"  rate-limited — skipping post-sync refresh: {str(ex)[:150]}",
+                  file=sys.stderr)
+            return 0
         print(f"  ERROR: {str(ex)[:200]}", file=sys.stderr)
         return 0  # non-fatal: skip post-sync refresh this run
 
@@ -183,16 +197,15 @@ def run_workout_check() -> int:
     try:
         result = garmin.get_daily_summaries(
             startdate=today_iso, enddate=today_iso,
-            metrics=POST_SYNC_METRICS, force_refresh=True,
+            metrics=POST_SYNC_METRICS, force_refresh=False,
         )
         rate_limited = sum(
             1 for m in POST_SYNC_METRICS
             if _is_rate_limit((result.get(m, {}).get(today_iso) or {}).get("error", ""))
         )
         if rate_limited:
-            print(f"  ERROR: {rate_limited} metric(s) rate-limited — stopping",
-                  file=sys.stderr)
-            return 1
+            print(f"  {rate_limited} metric(s) rate-limited — sentinel cached, "
+                  f"will retry next anchor run", file=sys.stderr)
         errors = sum(
             1 for m in POST_SYNC_METRICS
             if "error" in (result.get(m, {}).get(today_iso) or {})
