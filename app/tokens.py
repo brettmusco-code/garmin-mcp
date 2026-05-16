@@ -322,26 +322,54 @@ def mfa_token_remaining_seconds(client) -> int | None:
 
 
 def force_refresh(client) -> None:
-    """Force a real OAuth2 exchange + R2 persist regardless of access-token freshness.
+    """Force a real OAuth2 exchange + R2 persist regardless of cached state.
 
-    The patched refresh skips Garmin's exchange endpoint when the access
-    token still has >10min of validity. That's correct for normal API
-    flow, but means the refresh_token can quietly age out without ever
-    being rotated. The weekly warm_refresh job calls this to exercise
-    the exchange path on a known cadence — keeping the refresh_token
-    rolling and surfacing any auth breakage as a failed workflow run
-    instead of a silent expiration.
+    The patched refresh has multiple short-circuits — current token still
+    fresh, R2 holds a fresher token, cooldown active. All of those are
+    correct for normal API flow but defeat the warm-refresh goal of
+    actually exercising Garmin's exchange endpoint. Bypass the patched
+    path entirely: call the original garth refresh directly, then
+    persist the resulting token to R2 ourselves so other containers
+    pick it up.
+
+    Still respects the R2 cooldown flag — there's no value in forcing
+    an exchange when Garmin is actively 429ing the endpoint.
     """
     gc = _as_garth(client)
-    tok = getattr(gc, "oauth2_token", None)
-    if tok is not None:
-        # Set expires_at to "now" so _patched_refresh's freshness check
-        # falls through to the real exchange path.
+
+    cooldown_remaining, reason = load_cooldown_remaining()
+    if cooldown_remaining > 0:
+        raise RuntimeError(
+            f"Garmin OAuth exchange in cooldown for {cooldown_remaining}s "
+            f"after recent 429. Last error: {reason or 'unknown'}"
+        )
+
+    print("[tokens] force_refresh: calling Garmin exchange endpoint", flush=True)
+    try:
+        _original_refresh(gc)
+    except Exception as ex:  # noqa: BLE001
+        if _is_rate_limit(ex):
+            _save_cooldown(ex)
+        raise
+    print(
+        "[tokens] force_refresh: exchange succeeded, new token expires at "
+        f"{getattr(gc.oauth2_token, 'expires_at', '?')}",
+        flush=True,
+    )
+
+    home = getattr(gc, "_garth_home", None)
+    if home:
         try:
-            tok.expires_at = int(time.time())
-        except Exception:  # noqa: BLE001
-            pass
-    gc.refresh_oauth2()
+            persist_tokens_dir(str(home))
+            print("[tokens] force_refresh: persisted refreshed token to R2",
+                  flush=True)
+        except Exception as ex:  # noqa: BLE001
+            print(f"[tokens] force_refresh: R2 persist FAILED: {ex}",
+                  file=sys.stderr, flush=True)
+    else:
+        print("[tokens] force_refresh: WARNING _garth_home not set — "
+              "refreshed token NOT persisted to R2",
+              file=sys.stderr, flush=True)
 
 
 def _try_load_fresh_r2_token(client) -> tuple[bool, int]:
