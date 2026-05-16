@@ -31,6 +31,12 @@ _lock = Lock()
 MAX_RANGE_DAYS = 366
 FAN_OUT_WORKERS = 2
 RATE_LIMIT_MAX_RETRIES = int(os.environ.get("GARMIN_RATE_LIMIT_MAX_RETRIES", "2"))
+# Soft throttles (empty-body 200s from Garmin's CDN) are noisier and more
+# transient than hard 429s — they often clear on the next call. Give them
+# their own retry budget so workflows that set GARMIN_RATE_LIMIT_MAX_RETRIES=0
+# (e.g. workout-check, which wants strict no-retry behavior on real 429s)
+# still tolerate a soft hiccup.
+SOFT_THROTTLE_MAX_RETRIES = int(os.environ.get("GARMIN_SOFT_THROTTLE_MAX_RETRIES", "2"))
 RATE_LIMIT_BASE_DELAY_SEC = float(os.environ.get("GARMIN_RATE_LIMIT_BASE_DELAY_SEC", "2.0"))
 # Minimum gap between the start of consecutive Garmin API calls across the
 # whole process (thread-safe). Prevents the refresh jobs from hitting Garmin
@@ -311,12 +317,14 @@ def _call_with_backoff(fn, *args, **kwargs):
             return fn(*args, **kwargs)
         except Exception as ex:  # noqa: BLE001
             classified = _classify_exception(ex)
-            if isinstance(classified, GarminRateLimitError) and attempt < RATE_LIMIT_MAX_RETRIES:
-                delay = classified.retry_after if classified.retry_after is not None else RATE_LIMIT_BASE_DELAY_SEC * (2 ** attempt)
-                delay += random.uniform(0, 0.5)
-                time.sleep(delay)
-                attempt += 1
-                continue
+            if isinstance(classified, GarminRateLimitError):
+                budget = SOFT_THROTTLE_MAX_RETRIES if classified.soft else RATE_LIMIT_MAX_RETRIES
+                if attempt < budget:
+                    delay = classified.retry_after if classified.retry_after is not None else RATE_LIMIT_BASE_DELAY_SEC * (2 ** attempt)
+                    delay += random.uniform(0, 0.5)
+                    time.sleep(delay)
+                    attempt += 1
+                    continue
             if classified is not None:
                 if isinstance(classified, GarminRateLimitError) and not classified.soft:
                     _trip_api_circuit(classified)

@@ -167,6 +167,8 @@ def run_workout_check() -> int:
     # [1/3] Activity detection — 1 API call.
     print(f"[1/3] Activity detection ({today.year}-{today.month:02d})")
     prev_count = _cached_activity_count(today.year, today.month)
+    new_month = None
+    activity_synced = False
     try:
         new_month = garmin._fetch_activities_month(
             today.year, today.month, force_refresh=True
@@ -175,10 +177,35 @@ def run_workout_check() -> int:
         activity_synced = new_count > prev_count
         print(f"  {prev_count} → {new_count} "
               f"({'NEW +' + str(new_count - prev_count) if activity_synced else 'no change'})")
+    except garmin.GarminRateLimitError as ex:
+        # Hard 429: stop here. The circuit breaker has tripped and
+        # post-sync calls would all fail too.
+        if not getattr(ex, "soft", False):
+            print(f"  rate-limited — skipping post-sync refresh: {str(ex)[:150]}",
+                  file=sys.stderr)
+            return 0
+        # Soft throttle: log and fall through. Use the cached month list
+        # to detect newly-synced activities; post-sync metrics often
+        # succeed even when the activities-by-date endpoint is empty.
+        print(f"  soft-throttle on activities — using cached list: {str(ex)[:150]}",
+              file=sys.stderr)
+        new_month = cache.get(
+            "activities_month",
+            {"year": today.year, "month": today.month},
+            key_parts=[f"{today.year:04d}-{today.month:02d}"],
+            ttl_seconds=24 * 3600,
+        )
+        new_count = len(new_month) if isinstance(new_month, list) else 0
+        # Without a fresh count we can't tell if a workout just synced.
+        # Run post-sync refresh anyway IF the most recent cached activity
+        # is from today — minimal cost, high value when a sync is pending.
+        if isinstance(new_month, list) and new_month:
+            latest = new_month[0]
+            start = str(latest.get("startTimeLocal") or latest.get("startTimeGMT") or "")
+            if start.startswith(today_iso):
+                activity_synced = True
+                print(f"  cached list shows an activity from today — refreshing post-sync anyway")
     except Exception as ex:  # noqa: BLE001
-        # Rate-limit (hard or soft) on activity detection is non-fatal —
-        # the activities-month cache TTL is 24h so we'll pick up new
-        # activities on the next refresh anyway. Don't fail the workflow.
         if _is_rate_limit(ex):
             print(f"  rate-limited — skipping post-sync refresh: {str(ex)[:150]}",
                   file=sys.stderr)

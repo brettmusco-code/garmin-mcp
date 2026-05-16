@@ -64,6 +64,29 @@ def is_rate_limit(ex_or_msg) -> bool:
     return "429" in s or "too many requests" in s or "rate limit" in s
 
 
+def _is_soft_throttle(ex_or_msg) -> bool:
+    """Empty-body 200 from Garmin's CDN. Sentinel cache handles it; not a real error."""
+    if isinstance(ex_or_msg, garmin.GarminRateLimitError):
+        return getattr(ex_or_msg, "soft", False)
+    s = str(ex_or_msg).lower()
+    return "soft throttle" in s or "expecting value" in s
+
+
+def log_failure(prefix: str, ex_or_msg, indent: str = "  ") -> None:
+    """Print soft-throttle messages quietly; keep ERROR for real failures.
+
+    Soft throttles get cached as no-data sentinels by garmin.get_daily_summaries
+    and similar callers — they're an expected steady-state, not a workflow
+    failure. Logging them as ERROR pollutes the GitHub Actions output and
+    obscures genuine problems.
+    """
+    msg = str(ex_or_msg)[:200]
+    if _is_soft_throttle(ex_or_msg):
+        print(f"{indent}{prefix}soft-throttle (sentinel cached): {msg}")
+    else:
+        print(f"{indent}{prefix}ERROR: {msg}", file=sys.stderr)
+
+
 def abort_if_rate_limited(consec_429: int, step: str) -> bool:
     if consec_429 >= MAX_CONSECUTIVE_429:
         print(f"  ABORT: {MAX_CONSECUTIVE_429} consecutive 429s — skipping {step}",
@@ -149,7 +172,7 @@ def main() -> int:
                 consec_429 += 1
                 if abort_if_rate_limited(consec_429, "remaining steps"):
                     return 0
-            print(f"  ERROR: {ex}", file=sys.stderr)
+            log_failure("", ex)
     print()
 
     # ---------- [1.5/5] activity details for last 7 days ----------
@@ -179,7 +202,7 @@ def main() -> int:
                         return 0
         print(f"  pre-warmed details for {detail_count}/{len(recent)} activities")
     except Exception as ex:  # noqa: BLE001
-        print(f"  ERROR: {str(ex)[:150]}", file=sys.stderr)
+        log_failure("", ex)
     print()
 
     # ---------- [2/5] activities (current month, NON-force-refresh) ----------
@@ -203,7 +226,7 @@ def main() -> int:
             print(f"  {y}-{m:02d}: ok")
             consec_429 = 0
         except Exception as ex:  # noqa: BLE001
-            print(f"  {y}-{m:02d}: ERROR {str(ex)[:150]}", file=sys.stderr)
+            log_failure(f"{y}-{m:02d}: ", ex)
             if is_rate_limit(ex):
                 consec_429 += 1
                 if abort_if_rate_limited(consec_429, "remaining steps"):
@@ -225,7 +248,7 @@ def main() -> int:
         print(f"  fetched {len(scheduled)} scheduled workouts")
         consec_429 = 0
     except Exception as ex:  # noqa: BLE001
-        print(f"  ERROR: {str(ex)[:150]}", file=sys.stderr)
+        log_failure("", ex)
         if is_rate_limit(ex):
             consec_429 += 1
             if abort_if_rate_limited(consec_429, "remaining steps"):
@@ -246,7 +269,7 @@ def main() -> int:
                 garmin.get_workout_by_id(wid, force_refresh=False)  # 30-day TTL
                 consec_429 = 0
             except Exception as ex:  # noqa: BLE001
-                print(f"  {wid}: ERROR {str(ex)[:120]}", file=sys.stderr)
+                log_failure(f"{wid}: ", ex)
                 if is_rate_limit(ex):
                     consec_429 += 1
                     if abort_if_rate_limited(consec_429, "remaining steps"):
@@ -278,7 +301,7 @@ def main() -> int:
                   f"bike {ksc.get('bike_key')}/{ksc.get('bike_total')}, "
                   f"swim {ksc.get('swim_key')}/{ksc.get('swim_total')}")
     except Exception as ex:  # noqa: BLE001
-        print(f"  ERROR: {str(ex)[:200]}", file=sys.stderr)
+        log_failure("", ex)
     print()
 
     # ---------- [6/6] derived metrics (cache-first) ----------
@@ -299,7 +322,7 @@ def main() -> int:
             consec_429 = 0
             return True
         except Exception as ex:  # noqa: BLE001
-            print(f"    ERROR: {str(ex)[:150]}", file=sys.stderr)
+            log_failure("", ex, indent="    ")
             if is_rate_limit(ex):
                 consec_429 += 1
                 return not abort_if_rate_limited(consec_429, "remaining derived metrics")
