@@ -124,13 +124,20 @@ def run_live() -> int:
             startdate=today_iso, enddate=today_iso,
             metrics=LIVE_METRICS, force_refresh=False,
         )
+        # Garmin endpoints return mixed shapes: dicts for most metrics,
+        # lists for body_battery_events / training_status. Only dicts
+        # carry our error-shape from get_daily_summaries; treat anything
+        # else as a successful fetch.
+        def _payload(m):
+            return result.get(m, {}).get(today_iso)
         rate_limited = sum(
             1 for m in LIVE_METRICS
-            if _is_rate_limit((result.get(m, {}).get(today_iso) or {}).get("error", ""))
+            if isinstance(_payload(m), dict)
+            and _is_rate_limit(_payload(m).get("error", ""))
         )
         errors = sum(
             1 for m in LIVE_METRICS
-            if "error" in (result.get(m, {}).get(today_iso) or {})
+            if isinstance(_payload(m), dict) and "error" in _payload(m)
         )
         ok = len(LIVE_METRICS) - errors
         status = f"  {ok}/{len(LIVE_METRICS)} refreshed"
@@ -226,16 +233,19 @@ def run_workout_check() -> int:
             startdate=today_iso, enddate=today_iso,
             metrics=POST_SYNC_METRICS, force_refresh=False,
         )
+        def _payload(m):
+            return result.get(m, {}).get(today_iso)
         rate_limited = sum(
             1 for m in POST_SYNC_METRICS
-            if _is_rate_limit((result.get(m, {}).get(today_iso) or {}).get("error", ""))
+            if isinstance(_payload(m), dict)
+            and _is_rate_limit(_payload(m).get("error", ""))
         )
         if rate_limited:
             print(f"  {rate_limited} metric(s) rate-limited — sentinel cached, "
                   f"will retry next anchor run", file=sys.stderr)
         errors = sum(
             1 for m in POST_SYNC_METRICS
-            if "error" in (result.get(m, {}).get(today_iso) or {})
+            if isinstance(_payload(m), dict) and "error" in _payload(m)
         )
         ok = len(POST_SYNC_METRICS) - errors
         print(f"  {ok}/{len(POST_SYNC_METRICS)} refreshed" +
