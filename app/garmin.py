@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta
@@ -208,8 +209,42 @@ def get_client() -> Garmin:
                 tokens.persist_tokens_dir(tokens_dir)
             except Exception:  # noqa: BLE001
                 pass  # logged inside persist_tokens_dir
+        # Populate display_name. garminconnect builds endpoint URLs as
+        # /service/path/{display_name}, and without it requests like
+        # get_steps_data hit /.../None and 403. We skip client.login()
+        # (rate-limit pressure) so we have to fill display_name ourselves.
+        # Cache to R2 with effectively-infinite TTL — this string never
+        # changes for an account.
+        try:
+            client.display_name = _resolve_display_name(client)
+        except Exception as ex:  # noqa: BLE001
+            # Non-fatal — endpoints that don't need display_name still work.
+            print(f"[garmin] WARN: could not resolve display_name: {ex}",
+                  file=sys.stderr)
         _client = client
         return client
+
+
+def _resolve_display_name(client: Garmin) -> str | None:
+    cached = cache.get(
+        "user_profile",
+        {},
+        key_parts=["display_name"],
+        ttl_seconds=IMMUTABLE_TTL,
+    )
+    if isinstance(cached, str) and cached:
+        return cached
+    if isinstance(cached, dict):
+        name = cached.get("displayName") or cached.get("display_name")
+        if name:
+            return name
+    # Cache miss — fetch from Garmin (one cheap connectapi call, never
+    # repeats for the life of this user account).
+    profile = client.garth.connectapi("/userprofile-service/socialProfile")
+    name = (profile or {}).get("displayName")
+    if name:
+        cache.put("user_profile", {}, name, key_parts=["display_name"])
+    return name
 
 
 def ensure_oauth_ready() -> None:
