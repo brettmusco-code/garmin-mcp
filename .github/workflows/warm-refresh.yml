@@ -1,0 +1,50 @@
+name: warm-refresh
+# Weekly forced OAuth2 refresh to keep the refresh_token rolling.
+#
+# Garmin's OAuth2 access_token lives 1h; the refresh_token lives 30d. Every
+# successful exchange call mints a fresh refresh_token, so as long as we
+# exchange at least once per 30d window the chain self-renews. The patched
+# refresh in app/tokens.py skips the exchange when access_token is still
+# fresh, which can — and did, in May 2026 — let the refresh_token quietly
+# expire. This workflow forces the exchange path on a known cadence.
+#
+# Failure here means manual rotation (scripts/bootstrap.py) is needed.
+
+on:
+  schedule:
+    # Sunday 02:30 UTC — well before the daily-refresh at 03:17 so any
+    # warm-refresh failure visibly precedes the daily run.
+    - cron: '30 2 * * 0'
+  workflow_dispatch:
+
+concurrency:
+  group: garmin-refresh
+  cancel-in-progress: false
+
+jobs:
+  warm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11.9"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Force OAuth refresh
+        env:
+          GARTH_TOKENS_B64: ${{ secrets.GARTH_TOKENS_B64 }}
+          S3_CACHE_BUCKET: ${{ secrets.S3_CACHE_BUCKET }}
+          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+          S3_CACHE_PREFIX: ${{ secrets.S3_CACHE_PREFIX }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          GARMIN_READONLY: "false"
+          GARMIN_RATE_LIMIT_MAX_RETRIES: "0"
+          ALLOW_OAUTH_REFRESH: "true"
+        run: python scripts/warm_refresh.py

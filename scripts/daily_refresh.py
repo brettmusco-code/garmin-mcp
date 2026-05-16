@@ -136,6 +136,73 @@ def main() -> int:
     print(f"=== daily_refresh_direct {today.isoformat()} ===")
     print()
 
+    # Token health check. Two clocks matter, with very different
+    # consequences:
+    #
+    #   refresh_token (30d, auto-rotates on each successful exchange).
+    #     If it expires we lose automated auth and have to run
+    #     bootstrap.py. The weekly warm-refresh exists to keep this
+    #     from happening; this alert is the safety net for when
+    #     warm-refresh itself fails.
+    #
+    #   mfa_token (~1y, NEVER auto-rotates).
+    #     The "trust this device" credential. Once expired, bootstrap.py
+    #     must be re-run with email + MFA — there is no recovery short
+    #     of that. Alerting here is the only signal you'll get before
+    #     a year-long fuse runs out.
+    #
+    # Thresholds reflect those costs: refresh_token failures are
+    # workflow-fatal close to expiry (<7d); mfa_token gets early
+    # warnings (60d / 30d) but never fails the workflow because the
+    # signal is "schedule manual rotation soon," not "rotate now."
+    try:
+        client = garmin.get_client()
+        refresh_remaining = tokens.refresh_token_remaining_seconds(client)
+        mfa_remaining = tokens.mfa_token_remaining_seconds(client)
+    except Exception as ex:  # noqa: BLE001
+        print(f"  WARN: could not check token expiries: {ex}", file=sys.stderr)
+        refresh_remaining = None
+        mfa_remaining = None
+
+    if refresh_remaining is not None:
+        days = refresh_remaining / 86400
+        if refresh_remaining < 7 * 86400:
+            print(
+                f"FATAL: OAuth refresh_token expires in {days:.1f} days. "
+                "The weekly warm-refresh job has not been rotating it — "
+                "check that workflow's status, then run scripts/bootstrap.py "
+                "and update the GARTH_TOKENS_B64 secret.",
+                file=sys.stderr,
+            )
+            return 1
+        if refresh_remaining < 14 * 86400:
+            print(
+                f"  WARN: OAuth refresh_token expires in {days:.1f} days. "
+                "Warm-refresh should rotate it before then; if it doesn't, "
+                "investigate the warm-refresh workflow.",
+                file=sys.stderr,
+            )
+        else:
+            print(f"  refresh_token healthy ({days:.1f} days remaining)")
+
+    if mfa_remaining is not None:
+        days = mfa_remaining / 86400
+        if mfa_remaining < 30 * 86400:
+            print(
+                f"  WARN: OAuth1 mfa_token expires in {days:.1f} days. "
+                "Schedule a bootstrap.py run with email + MFA before then "
+                "(no auto-recovery once it expires).",
+                file=sys.stderr,
+            )
+        elif mfa_remaining < 60 * 86400:
+            print(
+                f"  notice: OAuth1 mfa_token expires in {days:.1f} days "
+                "— plan to run bootstrap.py within the next month.",
+            )
+        else:
+            print(f"  mfa_token healthy ({days:.0f} days remaining)")
+    print()
+
     consec_429 = 0
 
     # ---------- [1/5] daily summaries ----------

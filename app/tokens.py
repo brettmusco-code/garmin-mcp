@@ -258,6 +258,92 @@ def save_api_429_cooldown(ex: BaseException) -> None:
         logger.warning("api 429 cooldown save to R2 failed: %s", save_ex)
 
 
+def _as_garth(client):
+    """Accept either a garminconnect.Garmin wrapper or the inner garth client."""
+    return getattr(client, "garth", client)
+
+
+def refresh_token_remaining_seconds(client) -> int | None:
+    """Seconds until the refresh_token expires, or None if unknown.
+
+    The refresh_token is what bootstraps every OAuth2 access-token
+    rotation. When it expires, automated refresh stops working and
+    you have to re-run scripts/bootstrap.py with email + MFA. We use
+    this in daily_refresh to fail the workflow loudly before that
+    happens, so the silent decay we just lived through can't repeat.
+    """
+    gc = _as_garth(client)
+    tok = getattr(gc, "oauth2_token", None)
+    if tok is None:
+        return None
+    exp = getattr(tok, "refresh_token_expires_at", None)
+    if not exp:
+        return None
+    return int(exp - time.time())
+
+
+def mfa_token_remaining_seconds(client) -> int | None:
+    """Seconds until the OAuth1 mfa_token expires, or None if unknown.
+
+    OAuth1's mfa_token is the "trust this device" credential issued
+    after a successful MFA login. It has roughly a 1-year lifetime
+    and CANNOT be rotated automatically — when it expires, bootstrap.py
+    has to be re-run with email + MFA to mint a new one. Below that
+    layer, refresh_token (30d) auto-rotates as long as exchanges keep
+    happening. So mfa_token is the real "must do something manual"
+    deadline; refresh_token is just the "make sure exchanges keep
+    working" deadline.
+
+    Source field: oauth1_token.mfa_expiration_timestamp.
+    """
+    gc = _as_garth(client)
+    tok = getattr(gc, "oauth1_token", None)
+    if tok is None:
+        return None
+    exp_val = getattr(tok, "mfa_expiration_timestamp", None)
+    if not exp_val:
+        return None
+    # garth parses this into a naive datetime.datetime, but older versions
+    # may return a string or epoch int. Handle all three. Garmin issues
+    # these in UTC, so naive datetimes are interpreted as UTC.
+    from datetime import datetime, timezone
+    try:
+        if isinstance(exp_val, (int, float)):
+            return int(exp_val - time.time())
+        if isinstance(exp_val, datetime):
+            exp = exp_val
+        else:
+            exp = datetime.fromisoformat(str(exp_val).replace("Z", "+00:00"))
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        return int(exp.timestamp() - time.time())
+    except (ValueError, TypeError):
+        return None
+
+
+def force_refresh(client) -> None:
+    """Force a real OAuth2 exchange + R2 persist regardless of access-token freshness.
+
+    The patched refresh skips Garmin's exchange endpoint when the access
+    token still has >10min of validity. That's correct for normal API
+    flow, but means the refresh_token can quietly age out without ever
+    being rotated. The weekly warm_refresh job calls this to exercise
+    the exchange path on a known cadence — keeping the refresh_token
+    rolling and surfacing any auth breakage as a failed workflow run
+    instead of a silent expiration.
+    """
+    gc = _as_garth(client)
+    tok = getattr(gc, "oauth2_token", None)
+    if tok is not None:
+        # Set expires_at to "now" so _patched_refresh's freshness check
+        # falls through to the real exchange path.
+        try:
+            tok.expires_at = int(time.time())
+        except Exception:  # noqa: BLE001
+            pass
+    gc.refresh_oauth2()
+
+
 def _try_load_fresh_r2_token(client) -> tuple[bool, int]:
     """Reload tokens from R2 in case another process refreshed first."""
     data = _load_from_r2()
