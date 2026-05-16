@@ -321,57 +321,6 @@ def mfa_token_remaining_seconds(client) -> int | None:
         return None
 
 
-def force_refresh(client) -> None:
-    """Force a real OAuth2 exchange + R2 persist regardless of cached state.
-
-    The patched refresh has multiple short-circuits — current token still
-    fresh, R2 holds a fresher token, cooldown active. All of those are
-    correct for normal API flow but defeat the warm-refresh goal of
-    actually exercising Garmin's exchange endpoint. Bypass the patched
-    path entirely: call the original garth refresh directly, then
-    persist the resulting token to R2 ourselves so other containers
-    pick it up.
-
-    Still respects the R2 cooldown flag — there's no value in forcing
-    an exchange when Garmin is actively 429ing the endpoint.
-    """
-    gc = _as_garth(client)
-
-    cooldown_remaining, reason = load_cooldown_remaining()
-    if cooldown_remaining > 0:
-        raise RuntimeError(
-            f"Garmin OAuth exchange in cooldown for {cooldown_remaining}s "
-            f"after recent 429. Last error: {reason or 'unknown'}"
-        )
-
-    print("[tokens] force_refresh: calling Garmin exchange endpoint", flush=True)
-    try:
-        _original_refresh(gc)
-    except Exception as ex:  # noqa: BLE001
-        if _is_rate_limit(ex):
-            _save_cooldown(ex)
-        raise
-    print(
-        "[tokens] force_refresh: exchange succeeded, new token expires at "
-        f"{getattr(gc.oauth2_token, 'expires_at', '?')}",
-        flush=True,
-    )
-
-    home = getattr(gc, "_garth_home", None)
-    if home:
-        try:
-            persist_tokens_dir(str(home))
-            print("[tokens] force_refresh: persisted refreshed token to R2",
-                  flush=True)
-        except Exception as ex:  # noqa: BLE001
-            print(f"[tokens] force_refresh: R2 persist FAILED: {ex}",
-                  file=sys.stderr, flush=True)
-    else:
-        print("[tokens] force_refresh: WARNING _garth_home not set — "
-              "refreshed token NOT persisted to R2",
-              file=sys.stderr, flush=True)
-
-
 def _try_load_fresh_r2_token(client) -> tuple[bool, int]:
     """Reload tokens from R2 in case another process refreshed first."""
     data = _load_from_r2()

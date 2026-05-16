@@ -1,0 +1,56 @@
+name: clear-cooldown
+# One-shot: clears the OAuth-exchange and API-call 429 cooldown flags from R2.
+# Use after a transient burst of 429s has triggered the 48h breaker but the
+# underlying tokens are still healthy. Does NOT touch the token blob itself.
+#
+# Trigger via: gh workflow run clear-cooldown.yml -R <owner>/<repo>
+
+on:
+  workflow_dispatch:
+
+jobs:
+  clear:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11.9"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Clear R2 cooldown keys
+        env:
+          S3_CACHE_BUCKET: ${{ secrets.S3_CACHE_BUCKET }}
+          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+          S3_CACHE_PREFIX: ${{ secrets.S3_CACHE_PREFIX }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          python <<'PY'
+          import sys
+          from app import cache, tokens
+
+          if not cache.enabled():
+              print("R2 cache not configured", file=sys.stderr)
+              sys.exit(1)
+
+          c = cache._client()
+          for key in (tokens._cooldown_key(), tokens._api_cooldown_key()):
+              try:
+                  c.head_object(Bucket=cache.BUCKET, Key=key)
+              except Exception as ex:
+                  msg = str(ex).lower()
+                  if "not found" in msg or "404" in msg or "nosuchkey" in msg:
+                      print(f"{key}: already absent")
+                      continue
+                  print(f"{key}: head failed: {ex}", file=sys.stderr)
+                  sys.exit(1)
+              c.delete_object(Bucket=cache.BUCKET, Key=key)
+              print(f"{key}: deleted")
+          print("Cooldowns cleared. Next refresh runs will not abort.")
+          PY
