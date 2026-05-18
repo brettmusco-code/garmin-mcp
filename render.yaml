@@ -1,4 +1,5 @@
 services:
+  # ---------- Web service: read-only MCP ----------
   - type: web
     name: garmin-mcp
     runtime: python
@@ -11,12 +12,50 @@ services:
         sync: false
       - key: GARTH_TOKENS_B64
         sync: false
-      # The public MCP service should never call Garmin directly. GitHub
-      # Actions owns cache warming and OAuth rotation; the web service only
-      # reads R2 so Claude/web traffic cannot amplify Garmin rate limits.
+      # Web service serves cached data only — never calls Garmin.
       - key: GARMIN_READONLY
         value: "true"
       - key: ALLOW_OAUTH_REFRESH
         value: "false"
+      - key: PYTHON_VERSION
+        value: "3.11.9"
+
+  # ---------- Cron job: cache warming + OAuth rotation ----------
+  # Garmin rate-limits OAuth exchanges from GitHub Actions runner IPs
+  # (observed two 48h lockouts in May 2026). Render's egress IPs aren't
+  # flagged, so we own all writes here. The web service above stays
+  # read-only.
+  #
+  # Single cron (vs three) because Render bills $1/mo per cron service
+  # minimum. The dispatcher decides what to run based on UTC hour:
+  #   :30 every hour       → today_refresh [workout] (activity sync poll)
+  #   :30 every 6h         → today_refresh [live]    (intraday metrics)
+  #   03:30 once per day   → daily_refresh           (full nightly anchor)
+  - type: cron
+    name: garmin-refresh
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    schedule: "30 * * * *"
+    startCommand: python scripts/cron_dispatcher.py
+    envVars:
+      - key: GARTH_TOKENS_B64
+        sync: false
+      - key: S3_CACHE_BUCKET
+        sync: false
+      - key: S3_ENDPOINT_URL
+        sync: false
+      - key: S3_CACHE_PREFIX
+        sync: false
+      - key: AWS_ACCESS_KEY_ID
+        sync: false
+      - key: AWS_SECRET_ACCESS_KEY
+        sync: false
+      - key: GARMIN_READONLY
+        value: "false"
+      - key: GARMIN_RATE_LIMIT_MAX_RETRIES
+        value: "0"
+      - key: ALLOW_OAUTH_REFRESH
+        value: "true"
       - key: PYTHON_VERSION
         value: "3.11.9"
