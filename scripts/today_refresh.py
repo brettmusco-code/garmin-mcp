@@ -87,26 +87,41 @@ def _oauth_preflight() -> bool:
         return False
 
 
-def _check_cooldowns() -> bool:
-    """Return True if either cooldown is active (caller should abort)."""
+def _check_cooldowns() -> tuple[bool, str | None]:
+    """Return (active, reason_str) — active=True means caller should skip this run.
+
+    Checks both the API-call 429 cooldown and the OAuth exchange cooldown.
+    Returns a non-empty reason string when active so callers can print a single
+    clear SKIPPED message (exit 0) instead of an ERROR (exit 1). Skipping is
+    intentional protective behavior, not a code failure.
+    """
     api_remaining, api_reason = tokens.load_api_429_cooldown_remaining()
     if api_remaining > 0:
         hrs, mins = api_remaining // 3600, (api_remaining % 3600) // 60
-        print(
-            f"ERROR: Garmin API 429 cooldown active — {hrs}h {mins}m remaining. "
-            f"Last error: {api_reason or 'unknown'}.",
-            file=sys.stderr,
+        return True, (
+            f"Garmin API 429 cooldown active — {hrs}h {mins}m remaining "
+            f"(last error: {api_reason or 'unknown'}). Skipping to let "
+            "Garmin's throttle window reset."
         )
-        return True
-    return False
+    oauth_remaining, oauth_reason = tokens.load_cooldown_remaining()
+    if oauth_remaining > 0:
+        hrs, mins = oauth_remaining // 3600, (oauth_remaining % 3600) // 60
+        return True, (
+            f"Garmin OAuth 429 cooldown active — {hrs}h {mins}m remaining "
+            f"(last error: {oauth_reason or 'unknown'}). Skipping to let "
+            "Garmin's throttle window reset."
+        )
+    return False, None
 
 
 def run_live() -> int:
     """Refresh live intraday metrics (6-hour cadence)."""
     print(f"=== today_refresh [live] {date.today()} ===")
 
-    if _check_cooldowns():
-        return 1
+    active, reason = _check_cooldowns()
+    if active:
+        print(f"SKIPPED: {reason}")
+        return 0
 
     print("[0/1] OAuth preflight")
     if not _oauth_preflight():
@@ -164,8 +179,10 @@ def run_workout_check() -> int:
     yesterday_iso = (today - timedelta(days=1)).isoformat()
     print(f"=== today_refresh [workout] {today_iso} ===")
 
-    if _check_cooldowns():
-        return 1
+    active, reason = _check_cooldowns()
+    if active:
+        print(f"SKIPPED: {reason}")
+        return 0
 
     print("[0/3] OAuth preflight")
     if not _oauth_preflight():
