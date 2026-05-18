@@ -113,24 +113,22 @@ def main() -> int:
         hrs = api_remaining // 3600
         mins = (api_remaining % 3600) // 60
         print(
-            f"ERROR: Garmin API 429 cooldown active — {hrs}h {mins}m remaining. "
+            f"SKIPPED: Garmin API 429 cooldown active — {hrs}h {mins}m remaining. "
             f"Last error: {api_reason or 'unknown'}. "
-            "Skipping refresh to let Garmin's throttle window reset.",
-            file=sys.stderr,
+            "Skipping refresh to let Garmin's throttle window reset."
         )
-        return 1
+        return 0
 
     oauth_remaining, oauth_reason = tokens.load_cooldown_remaining()
     if oauth_remaining > 0:
         hrs = oauth_remaining // 3600
         mins = (oauth_remaining % 3600) // 60
         print(
-            f"ERROR: Garmin OAuth 429 cooldown active — {hrs}h {mins}m remaining. "
+            f"SKIPPED: Garmin OAuth 429 cooldown active — {hrs}h {mins}m remaining. "
             f"Last error: {oauth_reason or 'unknown'}. "
-            "Skipping refresh to let Garmin's throttle window reset.",
-            file=sys.stderr,
+            "Skipping refresh to let Garmin's throttle window reset."
         )
-        return 1
+        return 0
 
     today = date.today()
     print(f"=== daily_refresh_direct {today.isoformat()} ===")
