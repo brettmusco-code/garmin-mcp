@@ -1,0 +1,102 @@
+name: sync-token
+# One-shot: overwrites the R2 token blob with the contents of the
+# GARTH_TOKENS_B64 secret AND clears any active OAuth cooldown.
+#
+# Use this after rotating the GARTH_TOKENS_B64 secret with a fresh
+# token from a non-GH-Actions IP — without it, the cached R2 token
+# (likely stale and triggering the 429 you just rotated to escape)
+# wins because R2 is preferred over env.
+#
+# Trigger via: gh workflow run sync-token.yml -R <owner>/<repo>
+
+on:
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11.9"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Push env-token to R2 + clear cooldown
+        env:
+          GARTH_TOKENS_B64: ${{ secrets.GARTH_TOKENS_B64 }}
+          S3_CACHE_BUCKET: ${{ secrets.S3_CACHE_BUCKET }}
+          S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
+          S3_CACHE_PREFIX: ${{ secrets.S3_CACHE_PREFIX }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          python <<'PY'
+          import base64, sys, time, json, datetime as dt
+          from app import cache, tokens
+
+          if not cache.enabled():
+              print("R2 cache not configured", file=sys.stderr)
+              sys.exit(1)
+
+          import os
+          b64 = os.environ.get("GARTH_TOKENS_B64")
+          if not b64:
+              print("GARTH_TOKENS_B64 not set", file=sys.stderr)
+              sys.exit(1)
+
+          # Sanity-check the env token before overwriting R2 with it.
+          import io, tarfile
+          data = base64.b64decode(b64)
+          with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
+              for m in tf.getmembers():
+                  if m.name == "oauth2_token.json":
+                      f = tf.extractfile(m)
+                      j = json.loads(f.read().decode())
+                      exp = j.get("expires_at", 0)
+                      ref_exp = j.get("refresh_token_expires_at", 0)
+                      now = time.time()
+                      print(f"env token: access_token expires_at = "
+                            f"{dt.datetime.fromtimestamp(exp).isoformat()} "
+                            f"({(exp-now)/3600:+.2f}h)")
+                      print(f"env token: refresh_token expires_at = "
+                            f"{dt.datetime.fromtimestamp(ref_exp).isoformat()} "
+                            f"({(ref_exp-now)/86400:+.2f}d)")
+                      if exp - now < 60:
+                          print("ERROR: env token is already expired or "
+                                "near-expired. Rotate GARTH_TOKENS_B64 with "
+                                "a fresh token first.", file=sys.stderr)
+                          sys.exit(1)
+                      break
+
+          # Overwrite R2 with env contents.
+          c = cache._client()
+          c.put_object(
+              Bucket=cache.BUCKET,
+              Key=tokens._r2_key(),
+              Body=data,
+              ContentType="application/gzip",
+          )
+          print(f"R2 token overwritten with env contents ({len(data)} bytes)")
+
+          # Clear cooldowns.
+          for key in (tokens._cooldown_key(), tokens._api_cooldown_key()):
+              try:
+                  c.head_object(Bucket=cache.BUCKET, Key=key)
+              except Exception as ex:
+                  msg = str(ex).lower()
+                  if "not found" in msg or "404" in msg or "nosuchkey" in msg:
+                      print(f"{key}: already absent")
+                      continue
+                  print(f"{key}: head failed: {ex}", file=sys.stderr)
+                  continue
+              c.delete_object(Bucket=cache.BUCKET, Key=key)
+              print(f"{key}: deleted")
+
+          print("Done. Next refresh runs will use the env-fresh token.")
+          PY
