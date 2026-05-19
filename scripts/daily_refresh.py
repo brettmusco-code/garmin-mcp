@@ -113,94 +113,61 @@ def main() -> int:
         hrs = api_remaining // 3600
         mins = (api_remaining % 3600) // 60
         print(
-            f"ERROR: Garmin API 429 cooldown active — {hrs}h {mins}m remaining. "
+            f"SKIPPED: Garmin API 429 cooldown active — {hrs}h {mins}m remaining. "
             f"Last error: {api_reason or 'unknown'}. "
-            "Skipping refresh to let Garmin's throttle window reset.",
-            file=sys.stderr,
+            "Skipping refresh to let Garmin's throttle window reset."
         )
-        return 1
+        return 0
 
     oauth_remaining, oauth_reason = tokens.load_cooldown_remaining()
     if oauth_remaining > 0:
         hrs = oauth_remaining // 3600
         mins = (oauth_remaining % 3600) // 60
         print(
-            f"ERROR: Garmin OAuth 429 cooldown active — {hrs}h {mins}m remaining. "
+            f"SKIPPED: Garmin OAuth 429 cooldown active — {hrs}h {mins}m remaining. "
             f"Last error: {oauth_reason or 'unknown'}. "
-            "Skipping refresh to let Garmin's throttle window reset.",
-            file=sys.stderr,
+            "Skipping refresh to let Garmin's throttle window reset."
         )
-        return 1
+        return 0
 
     today = date.today()
     print(f"=== daily_refresh_direct {today.isoformat()} ===")
     print()
 
-    # Token health check. Two clocks matter, with very different
-    # consequences:
+    # Token health check.
     #
-    #   refresh_token (30d, auto-rotates on each successful exchange).
-    #     If it expires we lose automated auth and have to run
-    #     bootstrap.py. The weekly warm-refresh exists to keep this
-    #     from happening; this alert is the safety net for when
-    #     warm-refresh itself fails.
+    # di_token is a short-lived JWT (~1h) that auto-rotates via the
+    # web-service keeper and cron refreshes. Check that it loaded cleanly.
     #
-    #   mfa_token (~1y, NEVER auto-rotates).
-    #     The "trust this device" credential. Once expired, bootstrap.py
-    #     must be re-run with email + MFA — there is no recovery short
-    #     of that. Alerting here is the only signal you'll get before
-    #     a year-long fuse runs out.
-    #
-    # Thresholds reflect those costs: refresh_token failures are
-    # workflow-fatal close to expiry (<7d); mfa_token gets early
-    # warnings (60d / 30d) but never fails the workflow because the
-    # signal is "schedule manual rotation soon," not "rotate now."
+    # di_refresh_token is long-lived. If it's a JWT we can decode its
+    # expiry; if it's opaque we skip the check. Either way, if the refresh
+    # token ever expires, re-running bootstrap.py is the only recovery.
     try:
         client = garmin.get_client()
         refresh_remaining = tokens.refresh_token_remaining_seconds(client)
-        mfa_remaining = tokens.mfa_token_remaining_seconds(client)
     except Exception as ex:  # noqa: BLE001
         print(f"  WARN: could not check token expiries: {ex}", file=sys.stderr)
         refresh_remaining = None
-        mfa_remaining = None
 
     if refresh_remaining is not None:
         days = refresh_remaining / 86400
         if refresh_remaining < 7 * 86400:
             print(
-                f"FATAL: OAuth refresh_token expires in {days:.1f} days. "
-                "The weekly warm-refresh job has not been rotating it — "
-                "check that workflow's status, then run scripts/bootstrap.py "
-                "and update the GARTH_TOKENS_B64 secret.",
+                f"FATAL: DI refresh_token expires in {days:.1f} days. "
+                "Run scripts/bootstrap.py and update the GARMIN_TOKENS_B64 secret.",
                 file=sys.stderr,
             )
             return 1
         if refresh_remaining < 14 * 86400:
             print(
-                f"  WARN: OAuth refresh_token expires in {days:.1f} days. "
-                "Warm-refresh should rotate it before then; if it doesn't, "
-                "investigate the warm-refresh workflow.",
+                f"  WARN: DI refresh_token expires in {days:.1f} days — "
+                "run bootstrap.py soon.",
                 file=sys.stderr,
             )
         else:
             print(f"  refresh_token healthy ({days:.1f} days remaining)")
-
-    if mfa_remaining is not None:
-        days = mfa_remaining / 86400
-        if mfa_remaining < 30 * 86400:
-            print(
-                f"  WARN: OAuth1 mfa_token expires in {days:.1f} days. "
-                "Schedule a bootstrap.py run with email + MFA before then "
-                "(no auto-recovery once it expires).",
-                file=sys.stderr,
-            )
-        elif mfa_remaining < 60 * 86400:
-            print(
-                f"  notice: OAuth1 mfa_token expires in {days:.1f} days "
-                "— plan to run bootstrap.py within the next month.",
-            )
-        else:
-            print(f"  mfa_token healthy ({days:.0f} days remaining)")
+    else:
+        print("  refresh_token expiry: unknown (opaque token — no action needed)")
     print()
 
     consec_429 = 0

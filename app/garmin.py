@@ -2,13 +2,13 @@
 
 Auth model:
   1. One-time bootstrap locally (see scripts/bootstrap.py). User completes MFA
-     interactively. `garminconnect` writes Garth OAuth tokens to a dir.
+     interactively. `bootstrap.py` writes DI Bearer tokens as a JSON blob.
   2. For deployment, those tokens are base64-encoded and stored in
-     GARTH_TOKENS_B64 as a *bootstrap* value. First startup: load from env,
+     GARMIN_TOKENS_B64 as a *bootstrap* value. First startup: load from env,
      push to R2. Subsequent startups: load from R2 (survives Render restarts).
-  3. garth refreshes OAuth2 tokens ~daily. Our patched refresh pushes the
-     updated tokens back to R2 so restarts don't redo the exchange (the
-     Garmin endpoint Garmin aggressively rate-limits).
+  3. garminconnect auto-refreshes the DI token via diauth.garmin.com. Our
+     patched _refresh_session pushes the updated tokens back to R2 so restarts
+     don't redo the exchange (Garmin rate-limits this endpoint aggressively).
 """
 from __future__ import annotations
 
@@ -107,7 +107,7 @@ def _classify_exception(exc: BaseException) -> GarminError | None:
     if "404" in msg or "not found" in msg or status == 404:
         return GarminNotFoundError(str(exc))
     # Empty-body 200 responses surface as JSONDecodeError ("Expecting value:
-    # line 1 column 1 (char 0)") because garth/garminconnect call .json() on
+    # line 1 column 1 (char 0)") because garminconnect calls .json() on
     # an empty payload. Garmin's CDN returns these as a soft throttle —
     # less aggressive than 429 but the same root cause. Treat them as a
     # rate-limit signal so backoff/circuit-breaker logic kicks in.
@@ -169,46 +169,29 @@ def get_client() -> Garmin:
                 f"Garmin auth in cooldown for {remaining}s after recent 429. "
                 "Serving cached data only."
             )
-        tokens_dir, source = tokens.load_tokens_dir()
+        json_str, source = tokens.load_tokens_json()
         client = Garmin()
-        client.garth.sess.headers.update({
-            "User-Agent": (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/131.0.0.0 Safari/537.36"
-            )
-        })
-        # IMPORTANT: use garth.load() instead of client.login(tokens_dir).
-        # client.login() eagerly fetches the user profile to "verify" the
-        # token, which burns an OAuth2 exchange call on EVERY container
-        # startup — even when all our subsequent calls will be cache hits
-        # that never touch Garmin. At ~dozens of container wakes per day
-        # across Render + GitHub Actions, that pattern trips Garmin's
-        # per-account anti-abuse heuristics (429 on exchange endpoint).
-        #
-        # garth.load() just deserializes OAuth1 + OAuth2 token state from
-        # disk — no network call. The first Garmin API call that needs
-        # auth will trigger refresh-on-demand through garth.request's
-        # expiry check, gated by our _patched_refresh.
+        # Use client.client.loads() instead of client.login(tokenstore=…).
+        # client.login() eagerly fetches the social profile to populate
+        # display_name, burning a Garmin API call on every container start.
+        # loads() just deserializes the DI token JSON — no network call.
+        # The first API call triggers auto-refresh via _run_request if needed,
+        # gated by our patched _refresh_session.
         try:
-            client.garth.load(tokens_dir)
+            client.client.loads(json_str)
         except Exception as ex:  # noqa: BLE001
             msg = str(ex).lower()
             if "429" in msg or "too many requests" in msg or "rate limit" in msg:
                 _auth_failed_until = time.time() + AUTH_COOLDOWN_SEC
                 raise GarminRateLimitError(f"Garmin token load throttled: {ex}") from ex
             raise
-        # Set _garth_home so garth's refresh_oauth2 dumps refreshed tokens
-        # to disk. Our patched refresh (in tokens.py) then pushes them to R2.
-        client.garth._garth_home = tokens_dir
-        # Bootstrap case: first deploy loaded tokens from env — push them
-        # to R2 so subsequent restarts use R2 and skip the OAuth exchange
-        # path that Garmin rate-limits.
+        # Bootstrap case: first deploy loaded tokens from env — push to R2
+        # so subsequent restarts use R2 and skip the Garmin exchange endpoint.
         if source == "env":
             try:
-                tokens.persist_tokens_dir(tokens_dir)
+                tokens.save_tokens_json(json_str)
             except Exception:  # noqa: BLE001
-                pass  # logged inside persist_tokens_dir
+                pass  # logged inside save_tokens_json
         # Populate display_name. garminconnect builds endpoint URLs as
         # /service/path/{display_name}, and without it requests like
         # get_steps_data hit /.../None and 403. We skip client.login()
@@ -240,7 +223,7 @@ def _resolve_display_name(client: Garmin) -> str | None:
             return name
     # Cache miss — fetch from Garmin (one cheap connectapi call, never
     # repeats for the life of this user account).
-    profile = client.garth.connectapi("/userprofile-service/socialProfile")
+    profile = client.connectapi("/userprofile-service/socialProfile")
     name = (profile or {}).get("displayName")
     if name:
         cache.put("user_profile", {}, name, key_parts=["display_name"])
@@ -248,20 +231,17 @@ def _resolve_display_name(client: Garmin) -> str | None:
 
 
 def ensure_oauth_ready() -> None:
-    """Ensure the loaded Garmin OAuth2 access token is usable.
+    """Ensure the loaded Garmin DI Bearer token is usable.
 
-    The patched garth refresh method is intentionally idempotent: it skips
-    Garmin's exchange endpoint when the token is still fresh enough, and
-    rotates/persists the token when it is expired or inside the safety
-    margin. Calling it once before fan-out keeps an expired token from
-    being discovered concurrently by worker threads.
+    Calls the patched _refresh_session: idempotent (checks R2 for a fresh
+    token first, only exchanges if truly near expiry), serialized by a lock
+    so concurrent worker threads don't trigger simultaneous exchanges.
 
-    Wraps the underlying garth call through _classify_exception so that
-    callers see GarminRateLimitError (with soft=True for empty-body
-    responses) instead of raw JSONDecodeError / HTTPError.
+    Wraps through _classify_exception so callers see GarminRateLimitError
+    (with soft=True for empty-body responses) instead of raw exceptions.
     """
     try:
-        get_client().garth.refresh_oauth2()
+        get_client().client._refresh_session()
     except Exception as ex:  # noqa: BLE001
         classified = _classify_exception(ex)
         if classified is not None:
@@ -1327,14 +1307,13 @@ def get_workout_by_id(workout_id: str | int, force_refresh: bool = False):
 def _calendar_month(year: int, month: int) -> dict:
     """Fetch one Garmin Connect calendar month via the web-gateway endpoint.
 
-    The python-garminconnect library doesn't wrap this, so we use the
-    underlying garth client to hit `/calendar-service/year/{Y}/month/{M-1}`
-    directly (Garmin's month is 0-indexed).
+    The python-garminconnect library doesn't wrap this, so we call
+    `/calendar-service/year/{Y}/month/{M-1}` directly.
+    (Garmin's month is 0-indexed.)
     """
     c = get_client()
-    # Garmin's calendar service uses 0-indexed months (Jan=0 .. Dec=11).
     path = f"/calendar-service/year/{year}/month/{month - 1}"
-    return _call_with_backoff(c.garth.connectapi, path) or {}
+    return _call_with_backoff(c.connectapi, path) or {}
 
 
 def get_scheduled_workouts(
