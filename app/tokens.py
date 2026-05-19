@@ -41,15 +41,17 @@ import garth
 from . import cache
 
 # Skip refresh if OAuth2 token has at least this much time left.
-# Garmin OAuth2 tokens live for 3600s (1h); requests take ~1-5s. We want
-# to avoid the "token expires mid-request" race while still letting all
-# containers in a 1hr window share the same refresh.
-REFRESH_SKIP_MARGIN_SEC = 600  # 10 minutes of buffer
-# Garmin's OAuth exchange throttle can last much longer than a normal API
-# backoff window. 48h (vs. prior 24h) gives Garmin's throttle window time
-# to fully reset before we attempt another exchange. Set
-# OAUTH_429_COOLDOWN_SEC=0 to disable (not recommended).
-OAUTH_429_COOLDOWN_SEC = int(os.environ.get("OAUTH_429_COOLDOWN_SEC", str(48 * 3600)))
+# Garmin OAuth2 tokens live for 3600s (1h). 1200s (20 min) of margin
+# means the exchange is attempted well before expiry, giving the
+# 2h cooldown enough runway to clear before the token fully expires.
+REFRESH_SKIP_MARGIN_SEC = int(os.environ.get("REFRESH_SKIP_MARGIN_SEC", "1200"))
+# How long to wait after a 429 on the OAuth exchange endpoint before
+# retrying. 48h was calibrated for GitHub Actions runner IPs (heavily
+# flagged by Garmin). On Render's IPs the throttle window is much
+# shorter — 2h lets the run self-recover within a couple of cron ticks
+# rather than requiring a manual bootstrap. Set OAUTH_429_COOLDOWN_SEC=0
+# to disable (not recommended).
+OAUTH_429_COOLDOWN_SEC = int(os.environ.get("OAUTH_429_COOLDOWN_SEC", str(2 * 3600)))
 # Separate cooldown for regular Garmin API calls (activities, daily
 # summaries, etc.). When any API call exhausts its retries on a 429,
 # this flag is persisted to R2 so subsequent refresh runs abort before
