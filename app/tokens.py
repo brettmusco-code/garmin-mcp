@@ -484,3 +484,80 @@ def _patched_refresh(self):
 
 
 garth.Client.refresh_oauth2 = _patched_refresh
+
+
+# How early the web-service background keeper triggers a proactive refresh.
+# Larger than REFRESH_SKIP_MARGIN_SEC so the keeper acts before the per-call
+# check in _patched_refresh would kick in, giving a two-tier safety net.
+# Default: REFRESH_SKIP_MARGIN_SEC (1200s) + 600s = 30 min before expiry.
+KEEPER_MARGIN_SEC = REFRESH_SKIP_MARGIN_SEC + 600
+
+
+def proactive_refresh_if_needed() -> str:
+    """Check R2 token expiry and refresh proactively if it's near expiry.
+
+    Designed for the web-service background keeper thread. Operates
+    independently of READONLY_MODE and ALLOW_OAUTH_REFRESH (those are
+    request-path guards; this is a scheduled maintenance operation that
+    keeps R2 warm so cron jobs never need to call the exchange endpoint).
+
+    Returns a short status string for logging.
+    """
+    if not cache.enabled():
+        return "skip: cache not configured"
+
+    cooldown_remaining, _ = load_cooldown_remaining()
+    if cooldown_remaining > 0:
+        return f"skip: oauth cooldown {cooldown_remaining}s"
+
+    global _refresh_circuit_tripped
+    if _refresh_circuit_tripped is not None:
+        return "skip: circuit tripped"
+
+    data = _load_from_r2()
+    if data is None:
+        return "skip: no token in R2"
+
+    tokens_dir = _extract(data)
+    gc = garth.Client()
+    try:
+        gc.load(tokens_dir)
+    except Exception as ex:  # noqa: BLE001
+        return f"error: garth load: {ex}"
+
+    tok = getattr(gc, "oauth2_token", None)
+    expires_at = getattr(tok, "expires_at", None) if tok else None
+    if expires_at is None:
+        return "skip: token has no expiry"
+
+    remaining = int(expires_at - time.time())
+    if remaining > KEEPER_MARGIN_SEC:
+        return f"ok: {remaining}s remaining"
+
+    print(
+        f"[token-keeper] proactive refresh ({remaining}s remaining, "
+        f"threshold {KEEPER_MARGIN_SEC}s)",
+        flush=True,
+    )
+    gc._garth_home = tokens_dir
+    with _refresh_lock:
+        if _refresh_circuit_tripped is not None:
+            return "skip: circuit tripped (inside lock)"
+        try:
+            _original_refresh(gc)
+        except Exception as ex:  # noqa: BLE001
+            print(f"[token-keeper] REFRESH FAILED: {ex}", file=sys.stderr, flush=True)
+            if _is_rate_limit(ex):
+                _refresh_circuit_tripped = ex
+                _save_cooldown(ex)
+                print("[token-keeper] circuit tripped", file=sys.stderr, flush=True)
+            return f"error: {ex}"
+
+    print("[token-keeper] refresh succeeded — persisting to R2", flush=True)
+    try:
+        persist_tokens_dir(tokens_dir)
+        print("[token-keeper] fresh token persisted to R2", flush=True)
+        return "refreshed"
+    except Exception as ex:  # noqa: BLE001
+        print(f"[token-keeper] R2 persist failed: {ex}", file=sys.stderr, flush=True)
+        return "refreshed (R2 persist failed)"

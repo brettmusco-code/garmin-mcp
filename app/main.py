@@ -8,18 +8,52 @@ endpoint always hands back the configured MCP_BEARER_TOKEN.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import secrets
+import threading
+from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import urlencode
 
 from fastapi import FastAPI, Form, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 
-from . import cache, garmin
+from . import cache, garmin, tokens
 
-app = FastAPI()
+_keeper_logger = logging.getLogger("garmin.token_keeper")
+
+
+def _token_keeper_loop() -> None:
+    """Background daemon: keep the Garmin OAuth2 token fresh in R2.
+
+    Runs every 5 minutes. When the token has less than KEEPER_MARGIN_SEC
+    (default 30 min) remaining, it proactively exchanges for a new one and
+    writes the result to R2. Cron jobs then always load a valid token and
+    skip the exchange entirely, eliminating the most common source of 429s.
+    """
+    import time
+    time.sleep(60)  # let startup settle before first check
+    while True:
+        try:
+            status = tokens.proactive_refresh_if_needed()
+            if not status.startswith("ok"):
+                _keeper_logger.info("token keeper: %s", status)
+        except Exception as ex:  # noqa: BLE001
+            _keeper_logger.warning("token keeper error: %s", ex)
+        time.sleep(300)  # check every 5 minutes
+
+
+@asynccontextmanager
+async def lifespan(app_: FastAPI):
+    t = threading.Thread(target=_token_keeper_loop, daemon=True, name="garmin-token-keeper")
+    t.start()
+    _keeper_logger.info("background token keeper started (check interval: 5 min)")
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 BEARER = os.environ.get("MCP_BEARER_TOKEN")
 if not BEARER:
