@@ -1,11 +1,10 @@
 name: sync-token
 # One-shot: overwrites the R2 token blob with the contents of the
-# GARTH_TOKENS_B64 secret AND clears any active OAuth cooldown.
+# GARMIN_TOKENS_B64 secret AND clears any active OAuth cooldown.
 #
-# Use this after rotating the GARTH_TOKENS_B64 secret with a fresh
-# token from a non-GH-Actions IP — without it, the cached R2 token
-# (likely stale and triggering the 429 you just rotated to escape)
-# wins because R2 is preferred over env.
+# Use this after rotating the GARMIN_TOKENS_B64 secret with a fresh
+# token from bootstrap.py — without it, the cached R2 token (likely
+# stale) wins because R2 is preferred over env.
 #
 # Trigger via: gh workflow run sync-token.yml -R <owner>/<repo>
 
@@ -29,7 +28,7 @@ jobs:
 
       - name: Push env-token to R2 + clear cooldown
         env:
-          GARTH_TOKENS_B64: ${{ secrets.GARTH_TOKENS_B64 }}
+          GARMIN_TOKENS_B64: ${{ secrets.GARMIN_TOKENS_B64 }}
           S3_CACHE_BUCKET: ${{ secrets.S3_CACHE_BUCKET }}
           S3_ENDPOINT_URL: ${{ secrets.S3_ENDPOINT_URL }}
           S3_CACHE_PREFIX: ${{ secrets.S3_CACHE_PREFIX }}
@@ -37,7 +36,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         run: |
           python <<'PY'
-          import base64, sys, time, json, datetime as dt
+          import base64, sys, time, json
           from app import cache, tokens
 
           if not cache.enabled():
@@ -45,44 +44,58 @@ jobs:
               sys.exit(1)
 
           import os
-          b64 = os.environ.get("GARTH_TOKENS_B64")
+          b64 = os.environ.get("GARMIN_TOKENS_B64")
           if not b64:
-              print("GARTH_TOKENS_B64 not set", file=sys.stderr)
+              print("GARMIN_TOKENS_B64 not set", file=sys.stderr)
               sys.exit(1)
 
           # Sanity-check the env token before overwriting R2 with it.
-          import io, tarfile
-          data = base64.b64decode(b64)
-          with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
-              for m in tf.getmembers():
-                  if m.name == "oauth2_token.json":
-                      f = tf.extractfile(m)
-                      j = json.loads(f.read().decode())
-                      exp = j.get("expires_at", 0)
-                      ref_exp = j.get("refresh_token_expires_at", 0)
-                      now = time.time()
-                      print(f"env token: access_token expires_at = "
-                            f"{dt.datetime.fromtimestamp(exp).isoformat()} "
-                            f"({(exp-now)/3600:+.2f}h)")
-                      print(f"env token: refresh_token expires_at = "
-                            f"{dt.datetime.fromtimestamp(ref_exp).isoformat()} "
-                            f"({(ref_exp-now)/86400:+.2f}d)")
-                      if exp - now < 60:
-                          print("ERROR: env token is already expired or "
-                                "near-expired. Rotate GARTH_TOKENS_B64 with "
-                                "a fresh token first.", file=sys.stderr)
-                          sys.exit(1)
-                      break
+          raw = base64.b64decode(b64).decode()
+          try:
+              data = json.loads(raw)
+          except Exception as e:
+              print(f"ERROR: GARMIN_TOKENS_B64 is not valid JSON: {e}", file=sys.stderr)
+              sys.exit(1)
+
+          di_token = data.get("di_token")
+          di_refresh = data.get("di_refresh_token")
+          if not di_token:
+              print("ERROR: di_token missing from token JSON", file=sys.stderr)
+              sys.exit(1)
+
+          # Decode the JWT access token to check expiry.
+          import datetime as dt
+          exp = tokens._decode_jwt_exp(di_token)
+          if exp is not None:
+              now = time.time()
+              print(f"env token: di_token expires at "
+                    f"{dt.datetime.fromtimestamp(exp).isoformat()} "
+                    f"({(exp-now)/3600:+.2f}h)")
+              if exp - now < 60:
+                  print("ERROR: env token is already expired or near-expired. "
+                        "Re-run bootstrap.py to mint fresh tokens.", file=sys.stderr)
+                  sys.exit(1)
+          else:
+              print("env token: di_token expiry unknown (not a JWT or no exp claim)")
+
+          di_ref_exp = tokens._decode_jwt_exp(di_refresh) if di_refresh else None
+          if di_ref_exp is not None:
+              now = time.time()
+              print(f"env token: di_refresh_token expires at "
+                    f"{dt.datetime.fromtimestamp(di_ref_exp).isoformat()} "
+                    f"({(di_ref_exp-now)/86400:+.2f}d)")
+          else:
+              print("env token: di_refresh_token expiry unknown (opaque or missing)")
 
           # Overwrite R2 with env contents.
           c = cache._client()
           c.put_object(
               Bucket=cache.BUCKET,
               Key=tokens._r2_key(),
-              Body=data,
-              ContentType="application/gzip",
+              Body=raw.encode(),
+              ContentType="application/json",
           )
-          print(f"R2 token overwritten with env contents ({len(data)} bytes)")
+          print(f"R2 token overwritten with env contents ({len(raw)} bytes)")
 
           # Clear cooldowns.
           for key in (tokens._cooldown_key(), tokens._api_cooldown_key()):

@@ -1,67 +1,59 @@
-"""Persist garth OAuth tokens to R2 so they survive Render container restarts.
-
-Without this, every Render cold start loses the refreshed OAuth2 token
-(held in a tempfile that /tmp wipes on restart) and the next Garmin call
-triggers a fresh oauth-service/oauth/exchange — which Garmin aggressively
-rate-limits with 429s that can lock us out for hours.
+"""Persist garminconnect OAuth tokens to R2 so they survive container restarts.
 
 Storage:
-  R2 key: {cache.PREFIX}auth/garth_tokens.tar.gz
-  Format: gzipped tar of the garth tokens directory
+  R2 key:  {cache.PREFIX}auth/garmin_tokens.json
+  Format:  JSON: {"di_token": "...", "di_refresh_token": "...", "di_client_id": "..."}
+  Env var: GARMIN_TOKENS_B64 = base64-encoded JSON string (from bootstrap.py)
 
 Flow:
-  startup        → load R2 (or fall back to GARTH_TOKENS_B64 env)
-                 → extract to temp dir
-                 → client.garth.load(temp_dir) + set garth._garth_home
-                 → if loaded from env (first deploy), also push to R2
-  api call       → garth checks if oauth2_token.expired; if fresh
-                   (remaining validity > REFRESH_SKIP_MARGIN_SEC), SKIP
-                   the refresh entirely. This is the key rate-limit
-                   mitigation — most container starts find a still-valid
-                   token in R2 and bypass the OAuth exchange endpoint.
-  token refresh  → only when necessary: garth.Client.refresh_oauth2
-                   (patched) writes updated tokens to disk AND uploads
-                   to R2 so the next container sees the fresh token.
+  startup     → load R2 JSON (or fall back to GARMIN_TOKENS_B64 env)
+              → client.client.loads(json_str) — no network call
+              → if from env (first deploy), push to R2 so next container uses R2
+
+  api call    → garminconnect auto-checks _token_expires_soon() before each request
+              → if near expiry (< 15 min), calls our patched _refresh_session which:
+                  1. checks circuit breaker + cooldown flags
+                  2. checks R2 for a fresher token from another process
+                  3. calls _refresh_di_token() if truly expired
+                  4. persists fresh token to R2 on success
+
+  keeper      → web-service background thread checks every 5 min
+              → proactive_refresh_if_needed() keeps R2 always warm
+                (acts at KEEPER_MARGIN_SEC = 30 min before expiry, well before
+                the built-in 15-min _token_expires_soon trigger)
 """
 from __future__ import annotations
 
 import base64
-import io
 import json
 import logging
 import os
 import sys
-import tarfile
-import tempfile
 import time
 from threading import Lock
 
-import garth
+from garminconnect import client as _gc_client
+from garminconnect.exceptions import (
+    GarminConnectAuthenticationError,
+    GarminConnectTooManyRequestsError,
+)
 
 from . import cache
 
-# Skip refresh if OAuth2 token has at least this much time left.
-# Garmin OAuth2 tokens live for 3600s (1h). 1200s (20 min) of margin
-# means the exchange is attempted well before expiry, giving the
-# 2h cooldown enough runway to clear before the token fully expires.
+# Keeper trigger: proactively refresh when token has less than this many
+# seconds remaining (must be > _token_expires_soon threshold of 900s).
 REFRESH_SKIP_MARGIN_SEC = int(os.environ.get("REFRESH_SKIP_MARGIN_SEC", "1200"))
-# How long to wait after a 429 on the OAuth exchange endpoint before
-# retrying. 48h was calibrated for GitHub Actions runner IPs (heavily
-# flagged by Garmin). On Render's IPs the throttle window is much
-# shorter — 2h lets the run self-recover within a couple of cron ticks
-# rather than requiring a manual bootstrap. Set OAUTH_429_COOLDOWN_SEC=0
-# to disable (not recommended).
+
+# How long to wait after a 429 on the DI refresh endpoint before retrying.
+# 2h is appropriate for Render's non-flagged IPs.
 OAUTH_429_COOLDOWN_SEC = int(os.environ.get("OAUTH_429_COOLDOWN_SEC", str(2 * 3600)))
-# Separate cooldown for regular Garmin API calls (activities, daily
-# summaries, etc.). When any API call exhausts its retries on a 429,
-# this flag is persisted to R2 so subsequent refresh runs abort before
-# making a single Garmin call — instead of re-hammering and extending
-# Garmin's throttle window further.
+
+# Separate cooldown for regular Garmin API calls (activities, daily summaries…).
 API_429_COOLDOWN_SEC = int(os.environ.get("GARMIN_API_429_COOLDOWN_SEC", str(48 * 3600)))
 
 logger = logging.getLogger(__name__)
 
-TOKENS_SUBKEY = "auth/garth_tokens.tar.gz"
+TOKENS_SUBKEY = "auth/garmin_tokens.json"
 COOLDOWN_SUBKEY = "auth/oauth_refresh_cooldown.json"
 API_COOLDOWN_SUBKEY = "auth/api_429_cooldown.json"
 
@@ -88,7 +80,7 @@ def _load_from_r2() -> bytes | None:
         msg = str(ex).lower()
         if "nosuchkey" in msg or "not found" in msg or "404" in msg:
             return None
-        logger.warning("garth token load from R2 failed: %s", ex)
+        logger.warning("garmin token load from R2 failed: %s", ex)
         return None
 
 
@@ -100,51 +92,33 @@ def _save_to_r2(data: bytes) -> None:
             Bucket=cache.BUCKET,
             Key=_r2_key(),
             Body=data,
-            ContentType="application/gzip",
+            ContentType="application/json",
         )
-        logger.info("persisted garth tokens to R2 (%d bytes)", len(data))
+        logger.info("persisted garmin tokens to R2 (%d bytes)", len(data))
     except Exception as ex:  # noqa: BLE001
-        logger.warning("garth token save to R2 failed: %s", ex)
+        logger.warning("garmin token save to R2 failed: %s", ex)
 
 
-def _extract(tarball: bytes) -> str:
-    tmp = tempfile.mkdtemp(prefix="garth-")
-    with tarfile.open(fileobj=io.BytesIO(tarball), mode="r:gz") as tf:
-        tf.extractall(tmp)  # noqa: S202
-    return tmp
-
-
-def _tar_dir(directory: str) -> bytes:
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
-        for root, _, files in os.walk(directory):
-            for name in files:
-                full = os.path.join(root, name)
-                arcname = os.path.relpath(full, directory)
-                tf.add(full, arcname=arcname)
-    return buf.getvalue()
-
-
-def load_tokens_dir() -> tuple[str, str]:
-    """Return (temp_dir_path, source) where source is 'r2' or 'env'."""
+def load_tokens_json() -> tuple[str, str]:
+    """Return (json_str, source) where source is 'r2' or 'env'."""
     data = _load_from_r2()
     if data is not None:
-        logger.info("loaded garth tokens from R2")
-        return _extract(data), "r2"
-    b64 = os.environ.get("GARTH_TOKENS_B64")
+        logger.info("loaded garmin tokens from R2")
+        return data.decode(), "r2"
+    b64 = os.environ.get("GARMIN_TOKENS_B64")
     if not b64:
         raise RuntimeError(
-            "No garth tokens in R2 and GARTH_TOKENS_B64 is not set. "
+            "No garmin tokens in R2 and GARMIN_TOKENS_B64 is not set. "
             "Run scripts/bootstrap.py locally to mint initial tokens."
         )
     data = base64.b64decode(b64)
-    logger.info("loaded garth tokens from GARTH_TOKENS_B64 env var (bootstrap)")
-    return _extract(data), "env"
+    logger.info("loaded garmin tokens from GARMIN_TOKENS_B64 env var (bootstrap)")
+    return data.decode(), "env"
 
 
-def persist_tokens_dir(directory: str) -> None:
-    """Tar a tokens directory and push to R2."""
-    _save_to_r2(_tar_dir(directory))
+def save_tokens_json(json_str: str) -> None:
+    """Push token JSON string to R2."""
+    _save_to_r2(json_str.encode())
 
 
 def load_cooldown_remaining() -> tuple[int, str | None]:
@@ -198,13 +172,7 @@ def _save_cooldown(ex: BaseException) -> None:
 
 
 def load_api_429_cooldown_remaining() -> tuple[int, str | None]:
-    """Return active R2 API-call 429 cooldown as (seconds_remaining, reason).
-
-    This is separate from the OAuth exchange cooldown. It trips when any
-    regular Garmin API call (activities, daily summaries, etc.) exhausts its
-    retries on a 429 and persists across process boundaries so subsequent
-    refresh runs abort before making a single call to Garmin.
-    """
+    """Return active R2 API-call 429 cooldown as (seconds_remaining, reason)."""
     if not cache.enabled():
         return 0, None
     try:
@@ -227,13 +195,7 @@ def load_api_429_cooldown_remaining() -> tuple[int, str | None]:
 
 
 def save_api_429_cooldown(ex: BaseException) -> None:
-    """Persist an API-call 429 cooldown to R2 so later processes fail fast.
-
-    Called by garmin._call_with_backoff when a Garmin API call exhausts its
-    retry budget on a 429. The flag remains active for API_429_COOLDOWN_SEC
-    (default 48 h) so nightly/hourly refresh jobs abort at startup without
-    hammering Garmin further.
-    """
+    """Persist an API-call 429 cooldown to R2 so later processes fail fast."""
     if not cache.enabled() or API_429_COOLDOWN_SEC <= 0:
         return
     now = time.time()
@@ -260,101 +222,59 @@ def save_api_429_cooldown(ex: BaseException) -> None:
         logger.warning("api 429 cooldown save to R2 failed: %s", save_ex)
 
 
-def _as_garth(client):
-    """Accept either a garminconnect.Garmin wrapper or the inner garth client."""
-    return getattr(client, "garth", client)
+def _decode_jwt_exp(token: str) -> int | None:
+    """Decode a JWT and return the exp claim as epoch seconds, or None."""
+    try:
+        parts = str(token).split(".")
+        if len(parts) < 2:
+            return None
+        payload_b64 = parts[1] + "=" * (-len(parts[1]) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64.encode()).decode())
+        exp = payload.get("exp")
+        return int(exp) if exp else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def di_token_remaining_seconds(client) -> int | None:
+    """Seconds until the DI Bearer token (access token) expires, or None."""
+    gc = getattr(client, "client", client)
+    token = getattr(gc, "di_token", None)
+    if not token:
+        return None
+    exp = _decode_jwt_exp(token)
+    return int(exp - time.time()) if exp else None
+
+
+def di_refresh_token_remaining_seconds(client) -> int | None:
+    """Seconds until the DI refresh token expires, or None if opaque/unknown."""
+    gc = getattr(client, "client", client)
+    token = getattr(gc, "di_refresh_token", None)
+    if not token:
+        return None
+    exp = _decode_jwt_exp(token)
+    return int(exp - time.time()) if exp else None
 
 
 def refresh_token_remaining_seconds(client) -> int | None:
-    """Seconds until the refresh_token expires, or None if unknown.
-
-    The refresh_token is what bootstraps every OAuth2 access-token
-    rotation. When it expires, automated refresh stops working and
-    you have to re-run scripts/bootstrap.py with email + MFA. We use
-    this in daily_refresh to fail the workflow loudly before that
-    happens, so the silent decay we just lived through can't repeat.
-    """
-    gc = _as_garth(client)
-    tok = getattr(gc, "oauth2_token", None)
-    if tok is None:
-        return None
-    exp = getattr(tok, "refresh_token_expires_at", None)
-    if not exp:
-        return None
-    return int(exp - time.time())
+    """Back-compat alias: returns di_refresh_token expiry (None if opaque)."""
+    return di_refresh_token_remaining_seconds(client)
 
 
 def mfa_token_remaining_seconds(client) -> int | None:
-    """Seconds until the OAuth1 mfa_token expires, or None if unknown.
-
-    OAuth1's mfa_token is the "trust this device" credential issued
-    after a successful MFA login. It has roughly a 1-year lifetime
-    and CANNOT be rotated automatically — when it expires, bootstrap.py
-    has to be re-run with email + MFA to mint a new one. Below that
-    layer, refresh_token (30d) auto-rotates as long as exchanges keep
-    happening. So mfa_token is the real "must do something manual"
-    deadline; refresh_token is just the "make sure exchanges keep
-    working" deadline.
-
-    Source field: oauth1_token.mfa_expiration_timestamp.
-    """
-    gc = _as_garth(client)
-    tok = getattr(gc, "oauth1_token", None)
-    if tok is None:
-        return None
-    exp_val = getattr(tok, "mfa_expiration_timestamp", None)
-    if not exp_val:
-        return None
-    # garth parses this into a naive datetime.datetime, but older versions
-    # may return a string or epoch int. Handle all three. Garmin issues
-    # these in UTC, so naive datetimes are interpreted as UTC.
-    from datetime import datetime, timezone
-    try:
-        if isinstance(exp_val, (int, float)):
-            return int(exp_val - time.time())
-        if isinstance(exp_val, datetime):
-            exp = exp_val
-        else:
-            exp = datetime.fromisoformat(str(exp_val).replace("Z", "+00:00"))
-        if exp.tzinfo is None:
-            exp = exp.replace(tzinfo=timezone.utc)
-        return int(exp.timestamp() - time.time())
-    except (ValueError, TypeError):
-        return None
+    """Not applicable for garminconnect 0.3.x (no OAuth1/MFA token layer)."""
+    return None
 
 
-def _try_load_fresh_r2_token(client) -> tuple[bool, int]:
-    """Reload tokens from R2 in case another process refreshed first."""
-    data = _load_from_r2()
-    if data is None:
-        return False, 0
-    tokens_dir = _extract(data)
-    try:
-        client.load(tokens_dir)
-        client._garth_home = tokens_dir
-    except Exception as ex:  # noqa: BLE001
-        logger.warning("reload of garth tokens from R2 failed: %s", ex)
-        return False, 0
-    return _token_still_valid(getattr(client, "oauth2_token", None))
+# ---------- garminconnect.client.Client patches ----------
+#
+# Patch 1: _refresh_di_token — surface 429 as TooManyRequestsError so callers
+#   can distinguish it from other auth failures.
+# Patch 2: _refresh_session — add circuit breaker, cooldown check,
+#   ALLOW_OAUTH_REFRESH guard, R2 freshness check, and R2 persist on success.
 
+_original_refresh_di_token = _gc_client.Client._refresh_di_token
 
-# Patch garth.Client.refresh_oauth2 so:
-#   1. We SKIP calling Garmin's exchange endpoint if the existing OAuth2
-#      token still has >REFRESH_SKIP_MARGIN_SEC of validity remaining.
-#      This is the main rate-limit mitigation — multiple containers
-#      within the same ~50 min window reuse the same token instead of
-#      each triggering an exchange call.
-#   2. When we DO refresh (token actually expired), persist the new
-#      token to R2 immediately so the NEXT container starts with the
-#      fresh token and won't need its own refresh.
-_original_refresh = garth.Client.refresh_oauth2
-
-# Process-level circuit breaker. Once Garmin 429s the OAuth exchange
-# endpoint, every subsequent Garmin API call in this run will trigger
-# another refresh attempt (garth calls ensure_oauth2 before each request).
-# Without this breaker, one 429 cascades into hundreds of hits, which
-# makes the rate limit lockout worse. Once tripped, stays tripped for
-# the life of the process — the next scheduled run starts fresh.
 _refresh_circuit_tripped: Exception | None = None
 _refresh_lock = Lock()
 
@@ -364,144 +284,128 @@ def _is_rate_limit(ex: BaseException) -> bool:
     return "429" in s or "too many requests" in s
 
 
-def _token_still_valid(token) -> tuple[bool, int]:
-    """Return (is_valid, seconds_until_expiry). Missing/invalid token
-    returns (False, 0)."""
-    if token is None:
-        return False, 0
-    expires_at = getattr(token, "expires_at", None)
-    if expires_at is None:
-        return False, 0
-    remaining = int(expires_at - time.time())
-    return remaining > REFRESH_SKIP_MARGIN_SEC, remaining
+def _patched_refresh_di_token(self) -> None:
+    """Wrap original to convert 429 AuthenticationErrors to TooManyRequestsError."""
+    try:
+        _original_refresh_di_token(self)
+    except GarminConnectAuthenticationError as ex:
+        if _is_rate_limit(ex):
+            raise GarminConnectTooManyRequestsError(
+                f"DI token refresh 429 rate limited: {ex}"
+            ) from ex
+        raise
 
 
-def _patched_refresh(self):
+_gc_client.Client._refresh_di_token = _patched_refresh_di_token
+
+_original_refresh_session = _gc_client.Client._refresh_session
+
+
+def _patched_refresh_session(self) -> None:
+    """Wrap _refresh_session with circuit breaker, cooldown, R2 checks, and persist."""
     global _refresh_circuit_tripped
-    # Short-circuit: if the current OAuth2 token is still fresh enough,
-    # don't contact Garmin's exchange endpoint at all. This is what
-    # keeps us under Garmin's aggressive per-account rate limit.
-    valid, remaining = _token_still_valid(getattr(self, "oauth2_token", None))
-    if valid:
-        logger.info(
-            "oauth2 token still valid (%ds remaining) — skipping refresh",
-            remaining,
-        )
-        return self.oauth2_token
 
-    # Circuit breaker: if an earlier refresh in this process already got
-    # 429'd, don't keep hammering the exchange endpoint. Re-raise the
-    # cached exception so callers see the same error without making
-    # Garmin's lockout worse.
     if _refresh_circuit_tripped is not None:
-        raise _refresh_circuit_tripped
+        raise RuntimeError(
+            f"Garmin OAuth 429 circuit tripped: {_refresh_circuit_tripped}"
+        )
 
-    # The first Garmin calls in a refresh job fan out across worker
-    # threads. If the shared token is expired, more than one thread can
-    # enter garth's refresh path at once. Serialize the actual exchange
-    # and re-check after acquiring the lock so one expired token produces
-    # at most one Garmin OAuth exchange in this process.
+    cooldown_remaining, reason = load_cooldown_remaining()
+    if cooldown_remaining > 0:
+        raise RuntimeError(
+            f"Garmin OAuth 429 cooldown active ({cooldown_remaining}s). "
+            f"Last error: {reason or 'unknown'}"
+        )
+
+    allow = os.environ.get("ALLOW_OAUTH_REFRESH", "true").lower() in ("1", "true", "yes")
+    if not allow:
+        raise RuntimeError(
+            "OAuth refresh not authorized on this instance (ALLOW_OAUTH_REFRESH=false). "
+            "The scheduled refresh job will handle token rotation."
+        )
+
     with _refresh_lock:
-        valid, remaining = _token_still_valid(getattr(self, "oauth2_token", None))
-        if valid:
-            logger.info(
-                "oauth2 token refreshed by another thread (%ds remaining) — "
-                "skipping refresh",
-                remaining,
-            )
-            return self.oauth2_token
-
         if _refresh_circuit_tripped is not None:
-            raise _refresh_circuit_tripped
+            raise RuntimeError(
+                f"Garmin OAuth 429 circuit tripped: {_refresh_circuit_tripped}"
+            )
 
-        valid, remaining = _try_load_fresh_r2_token(self)
-        if valid:
+        # Re-check: another process may have already refreshed and written to R2.
+        fresh = _load_from_r2()
+        if fresh:
+            try:
+                temp = _gc_client.Client()
+                temp.loads(fresh.decode())
+                if not temp._token_expires_soon():
+                    self.di_token = temp.di_token
+                    self.di_refresh_token = temp.di_refresh_token
+                    self.di_client_id = temp.di_client_id
+                    print(
+                        "[tokens] loaded fresher DI token from R2 — skipping exchange",
+                        flush=True,
+                    )
+                    return
+            except Exception as ex:  # noqa: BLE001
+                logger.debug("R2 fresher-token check failed: %s", ex)
+
+        # No DI token: fall back to original JWT_WEB refresh (no R2 persist needed)
+        if not self.di_token:
+            _original_refresh_session(self)
+            return
+
+        print("[tokens] DI token near expiry — calling refresh endpoint", flush=True)
+        try:
+            self._refresh_di_token()
+        except GarminConnectTooManyRequestsError as ex:
+            _refresh_circuit_tripped = ex
+            _save_cooldown(ex)
             print(
-                "[tokens] loaded fresher OAuth2 token from R2 "
-                f"({remaining}s remaining) — skipping exchange",
+                "[tokens] circuit breaker TRIPPED — 429 on DI refresh endpoint",
+                file=sys.stderr,
                 flush=True,
             )
-            return self.oauth2_token
-
-        cooldown_remaining, reason = load_cooldown_remaining()
-        if cooldown_remaining > 0:
-            raise RuntimeError(
-                "Garmin OAuth exchange in cooldown for "
-                f"{cooldown_remaining}s after recent 429/rate limit. "
-                f"Last error: {reason or 'unknown'}"
-            )
-
-        # Token IS expired. Is this container authorized to refresh? Refresh
-        # jobs may opt in; the readonly web service and other cache-only
-        # paths fail fast so user traffic cannot amplify rate-limit pressure.
-        allow = os.environ.get("ALLOW_OAUTH_REFRESH", "true").lower() in ("1", "true", "yes")
-        if not allow:
-            logger.info(
-                "oauth2 token expired, but ALLOW_OAUTH_REFRESH is false — "
-                "skipping refresh (anchor run will handle it)"
-            )
-            raise RuntimeError(
-                "OAuth2 token expired and this run is not authorized to "
-                "refresh (ALLOW_OAUTH_REFRESH=false). This prevents multiple "
-                "concurrent refreshes from compounding rate-limit pressure. "
-                "The next refresh-authorized run will rotate the token."
-            )
-
-        # Otherwise proceed with the real refresh. Print (not just log) so
-        # the refresh lifecycle shows up in GitHub Actions output.
-        print("[tokens] oauth2 expired — calling Garmin exchange endpoint",
-              flush=True)
-        try:
-            result = _original_refresh(self)
+            raise RuntimeError(f"Garmin OAuth 429: {ex}") from ex
         except Exception as ex:  # noqa: BLE001
-            print(f"[tokens] REFRESH FAILED: {type(ex).__name__}: {ex}",
-                  file=sys.stderr, flush=True)
             if _is_rate_limit(ex):
                 _refresh_circuit_tripped = ex
                 _save_cooldown(ex)
-                print("[tokens] circuit breaker TRIPPED — further refresh "
-                      "attempts in this run will fail fast without contacting "
-                      "Garmin.", file=sys.stderr, flush=True)
-            raise
-        print("[tokens] refresh succeeded — new token expires at "
-              f"{getattr(self.oauth2_token, 'expires_at', '?')}", flush=True)
+                print(
+                    f"[tokens] circuit breaker TRIPPED — rate limit: {ex}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                raise RuntimeError(f"Garmin OAuth 429: {ex}") from ex
+            print(f"[tokens] refresh failed (non-429): {ex}", file=sys.stderr, flush=True)
+            return
 
-        # Persist the freshly-refreshed token to R2 so other containers can
-        # reuse it within the 1-hour window.
-        home = getattr(self, "_garth_home", None)
-        if not home:
-            print("[tokens] WARNING: _garth_home not set — token refresh will "
-                  "NOT persist to R2. Next container will hit expired cached "
-                  "token.", file=sys.stderr, flush=True)
-        else:
-            try:
-                persist_tokens_dir(str(home))
-                print(f"[tokens] persisted refreshed token to R2", flush=True)
-            except Exception as ex:  # noqa: BLE001
-                print(f"[tokens] R2 persist FAILED: {ex}", file=sys.stderr,
-                      flush=True)
-        return result
+        print("[tokens] refresh succeeded", flush=True)
 
+        if self._tokenstore_path:
+            import contextlib
+            with contextlib.suppress(Exception):
+                self.dump(self._tokenstore_path)
 
-garth.Client.refresh_oauth2 = _patched_refresh
+        try:
+            _save_to_r2(self.dumps().encode())
+            print("[tokens] refreshed DI token persisted to R2", flush=True)
+        except Exception as ex:  # noqa: BLE001
+            print(f"[tokens] R2 persist FAILED: {ex}", file=sys.stderr, flush=True)
 
 
-# How early the web-service background keeper triggers a proactive refresh.
-# Larger than REFRESH_SKIP_MARGIN_SEC so the keeper acts before the per-call
-# check in _patched_refresh would kick in, giving a two-tier safety net.
-# Default: REFRESH_SKIP_MARGIN_SEC (1200s) + 600s = 30 min before expiry.
-KEEPER_MARGIN_SEC = REFRESH_SKIP_MARGIN_SEC + 600
+_gc_client.Client._refresh_session = _patched_refresh_session
+
+
+# ---------- background keeper ----------
+
+KEEPER_MARGIN_SEC = REFRESH_SKIP_MARGIN_SEC + 600  # default 30 min
 
 
 def proactive_refresh_if_needed() -> str:
-    """Check R2 token expiry and refresh proactively if it's near expiry.
+    """Check R2 token expiry and refresh proactively if near expiry.
 
-    Designed for the web-service background keeper thread. Operates
-    independently of READONLY_MODE and ALLOW_OAUTH_REFRESH (those are
-    request-path guards; this is a scheduled maintenance operation that
-    keeps R2 warm so cron jobs never need to call the exchange endpoint).
-
-    Returns a short status string for logging.
+    Designed for the web-service background keeper. Runs independently of
+    READONLY_MODE and ALLOW_OAUTH_REFRESH — those are request-path guards;
+    this is a scheduled maintenance operation. Returns a short status string.
     """
     if not cache.enabled():
         return "skip: cache not configured"
@@ -518,19 +422,21 @@ def proactive_refresh_if_needed() -> str:
     if data is None:
         return "skip: no token in R2"
 
-    tokens_dir = _extract(data)
-    gc = garth.Client()
+    gc = _gc_client.Client()
     try:
-        gc.load(tokens_dir)
+        gc.loads(data.decode())
     except Exception as ex:  # noqa: BLE001
-        return f"error: garth load: {ex}"
+        return f"error: load failed: {ex}"
 
-    tok = getattr(gc, "oauth2_token", None)
-    expires_at = getattr(tok, "expires_at", None) if tok else None
-    if expires_at is None:
-        return "skip: token has no expiry"
+    token = gc.di_token
+    if not token:
+        return "skip: no di_token in R2"
 
-    remaining = int(expires_at - time.time())
+    exp = _decode_jwt_exp(token)
+    if exp is None:
+        return "skip: token has no exp claim"
+
+    remaining = int(exp - time.time())
     if remaining > KEEPER_MARGIN_SEC:
         return f"ok: {remaining}s remaining"
 
@@ -539,23 +445,26 @@ def proactive_refresh_if_needed() -> str:
         f"threshold {KEEPER_MARGIN_SEC}s)",
         flush=True,
     )
-    gc._garth_home = tokens_dir
+
     with _refresh_lock:
         if _refresh_circuit_tripped is not None:
             return "skip: circuit tripped (inside lock)"
         try:
-            _original_refresh(gc)
+            gc._refresh_di_token()
+        except GarminConnectTooManyRequestsError as ex:
+            _refresh_circuit_tripped = ex
+            _save_cooldown(ex)
+            print("[token-keeper] circuit tripped by 429", file=sys.stderr, flush=True)
+            return f"error: 429 rate limited"
         except Exception as ex:  # noqa: BLE001
-            print(f"[token-keeper] REFRESH FAILED: {ex}", file=sys.stderr, flush=True)
             if _is_rate_limit(ex):
                 _refresh_circuit_tripped = ex
                 _save_cooldown(ex)
-                print("[token-keeper] circuit tripped", file=sys.stderr, flush=True)
             return f"error: {ex}"
 
     print("[token-keeper] refresh succeeded — persisting to R2", flush=True)
     try:
-        persist_tokens_dir(tokens_dir)
+        _save_to_r2(gc.dumps().encode())
         print("[token-keeper] fresh token persisted to R2", flush=True)
         return "refreshed"
     except Exception as ex:  # noqa: BLE001
