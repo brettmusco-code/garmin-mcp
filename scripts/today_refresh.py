@@ -9,7 +9,7 @@
                       once per day after the device syncs. Uses force_refresh=True
                       to bust any "no data" sentinels written by the 3 AM anchor
                       run (when the data didn't exist yet). Runs at
-                      MORNING_REFRESH_HOUR_UTC (default 13 UTC = 7 AM MDT).
+                      MORNING_REFRESH_HOUR_UTC (default 11 UTC = 7:30 AM EDT).
 
   workout           — check for a new activity every hour and, if one
                       synced, refresh the post-sync metrics and activity

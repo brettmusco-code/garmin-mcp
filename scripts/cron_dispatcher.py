@@ -10,9 +10,9 @@ Schedule (set in render.yaml): hourly at :30.
 What runs at each tick (UTC):
   03:30  daily_refresh — full nightly anchor (close enough to the old
                         03:17 cadence)
-  13:30  today_refresh [morning] — sleep/HRV/RHR/readiness after device
+  11:30  today_refresh [morning] — sleep/HRV/RHR/readiness after device
                         syncs (configurable via MORNING_REFRESH_HOUR_UTC,
-                        default 13 = 7 AM MDT / 9 AM EDT)
+                        default 11 = 7:30 AM EDT / 5:30 AM MDT)
   00:30  today_refresh [live]
   06:30  today_refresh [live]
   12:30  today_refresh [live]
@@ -87,8 +87,8 @@ def main() -> int:
             overall = rc
 
     # Morning overnight-data refresh — once a day after the device syncs.
-    # Default 13 UTC = 7 AM MDT / 9 AM EDT. Override via MORNING_REFRESH_HOUR_UTC.
-    morning_hour = int(os.environ.get("MORNING_REFRESH_HOUR_UTC", "13"))
+    # Default 11 UTC = 7:30 AM EDT / 5:30 AM MDT. Override via MORNING_REFRESH_HOUR_UTC.
+    morning_hour = int(os.environ.get("MORNING_REFRESH_HOUR_UTC", "11"))
     if hour == morning_hour:
         print("\n[dispatcher] tick: today_refresh [morning]")
         rc = _run_module("today_refresh", {"TODAY_REFRESH_MODE": "morning"})
