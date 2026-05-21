@@ -1,9 +1,15 @@
-"""Two-mode mid-day refresh, driven by TODAY_REFRESH_MODE env var.
+"""Three-mode mid-day refresh, driven by TODAY_REFRESH_MODE env var.
 
   live    (default) — force-refresh live intraday metrics every 6 hours.
                       4 API calls: steps, stress, body_battery_events,
                       stats_and_body. These change continuously during the
                       day; everything else is handled by the nightly run.
+
+  morning           — refresh overnight metrics (sleep, HRV, RHR, readiness)
+                      once per day after the device syncs. Uses force_refresh=True
+                      to bust any "no data" sentinels written by the 3 AM anchor
+                      run (when the data didn't exist yet). Runs at
+                      MORNING_REFRESH_HOUR_UTC (default 13 UTC = 7 AM MDT).
 
   workout           — check for a new activity every hour and, if one
                       synced, refresh the post-sync metrics and activity
@@ -13,7 +19,7 @@
 Two separate GitHub Actions workflows call this script on different cron
 schedules, passing the appropriate mode via the env var.
 
-Required env: GARTH_TOKENS_B64, S3_CACHE_BUCKET, S3_ENDPOINT_URL,
+Required env: GARMIN_TOKENS_B64, S3_CACHE_BUCKET, S3_ENDPOINT_URL,
               AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 """
 from __future__ import annotations
@@ -33,6 +39,14 @@ MODE = os.environ.get("TODAY_REFRESH_MODE", "live").lower()
 
 # Changes continuously — always worth a 6-hour refresh.
 LIVE_METRICS = ["steps", "stress", "body_battery_events", "stats_and_body"]
+
+# Overnight data — available once the device syncs after sleep.
+# force_refresh=True is required to bust "no data" sentinels that the 3 AM
+# anchor run writes before the data exists.
+MORNING_METRICS = [
+    "sleep", "hrv", "rhr", "morning_readiness",
+    "training_readiness", "body_battery_events",
+]
 
 # Only meaningful after an activity syncs or food is logged.
 POST_SYNC_METRICS = [
@@ -172,6 +186,57 @@ def run_live() -> int:
     return 0
 
 
+def run_morning() -> int:
+    """Refresh overnight metrics (sleep, HRV, RHR, readiness) after device syncs."""
+    today = date.today()
+    today_iso = today.isoformat()
+    yesterday_iso = (today - timedelta(days=1)).isoformat()
+    print(f"=== today_refresh [morning] {today_iso} ===")
+
+    active, reason = _check_cooldowns()
+    if active:
+        print(f"SKIPPED: {reason}")
+        return 0
+
+    print("[0/1] OAuth preflight")
+    if not _oauth_preflight():
+        return 1
+
+    # Refresh both today and yesterday: Garmin may index last night's sleep
+    # under either calendar date depending on the local timezone offset vs UTC.
+    print(f"[1/1] Morning metrics ({len(MORNING_METRICS)}): {', '.join(MORNING_METRICS)}")
+    for target_iso in (yesterday_iso, today_iso):
+        try:
+            result = garmin.get_daily_summaries(
+                startdate=target_iso, enddate=target_iso,
+                metrics=MORNING_METRICS, force_refresh=True,
+            )
+
+            def _payload(m, d=target_iso):
+                return result.get(m, {}).get(d)
+
+            rate_limited = sum(
+                1 for m in MORNING_METRICS
+                if isinstance(_payload(m), dict)
+                and _is_rate_limit(_payload(m).get("error", ""))
+            )
+            errors = sum(
+                1 for m in MORNING_METRICS
+                if isinstance(_payload(m), dict) and "error" in _payload(m)
+            )
+            ok = len(MORNING_METRICS) - errors
+            status = f"  {target_iso}: {ok}/{len(MORNING_METRICS)} refreshed"
+            if errors:
+                status += f", {errors} errors"
+            if rate_limited:
+                status += f" ({rate_limited} rate-limited — sentinel cached)"
+            print(status)
+        except Exception as ex:  # noqa: BLE001
+            print(f"  {target_iso}: ERROR {str(ex)[:200]}", file=sys.stderr)
+
+    return 0
+
+
 def run_workout_check() -> int:
     """Check for a new activity and refresh post-sync data if found (1-hour cadence)."""
     today = date.today()
@@ -308,6 +373,8 @@ def main() -> int:
         print("ERROR: R2 cache not configured.", file=sys.stderr)
         return 1
 
+    if MODE == "morning":
+        return run_morning()
     if MODE == "workout":
         return run_workout_check()
     return run_live()
