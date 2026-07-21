@@ -497,6 +497,8 @@ TOOLS = [
                 "height_cm": {"type": "number"},
                 "age": {"type": "number"},
                 "protein_g_per_kg": {"type": "number"},
+                "max_deficit_kcal": {"type": "number", "description": "daily deficit cap; default 500, pass 0 to remove the cap"},
+                "ea_floor": {"type": "number", "description": "energy-availability warning threshold (kcal/kg FFM); default 30"},
                 "notes": {"type": "string"},
             },
             "required": ["goal_type"],
@@ -531,6 +533,9 @@ TOOLS = [
                 "days": {"type": "number", "description": "Horizon 1-28. Default 7."},
                 "save": {"type": "boolean", "description": "merge into weekly snapshot, default false"},
                 "carb_load": {"type": "boolean", "description": "race-week mode: no deficit, carbs ~9 g/kg. Default false"},
+                "max_deficit_kcal": {"type": "number", "description": "override the daily deficit cap (default 500 or goal value); 0 removes it"},
+                "ea_floor": {"type": "number", "description": "override the energy-availability warning threshold (default 30 or goal value)"},
+                "fuel_min_minutes": {"type": "number", "description": "min session length to get a fuel card. Default 90."},
             },
         },
     },
@@ -692,6 +697,8 @@ def _call_tool(name: str, args: dict) -> Any:
             height_cm=args.get("height_cm"),
             age=args.get("age"),
             protein_g_per_kg=args.get("protein_g_per_kg"),
+            max_deficit_kcal=args.get("max_deficit_kcal"),
+            ea_floor=args.get("ea_floor"),
             notes=args.get("notes"),
         )
     if name == "get_fueling_goal":
@@ -705,6 +712,9 @@ def _call_tool(name: str, args: dict) -> Any:
             days=int(args.get("days", 7)),
             save=bool(args.get("save", False)),
             carb_load=bool(args.get("carb_load", False)),
+            max_deficit_kcal=args.get("max_deficit_kcal"),
+            ea_floor=args.get("ea_floor"),
+            fuel_min_minutes=int(args.get("fuel_min_minutes", 90)),
         )
     raise ValueError(f"Unknown tool: {name}")
 

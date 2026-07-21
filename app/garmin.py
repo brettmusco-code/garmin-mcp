@@ -1203,6 +1203,8 @@ def set_fueling_goal(
     height_cm: float | None = None,
     age: int | None = None,
     protein_g_per_kg: float | None = None,
+    max_deficit_kcal: float | None = None,
+    ea_floor: float | None = None,
     notes: str | None = None,
 ) -> dict:
     """Persist the athlete's fueling goal to R2 (single active goal, keyed
@@ -1210,6 +1212,13 @@ def set_fueling_goal(
     around, plus the BMR inputs Garmin doesn't reliably expose (sex/height/age).
     Overwrites any prior goal; the set date is recorded so skills can flag a
     stale goal.
+
+    Safety knobs (defaults keep the plan conservative):
+      max_deficit_kcal: cap on the daily deficit. Default 500 when unset;
+        pass 0 (or negative) to remove the cap entirely. The BMR x 1.2 floor
+        on the daily target is separate and always applies.
+      ea_floor: energy-availability warning threshold in kcal/kg fat-free
+        mass. Default 30 when unset; lower it to suppress warnings.
 
     goal_type: 'lose' | 'gain' | 'maintain'. For 'lose'/'gain' provide
     target_weight_kg and target_date so a daily deficit/surplus can be computed.
@@ -1247,6 +1256,8 @@ def set_fueling_goal(
         "height_cm": round(float(height_cm), 1) if height_cm else None,
         "age": int(age) if age else None,
         "protein_g_per_kg": round(float(protein_g_per_kg), 2) if protein_g_per_kg else None,
+        "max_deficit_kcal": round(float(max_deficit_kcal)) if max_deficit_kcal is not None else None,
+        "ea_floor": round(float(ea_floor), 1) if ea_floor is not None else None,
         "notes": notes,
         "set_date": date.today().isoformat(),
     }
@@ -1416,9 +1427,17 @@ def _classify_intensity(title: str) -> str:
     return "easy"
 
 
-def _history_kcal_per_hour(history: list[dict]) -> dict[str, float]:
-    """Median kcal/hr per sport bucket from recent completed activities."""
-    samples: dict[str, list[float]] = {}
+def _median(vals: list[float]) -> float:
+    s = sorted(vals)
+    n = len(s)
+    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2.0
+
+
+def _history_samples(history: list[dict]) -> dict[str, list[tuple[float, float]]]:
+    """Per sport bucket, a list of (hours, kcal_per_hour) from recent
+    completed activities. Retaining duration lets us match a planned session
+    to historically *similar* sessions, not just the sport average."""
+    samples: dict[str, list[tuple[float, float]]] = {}
     for a in history or []:
         if not isinstance(a, dict):
             continue
@@ -1428,15 +1447,28 @@ def _history_kcal_per_hour(history: list[dict]) -> dict[str, float]:
             continue
         type_key = (a.get("activityType") or {}).get("typeKey") or ""
         bucket = _sport_bucket(a.get("activityName") or "", type_key)
-        kcal_hr = cal / (dur_s / 3600.0)
+        hours = dur_s / 3600.0
+        kcal_hr = cal / hours
         if 150 <= kcal_hr <= 1600:  # sanity bounds
-            samples.setdefault(bucket, []).append(kcal_hr)
-    out = {}
-    for bucket, vals in samples.items():
-        if len(vals) >= 3:
-            vals.sort()
-            out[bucket] = round(vals[len(vals) // 2])
-    return out
+            samples.setdefault(bucket, []).append((hours, kcal_hr))
+    return samples
+
+
+def _kcal_per_hour_for(sport: str, hours: float,
+                       samples: dict[str, list[tuple[float, float]]]) -> tuple[float, str]:
+    """Best kcal/hr estimate for a planned session, calibrated from the
+    athlete's own history. Prefers activities of the same sport AND similar
+    duration (within ±40%); falls back to the sport median, then a generic
+    table. Returns (kcal_per_hour, source)."""
+    lst = samples.get(sport) or []
+    if hours and lst:
+        lo, hi = hours * 0.6, hours * 1.4
+        near = [k for (h, k) in lst if lo <= h <= hi]
+        if len(near) >= 3:
+            return round(_median(near)), "history_similar"
+    if len(lst) >= 3:
+        return round(_median([k for _, k in lst])), "history_sport"
+    return _BASE_KCAL_PER_HOUR.get(sport, _BASE_KCAL_PER_HOUR["default"]), "generic_table"
 
 
 def _duration_from_title(title: str) -> float | None:
@@ -1493,6 +1525,9 @@ def generate_fueling_plan(
     days: int = 7,
     save: bool = False,
     carb_load: bool = False,
+    max_deficit_kcal: float | None = None,
+    ea_floor: float | None = None,
+    fuel_min_minutes: int = 90,
 ) -> dict:
     """Build a forward fueling plan: per-day calorie + macro targets and a
     per-workout fuel card for the next `days` days, from the stored fueling
@@ -1551,6 +1586,14 @@ def generate_fueling_plan(
     gt = goal["goal_type"]
     tgt = goal.get("target_weight_kg")
     protein_per_kg = goal.get("protein_g_per_kg") or _PROTEIN_G_PER_KG_DEFAULT.get(gt, 1.6)
+
+    # Resolve the safety knobs: explicit call arg > stored goal > default.
+    cap_raw = max_deficit_kcal if max_deficit_kcal is not None else goal.get("max_deficit_kcal")
+    deficit_cap = 500 if cap_raw is None else cap_raw
+    uncapped = deficit_cap <= 0
+    floor_raw = ea_floor if ea_floor is not None else goal.get("ea_floor")
+    ea_threshold = 30 if floor_raw is None else floor_raw
+
     goal_adj = 0
     if gt == "lose":
         kg_to_lose = (weight_kg - tgt) if tgt else None
@@ -1558,11 +1601,15 @@ def generate_fueling_plan(
             raw = (kg_to_lose * 7700 / wr) / 7
         else:
             raw = 400  # moderate default cut when no target/timeline
-        goal_adj = -min(round(raw), 500)  # cap deficit at 500/day
-        if kg_to_lose and wr and raw > 500:
+        goal_adj = -round(raw) if uncapped else -min(round(raw), deficit_cap)
+        if uncapped and raw > 500:
+            notes.append(f"Deficit UNCAPPED at {round(raw)} kcal/day to reach {tgt}kg "
+                         f"by {goal.get('target_date')} — very aggressive; the BMR x1.2 "
+                         "floor on daily target still applies. Watch recovery and EA.")
+        elif not uncapped and kg_to_lose and wr and raw > deficit_cap:
             notes.append(f"Reaching {tgt}kg by {goal.get('target_date')} needs a "
-                         f"{round(raw)} kcal/day deficit; capped at 500 — extend "
-                         "the timeline to stay safe.")
+                         f"{round(raw)} kcal/day deficit; capped at {round(deficit_cap)} "
+                         "— extend the timeline to stay safe.")
     elif gt == "gain":
         goal_adj = 400  # midpoint of +300-500, carb-led
 
@@ -1594,12 +1641,13 @@ def generate_fueling_plan(
         ) or []
     except Exception:  # noqa: BLE001
         pass
-    hist_kcal_hr = _history_kcal_per_hour(history)
+    hist_samples = _history_samples(history)
 
     last_scheduled_date = max(scheduled_by_date) if scheduled_by_date else None
 
     day_rows = []
-    totals = {"target_kcal": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0, "est_burn_kcal": 0}
+    totals = {"target_kcal": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0,
+              "est_burn_kcal": 0, "target_deficit_kcal": 0}
     plan_by_date: dict[str, dict] = {}
 
     for i in range(days):
@@ -1612,13 +1660,12 @@ def generate_fueling_plan(
             intensity = _classify_intensity(title)
             sport = _sport_bucket(title, it.get("sportTypeKey") or "")
             hours, hrs_src = _planned_hours(it, intensity)
-            base_hr = hist_kcal_hr.get(sport) or _BASE_KCAL_PER_HOUR.get(
-                sport, _BASE_KCAL_PER_HOUR["default"])
+            base_hr, burn_source = _kcal_per_hour_for(sport, hours, hist_samples)
             burn = round(base_hr * _INTENSITY_MULT.get(intensity, 1.0) * hours)
             sessions.append({
                 "title": title or sport, "sport": sport, "intensity": intensity,
                 "hours": hours, "hours_source": hrs_src, "burn_kcal": burn,
-                "burn_source": "history" if sport in hist_kcal_hr else "generic_table",
+                "kcal_per_hour": base_hr, "burn_source": burn_source,
             })
         if not sessions:
             sessions = [{"title": "rest", "sport": "rest", "intensity": "rest",
@@ -1637,7 +1684,17 @@ def generate_fueling_plan(
 
         expected_expenditure = round(bmr * 1.3 + total_burn)
         target_kcal = max(round(bmr * 1.3 + total_burn + goal_adj), round(bmr * 1.2))
-        protein_g = round(weight_kg * protein_per_kg)
+        target_deficit = expected_expenditure - target_kcal  # >0 = deficit that day
+
+        # Protein is anchored to bodyweight but periodized up on hard/long
+        # sessions and in a steep deficit, to spare lean mass.
+        protein_bump = 0.0
+        if primary["intensity"] in ("threshold", "vo2", "long"):
+            protein_bump += 0.15
+        if target_deficit >= 500:
+            protein_bump += 0.15
+        protein_per_kg_day = round(protein_per_kg + protein_bump, 2)
+        protein_g = round(weight_kg * protein_per_kg_day)
         carbs_g = round(weight_kg * carb_ratio)
         # Fat closes the gap to target, with a floor of ~0.5 g/kg
         fat_g = round(max((target_kcal - protein_g * 4 - carbs_g * 4) / 9.0,
@@ -1648,10 +1705,10 @@ def generate_fueling_plan(
         # is a clear RED-S / under-fueling risk.
         energy_availability = round((target_kcal - total_burn) / ffm_kg, 1) if ffm_kg else None
 
+        # Fuel only sessions at/above the minimum duration (default 90 min).
         fuel_cards = []
         for s in sessions:
-            needs = s["hours"] >= 1.25 or s["intensity"] in ("tempo", "threshold", "vo2")
-            if not needs or s["intensity"] == "rest":
+            if s["hours"] * 60 < fuel_min_minutes or s["intensity"] == "rest":
                 continue
             hrs = max(s["hours"], 1.0)
             during_per_hr = 60 if s["hours"] > 2 else (45 if s["hours"] > 1.5 else 35)
@@ -1678,14 +1735,16 @@ def generate_fueling_plan(
             "est_burn_kcal": total_burn,
             "expected_expenditure_kcal": expected_expenditure,
             "target_kcal": target_kcal,
+            "target_deficit_kcal": target_deficit,
             "protein_g": protein_g, "carbs_g": carbs_g, "fat_g": fat_g,
+            "protein_g_per_kg": protein_per_kg_day,
             "carb_g_per_kg": carb_ratio,
             "energy_availability_kcal_per_kg_ffm": energy_availability,
             "needs_fuel": bool(fuel_cards),
             "fuel": fuel_cards,
         }
         day_rows.append(row)
-        for k in ("target_kcal", "protein_g", "carbs_g", "fat_g"):
+        for k in ("target_kcal", "protein_g", "carbs_g", "fat_g", "target_deficit_kcal"):
             totals[k] += row[k]
         totals["est_burn_kcal"] += total_burn
 
@@ -1702,11 +1761,11 @@ def generate_fueling_plan(
                      "later days assume rest/easy — re-run when the plan extends.")
 
     low_ea = [d["date"] for d in day_rows
-              if (d.get("energy_availability_kcal_per_kg_ffm") or 99) < 30]
+              if (d.get("energy_availability_kcal_per_kg_ffm") or 99) < ea_threshold]
     if low_ea:
-        notes.append("Low energy availability (<30 kcal/kg fat-free mass) on "
-                     f"{', '.join(low_ea)} — under-fueling / RED-S risk; ease the "
-                     "deficit or add carbs on those days.")
+        notes.append(f"Low energy availability (<{round(ea_threshold)} kcal/kg fat-free "
+                     f"mass) on {', '.join(low_ea)} — under-fueling / RED-S risk; ease "
+                     "the deficit or add carbs on those days.")
 
     result = {
         "window": {"start": start.isoformat(), "end": end.isoformat(), "days": days},
@@ -1718,6 +1777,11 @@ def generate_fueling_plan(
         "daily_kcal_adjustment": goal_adj,
         "protein_g_per_kg": protein_per_kg,
         "carb_load": carb_load,
+        "config": {
+            "deficit_cap_kcal": (None if uncapped else round(deficit_cap)),
+            "ea_floor_kcal_per_kg_ffm": ea_threshold,
+            "fuel_min_minutes": fuel_min_minutes,
+        },
         "days": day_rows,
         "totals": totals,
         "notes": notes,

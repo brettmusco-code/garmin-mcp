@@ -93,7 +93,7 @@
   .ea-row .val{font-family:var(--mono);font-size:12.5px;}
 
   .weekwrap{overflow-x:auto;}
-  table{width:100%;border-collapse:collapse;font-size:13px;min-width:640px;}
+  table{width:100%;border-collapse:collapse;font-size:13px;min-width:720px;}
   thead th{text-align:left;font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;
     color:var(--ink-faint);font-weight:600;padding:0 10px 10px;border-bottom:1px solid var(--line);}
   thead th.r,td.r{text-align:right;}
@@ -174,7 +174,7 @@
 
     <div class="card">
       <h2>Energy availability</h2>
-      <div class="sub">Intake minus exercise, per kg fat-free mass. Under 30 = under-fueling risk.</div>
+      <div class="sub" id="eaSub">Intake minus exercise, per kg fat-free mass.</div>
       <div class="ea-list" id="eaList"></div>
     </div>
   </div>
@@ -185,7 +185,7 @@
     <div class="weekwrap">
       <table>
         <thead><tr>
-          <th>Day</th><th>Session</th><th class="r">Burn</th><th class="r">Target</th>
+          <th>Day</th><th>Session</th><th class="r">Burn</th><th class="r">Target</th><th class="r">Deficit</th>
           <th>P / C / F</th><th class="r">Carb g/kg</th><th class="r">EA</th><th class="r">Fuel</th>
         </tr></thead>
         <tbody id="weekBody"></tbody>
@@ -229,6 +229,8 @@ const PLAN = {
     "height_cm": 178.0,
     "age": 40,
     "protein_g_per_kg": null,
+    "max_deficit_kcal": null,
+    "ea_floor": null,
     "notes": null,
     "set_date": "2026-07-21"
   },
@@ -259,6 +261,11 @@ const PLAN = {
   "daily_kcal_adjustment": -385,
   "protein_g_per_kg": 1.9,
   "carb_load": false,
+  "config": {
+    "deficit_cap_kcal": 500,
+    "ea_floor_kcal_per_kg_ffm": 30,
+    "fuel_min_minutes": 90
+  },
   "days": [
     {
       "date": "2026-07-27",
@@ -278,9 +285,11 @@ const PLAN = {
       "est_burn_kcal": 0,
       "expected_expenditure_kcal": 2155,
       "target_kcal": 1990,
+      "target_deficit_kcal": 165,
       "protein_g": 141,
       "carbs_g": 222,
       "fat_g": 60,
+      "protein_g_per_kg": 1.9,
       "carb_g_per_kg": 3.0,
       "energy_availability_kcal_per_kg_ffm": 31.3,
       "needs_fuel": false,
@@ -297,34 +306,23 @@ const PLAN = {
           "hours": 1.25,
           "hours_source": "calendar",
           "burn_kcal": 1242,
-          "burn_source": "history"
+          "kcal_per_hour": 710,
+          "burn_source": "history_similar"
         }
       ],
       "primary_intensity": "threshold",
       "est_burn_kcal": 1242,
       "expected_expenditure_kcal": 3397,
       "target_kcal": 3012,
-      "protein_g": 141,
+      "target_deficit_kcal": 385,
+      "protein_g": 152,
       "carbs_g": 556,
       "fat_g": 37,
+      "protein_g_per_kg": 2.05,
       "carb_g_per_kg": 7.5,
       "energy_availability_kcal_per_kg_ffm": 27.8,
-      "needs_fuel": true,
-      "fuel": [
-        {
-          "session": "Bike Threshold 4x8min",
-          "intensity": "threshold",
-          "hours": 1.25,
-          "pre_carbs_g": 60,
-          "during_carbs_g_per_hr": 35,
-          "during_carbs_g_total": 44,
-          "post_protein_g": 25,
-          "post_carbs_g": 60,
-          "fluid_ml_per_hr": 600,
-          "sodium_mg_per_hr": 600,
-          "caffeine_mg": 222
-        }
-      ]
+      "needs_fuel": false,
+      "fuel": []
     },
     {
       "date": "2026-07-29",
@@ -337,16 +335,19 @@ const PLAN = {
           "hours": 0.75,
           "hours_source": "calendar",
           "burn_kcal": 426,
-          "burn_source": "history"
+          "kcal_per_hour": 710,
+          "burn_source": "history_similar"
         }
       ],
       "primary_intensity": "recovery",
       "est_burn_kcal": 426,
       "expected_expenditure_kcal": 2581,
       "target_kcal": 2196,
+      "target_deficit_kcal": 385,
       "protein_g": 141,
       "carbs_g": 296,
       "fat_g": 50,
+      "protein_g_per_kg": 1.9,
       "carb_g_per_kg": 4.0,
       "energy_availability_kcal_per_kg_ffm": 27.8,
       "needs_fuel": false,
@@ -363,16 +364,19 @@ const PLAN = {
           "hours": 0.75,
           "hours_source": "calendar",
           "burn_kcal": 570,
-          "burn_source": "history"
+          "kcal_per_hour": 760,
+          "burn_source": "history_similar"
         }
       ],
       "primary_intensity": "easy",
       "est_burn_kcal": 570,
       "expected_expenditure_kcal": 2725,
       "target_kcal": 2340,
+      "target_deficit_kcal": 385,
       "protein_g": 141,
       "carbs_g": 296,
       "fat_g": 66,
+      "protein_g_per_kg": 1.9,
       "carb_g_per_kg": 4.0,
       "energy_availability_kcal_per_kg_ffm": 27.8,
       "needs_fuel": false,
@@ -396,9 +400,11 @@ const PLAN = {
       "est_burn_kcal": 0,
       "expected_expenditure_kcal": 2155,
       "target_kcal": 1990,
+      "target_deficit_kcal": 165,
       "protein_g": 141,
       "carbs_g": 222,
       "fat_g": 60,
+      "protein_g_per_kg": 1.9,
       "carb_g_per_kg": 3.0,
       "energy_availability_kcal_per_kg_ffm": 31.3,
       "needs_fuel": false,
@@ -415,16 +421,19 @@ const PLAN = {
           "hours": 3.5,
           "hours_source": "calendar",
           "burn_kcal": 2361,
-          "burn_source": "history"
+          "kcal_per_hour": 710,
+          "burn_source": "history_sport"
         }
       ],
       "primary_intensity": "long",
       "est_burn_kcal": 2361,
       "expected_expenditure_kcal": 4516,
       "target_kcal": 4131,
-      "protein_g": 141,
+      "target_deficit_kcal": 385,
+      "protein_g": 152,
       "carbs_g": 519,
-      "fat_g": 166,
+      "fat_g": 161,
+      "protein_g_per_kg": 2.05,
       "carb_g_per_kg": 7.0,
       "energy_availability_kcal_per_kg_ffm": 27.8,
       "needs_fuel": true,
@@ -456,16 +465,19 @@ const PLAN = {
           "hours": 0.5,
           "hours_source": "calendar",
           "burn_kcal": 380,
-          "burn_source": "history"
+          "kcal_per_hour": 760,
+          "burn_source": "history_sport"
         }
       ],
       "primary_intensity": "easy",
       "est_burn_kcal": 380,
       "expected_expenditure_kcal": 2535,
       "target_kcal": 2150,
+      "target_deficit_kcal": 385,
       "protein_g": 141,
       "carbs_g": 296,
       "fat_g": 45,
+      "protein_g_per_kg": 1.9,
       "carb_g_per_kg": 4.0,
       "energy_availability_kcal_per_kg_ffm": 27.8,
       "needs_fuel": false,
@@ -474,10 +486,11 @@ const PLAN = {
   ],
   "totals": {
     "target_kcal": 17809,
-    "protein_g": 987,
+    "protein_g": 1009,
     "carbs_g": 2407,
-    "fat_g": 484,
-    "est_burn_kcal": 4979
+    "fat_g": 479,
+    "est_burn_kcal": 4979,
+    "target_deficit_kcal": 2255
   },
   "notes": [
     "Low energy availability (<30 kcal/kg fat-free mass) on 2026-07-28, 2026-07-29, 2026-07-30, 2026-08-01, 2026-08-02 \u2014 under-fueling / RED-S risk; ease the deficit or add carbs on those days."
@@ -491,8 +504,9 @@ const todayISO = new Date().toISOString().slice(0,10);
 const dow = (iso)=>{const d=new Date(iso+'T00:00:00');return d.toLocaleDateString(undefined,{weekday:'short'});};
 const dmd = (iso)=>{const d=new Date(iso+'T00:00:00');return d.toLocaleDateString(undefined,{month:'short',day:'numeric'});};
 
-function eaPill(ea){ if(ea==null) return 'good'; if(ea>=30) return 'good'; if(ea>=25) return 'warn'; return 'crit'; }
-function eaColor(ea){ if(ea==null) return 'var(--good)'; if(ea>=30) return 'var(--good)'; if(ea>=25) return 'var(--warn)'; return 'var(--crit)'; }
+const EAF = (PLAN.config && PLAN.config.ea_floor_kcal_per_kg_ffm) || 30;
+function eaPill(ea){ if(ea==null) return 'good'; if(ea>=EAF) return 'good'; if(ea>=EAF-5) return 'warn'; return 'crit'; }
+function eaColor(ea){ if(ea==null) return 'var(--good)'; if(ea>=EAF) return 'var(--good)'; if(ea>=EAF-5) return 'var(--warn)'; return 'var(--crit)'; }
 
 function macroRow(lab, key, grams, kcalTot){
   const kc = grams * (key==='fat'?9:4);
@@ -506,6 +520,7 @@ function macroRow(lab, key, grams, kcalTot){
 function render(){
   const g = PLAN.goal, gp = PLAN.goal_progress||{}, b = PLAN.body||{}, w = PLAN.window;
   $('range').textContent = `${dmd(w.start)} – ${dmd(w.end)}`;
+  $('eaSub').textContent = `Intake minus exercise, per kg fat-free mass. Under ${EAF} = under-fueling risk.`;
 
   const gt = g.goal_type;
   const goalTxt = gt==='maintain'
@@ -557,6 +572,7 @@ function render(){
       <td class="sess ${rest?'rest':''}">${sessTxt}</td>
       <td class="r mono">${d.est_burn_kcal?nf(d.est_burn_kcal):'—'}</td>
       <td class="r mono">${nf(d.target_kcal)}</td>
+      <td class="r mono" style="color:${d.target_deficit_kcal>0?'var(--warn)':'var(--ink-dim)'}">${d.target_deficit_kcal>0?'−'+nf(d.target_deficit_kcal):(d.target_deficit_kcal<0?'+'+nf(-d.target_deficit_kcal):'0')}</td>
       <td><span class="pcf">${seg(d.protein_g,'protein')}${seg(d.carbs_g,'carbs')}${seg(d.fat_g,'fat')}</span>
           <span class="mono" style="font-size:11px;color:var(--ink-dim)"> ${d.protein_g}/${d.carbs_g}/${d.fat_g}</span></td>
       <td class="r mono">${d.carb_g_per_kg}</td>

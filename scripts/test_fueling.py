@@ -140,23 +140,37 @@ def main():
     floor = round(bmr * 1.2)
     check("7 day rows", len(plan["days"]) == 7)
     check("all targets >= BMR*1.2 floor", all(d["target_kcal"] >= floor for d in plan["days"]))
-    check("protein = weight*1.9", all(d["protein_g"] == round(74.1 * 1.9) for d in plan["days"]))
     check("deficit capped at <=500", plan["daily_kcal_adjustment"] >= -500)
 
-    day0 = plan["days"][0]   # threshold
+    day0 = plan["days"][0]   # threshold (75min)
     day1 = plan["days"][1]   # recovery
     day4 = plan["days"][4]   # long ride
     day2 = plan["days"][2]   # rest
-    check("threshold day has a fuel card", day0["needs_fuel"] and len(day0["fuel"]) == 1)
-    check("threshold carbs = 7.5 g/kg", day0["carb_g_per_kg"] == 7.5)
+
+    print("protein periodization (no longer static):")
+    check("rest-day protein = base 1.9 g/kg", day2["protein_g"] == round(74.1 * 1.9))
+    check("threshold-day protein periodized up", day0["protein_g"] > day2["protein_g"])
+    check("threshold-day protein_g_per_kg > rest", day0["protein_g_per_kg"] > day2["protein_g_per_kg"])
+
+    print("90-min fuel rule + per-day deficit:")
+    check("75-min threshold NOT fueled (default 90-min rule)", not day0["needs_fuel"])
     check("rest day has no fuel card", not day2["needs_fuel"])
     check("recovery short day: no fuel card", not day1["needs_fuel"])
-    check("long ride flagged for fuel", day4["needs_fuel"])
+    check("long ride (3.5h) fueled", day4["needs_fuel"])
+    check("long-ride card has caffeine", day4["fuel"][0].get("caffeine_mg") == round(74.1 * 3))
+    check("every day has target_deficit_kcal",
+          all("target_deficit_kcal" in d for d in plan["days"]))
+    check("deficit = expenditure - target",
+          day0["target_deficit_kcal"] == day0["expected_expenditure_kcal"] - day0["target_kcal"])
+    plan60 = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7, fuel_min_minutes=60)
+    check("75-min threshold IS fueled when min lowered to 60", plan60["days"][0]["needs_fuel"])
+
+    print("similar-activity burn calibration:")
+    check("threshold burn from similar-duration history",
+          day0["sessions"][0]["burn_source"] in ("history_similar", "history_sport"))
+    check("threshold carbs = 7.5 g/kg", day0["carb_g_per_kg"] == 7.5)
     check("long ride carbs (7 g/kg) > recovery day carbs", day4["carbs_g"] > day1["carbs_g"])
     check("long ride burn > recovery burn", day4["est_burn_kcal"] > day1["est_burn_kcal"])
-    check("burn calibrated from history", day0["sessions"][0]["burn_source"] == "history")
-    card = day0["fuel"][0]
-    check("threshold card has caffeine", card.get("caffeine_mg") == round(74.1 * 3))
 
     print("macro reconciliation:")
     for d in plan["days"]:
@@ -184,6 +198,27 @@ def main():
     check("all days at 9 g/kg carbs", all(d["carb_g_per_kg"] == 9.0 for d in plan_cl["days"]))
     check("carb-load carbs > normal-day carbs",
           plan_cl["days"][2]["carbs_g"] > plan["days"][2]["carbs_g"])
+
+    print("configurable EA floor:")
+    check("default plan raises the low-EA note",
+          any("Low energy availability" in n for n in plan["notes"]))
+    plan_ea = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7, ea_floor=20)
+    check("config echoes ea_floor=20", plan_ea["config"]["ea_floor_kcal_per_kg_ffm"] == 20)
+    check("lower EA floor suppresses the note",
+          not any("Low energy availability" in n for n in plan_ea["notes"]))
+
+    print("uncapped deficit (removed cap):")
+    tight = (TODAY + timedelta(weeks=3)).isoformat()
+    g.set_fueling_goal(goal_type="lose", target_weight_kg=69.0, target_date=tight,
+                       sex="male", height_cm=178, age=40, max_deficit_kcal=0)
+    planu = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7)
+    check("uncapped deficit exceeds 500", abs(planu["daily_kcal_adjustment"]) > 500)
+    check("config echoes no cap", planu["config"]["deficit_cap_kcal"] is None)
+    check("BMR*1.2 floor still applies",
+          all(d["target_kcal"] >= round(planu["bmr"]["value"] * 1.2) for d in planu["days"]))
+    # restore the default-capped lose goal for the remaining checks
+    g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
+                       sex="male", height_cm=178, age=40)
 
     print("save=True merges into weekly snapshot:")
     plan2 = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7, save=True)
