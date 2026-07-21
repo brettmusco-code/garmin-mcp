@@ -475,6 +475,64 @@ TOOLS = [
             },
         },
     },
+    {
+        "name": "set_fueling_goal",
+        "description": (
+            "Set/replace the athlete's fueling goal (target weight + timeline) "
+            "used by generate_fueling_plan and the /fuel skill. goal_type is "
+            "'lose', 'gain', or 'maintain'. For lose/gain, pass target_weight_kg "
+            "and target_date (YYYY-MM-DD). Optionally pass sex ('male'/'female'), "
+            "height_cm and age for an accurate Mifflin-St Jeor BMR, and "
+            "protein_g_per_kg to override the default. Persisted to R2 as the "
+            "single active goal."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "goal_type": {"type": "string", "enum": ["lose", "gain", "maintain"]},
+                "target_weight_kg": {"type": "number"},
+                "target_date": {"type": "string", "description": "YYYY-MM-DD"},
+                "start_weight_kg": {"type": "number", "description": "optional; defaults to current weight"},
+                "sex": {"type": "string", "enum": ["male", "female"]},
+                "height_cm": {"type": "number"},
+                "age": {"type": "number"},
+                "protein_g_per_kg": {"type": "number"},
+                "notes": {"type": "string"},
+            },
+            "required": ["goal_type"],
+        },
+    },
+    {
+        "name": "get_fueling_goal",
+        "description": (
+            "Return the active fueling goal plus live progress: current weight "
+            "vs target, weeks remaining, required daily kcal change, goal age, "
+            "and review flags (stale goal, target passed, weight not logged). "
+            "Returns goal=null if none set."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "generate_fueling_plan",
+        "description": (
+            "Build a forward fueling plan for the next N days from the stored "
+            "goal + Garmin body composition + scheduled workouts: per-day "
+            "calorie target, macros (protein by bodyweight, carbs periodized by "
+            "session type, fat as balancer) and a per-workout fuel card "
+            "(pre/during/post carbs + protein, hydration, sodium, caffeine) for "
+            "sessions >=75 min or >=Z3. Session burn is calibrated from the "
+            "athlete's own 90-day history. Set save=true to merge the plan into "
+            "the weekly snapshot so nutrition_plan_vs_actual can track it."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "start_date": {"type": "string", "description": "YYYY-MM-DD; default today"},
+                "days": {"type": "number", "description": "Horizon 1-28. Default 7."},
+                "save": {"type": "boolean", "description": "merge into weekly snapshot, default false"},
+            },
+        },
+    },
 ]
 
 
@@ -616,6 +674,35 @@ def _call_tool(name: str, args: dict) -> Any:
     if name == "nutrition_trend":
         return garmin.nutrition_trend(
             weeks=int(args.get("weeks", 4))
+        )
+    if name == "set_fueling_goal":
+        gt = args.get("goal_type")
+        if gt not in ("lose", "gain", "maintain"):
+            raise ValueError("`goal_type` must be 'lose', 'gain', or 'maintain'")
+        td = args.get("target_date")
+        if td and not DATE_RE.match(td):
+            raise ValueError("`target_date` must be YYYY-MM-DD")
+        return garmin.set_fueling_goal(
+            goal_type=gt,
+            target_weight_kg=args.get("target_weight_kg"),
+            target_date=td,
+            start_weight_kg=args.get("start_weight_kg"),
+            sex=args.get("sex"),
+            height_cm=args.get("height_cm"),
+            age=args.get("age"),
+            protein_g_per_kg=args.get("protein_g_per_kg"),
+            notes=args.get("notes"),
+        )
+    if name == "get_fueling_goal":
+        return garmin.get_fueling_goal()
+    if name == "generate_fueling_plan":
+        sd = args.get("start_date")
+        if sd and not DATE_RE.match(sd):
+            raise ValueError("`start_date` must be YYYY-MM-DD")
+        return garmin.generate_fueling_plan(
+            start_date=sd,
+            days=int(args.get("days", 7)),
+            save=bool(args.get("save", False)),
         )
     raise ValueError(f"Unknown tool: {name}")
 

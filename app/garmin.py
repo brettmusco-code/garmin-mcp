@@ -1149,6 +1149,550 @@ def nutrition_trend(weeks: int = 4) -> dict:
     }
 
 
+# ---------- Fueling: goal store + daily / per-workout plan generator ----------
+#
+# A "Fuelin"-style engine. Persist a weight goal, then fuse it with body
+# composition + Garmin scheduled workouts into daily calorie/macro targets and
+# a per-workout fuel card (pre / during / post + hydration). The formulas
+# mirror skills/weekly.md + skills/project-instructions.md so the server-side
+# numbers match what the skills produce:
+#   BMR ............ Mifflin-St Jeor (fallback weight_kg x 22 for endurance)
+#   Daily target ... BMR x 1.3 (NEAT) + session burn + goal adjustment,
+#                    floored at BMR x 1.2
+#   Deficit ........ (kg x 7700 / weeks) / 7, capped at 500 kcal/day
+#   Carbs .......... periodized by session type (3-8 g/kg)
+#   Protein ........ by bodyweight; Fat closes the gap to target (with a floor)
+
+GOAL_TYPES = ("lose", "gain", "maintain")
+
+# Baseline burn per hour by sport, used when history is too thin to
+# calibrate. Intensity multipliers scale these around an easy baseline of 1.0.
+_BASE_KCAL_PER_HOUR = {
+    "cycling": 650, "running": 700, "swimming": 550, "strength": 350,
+    "walking": 300, "default": 600,
+}
+_INTENSITY_MULT = {
+    "rest": 0.0, "recovery": 0.8, "easy": 1.0, "endurance": 1.0,
+    "long": 0.95, "tempo": 1.2, "threshold": 1.4, "vo2": 1.45,
+}
+_CARB_G_PER_KG = {
+    "rest": 3.0, "recovery": 4.0, "easy": 4.0, "endurance": 5.0,
+    "long": 6.0, "tempo": 5.5, "threshold": 7.5, "vo2": 7.5,
+}
+# Default planned duration (hours) when neither the workout detail nor the
+# calendar item states one.
+_DEFAULT_HOURS = {
+    "rest": 0.0, "recovery": 0.75, "easy": 1.0, "endurance": 1.5,
+    "long": 2.5, "tempo": 1.0, "threshold": 1.25, "vo2": 1.0,
+}
+_PROTEIN_G_PER_KG_DEFAULT = {"lose": 1.9, "maintain": 1.6, "gain": 1.7}
+# Rank used to pick the day's "hardest" session for carb periodization.
+_INTENSITY_ORDER = {
+    "rest": 0, "recovery": 1, "easy": 2, "endurance": 3,
+    "long": 4, "tempo": 5, "threshold": 6, "vo2": 7,
+}
+
+
+def set_fueling_goal(
+    goal_type: str,
+    target_weight_kg: float | None = None,
+    target_date: str | None = None,
+    start_weight_kg: float | None = None,
+    sex: str | None = None,
+    height_cm: float | None = None,
+    age: int | None = None,
+    protein_g_per_kg: float | None = None,
+    notes: str | None = None,
+) -> dict:
+    """Persist the athlete's fueling goal to R2 (single active goal, keyed
+    'current'). This is the target weight + timeline the fueling plan is built
+    around, plus the BMR inputs Garmin doesn't reliably expose (sex/height/age).
+    Overwrites any prior goal; the set date is recorded so skills can flag a
+    stale goal.
+
+    goal_type: 'lose' | 'gain' | 'maintain'. For 'lose'/'gain' provide
+    target_weight_kg and target_date so a daily deficit/surplus can be computed.
+    """
+    gt = (goal_type or "").strip().lower()
+    if gt not in GOAL_TYPES:
+        raise ValueError(f"goal_type must be one of {GOAL_TYPES}")
+    sex_n = (sex or "").strip().lower() or None
+    if sex_n and sex_n not in ("male", "female"):
+        raise ValueError("sex must be 'male' or 'female'")
+    if target_date:
+        try:
+            datetime.strptime(target_date[:10], "%Y-%m-%d")
+        except (ValueError, TypeError) as ex:
+            raise ValueError("target_date must be YYYY-MM-DD") from ex
+        target_date = target_date[:10]
+
+    # Best-effort capture of current weight as the starting point (for
+    # progress tracking) if the caller didn't supply one. Never fails the
+    # call — reads the R2 baseline only.
+    if start_weight_kg is None:
+        try:
+            base = get_athlete_baseline()
+            if isinstance(base, dict):
+                start_weight_kg = base.get("weight_kg")
+        except Exception:  # noqa: BLE001
+            pass
+
+    goal = {
+        "goal_type": gt,
+        "target_weight_kg": round(float(target_weight_kg), 1) if target_weight_kg else None,
+        "target_date": target_date,
+        "start_weight_kg": round(float(start_weight_kg), 1) if start_weight_kg else None,
+        "sex": sex_n,
+        "height_cm": round(float(height_cm), 1) if height_cm else None,
+        "age": int(age) if age else None,
+        "protein_g_per_kg": round(float(protein_g_per_kg), 2) if protein_g_per_kg else None,
+        "notes": notes,
+        "set_date": date.today().isoformat(),
+    }
+    cache.put("fueling_goal", {"key": "current"}, goal, key_parts=["current"])
+    return {"saved": True, "goal": goal}
+
+
+def _weeks_remaining(target_date: str | None) -> int | None:
+    if not target_date:
+        return None
+    try:
+        td = datetime.strptime(target_date[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+    days = (td - date.today()).days
+    if days <= 0:
+        return 0
+    return max(1, (days + 6) // 7)
+
+
+def get_fueling_goal() -> dict:
+    """Return the active fueling goal + live progress (current weight vs
+    target, weeks remaining, required daily kcal change, on/off pace + review
+    flags). Returns {"goal": None, ...} if none set."""
+    goal = cache.get(
+        "fueling_goal", {"key": "current"}, key_parts=["current"],
+        ttl_seconds=IMMUTABLE_TTL,
+    )
+    if not goal:
+        return {"goal": None, "message": "No fueling goal set — call set_fueling_goal."}
+
+    current_weight = None
+    weight_staleness = None
+    try:
+        base = get_athlete_baseline()
+        if isinstance(base, dict):
+            current_weight = base.get("weight_kg")
+            weight_staleness = (base.get("staleness_days") or {}).get("weight")
+    except Exception:  # noqa: BLE001
+        pass
+
+    progress: dict[str, Any] = {
+        "current_weight_kg": current_weight,
+        "weight_staleness_days": weight_staleness,
+        "weeks_remaining": _weeks_remaining(goal.get("target_date")),
+        "goal_age_days": None,
+    }
+    sd = goal.get("set_date")
+    if sd:
+        try:
+            progress["goal_age_days"] = (
+                date.today() - datetime.strptime(sd, "%Y-%m-%d").date()
+            ).days
+        except (ValueError, TypeError):
+            pass
+
+    tgt = goal.get("target_weight_kg")
+    wr = progress["weeks_remaining"]
+    if goal["goal_type"] in ("lose", "gain") and tgt and current_weight:
+        remaining_kg = round(current_weight - tgt, 1)  # + means still to lose
+        progress["kg_to_target"] = remaining_kg
+        if wr:
+            req_daily = (abs(remaining_kg) * 7700 / wr) / 7  # 7700 kcal/kg
+            progress["required_daily_kcal_change"] = (
+                -round(req_daily) if goal["goal_type"] == "lose" else round(req_daily)
+            )
+            if goal["goal_type"] == "lose" and req_daily > 550:
+                progress["pace_flag"] = (
+                    "Target needs a >550 kcal/day deficit — faster than the "
+                    "500/day cap. Consider extending the timeline."
+                )
+
+    # Review triggers (mirror skills/project-instructions.md)
+    flags = []
+    if (progress.get("goal_age_days") or 0) > 28:
+        flags.append("goal >4 weeks old — confirm it still holds")
+    if wr == 0:
+        flags.append("target date has passed")
+    if (goal["goal_type"] == "lose" and tgt and current_weight is not None
+            and current_weight <= tgt):
+        flags.append("target weight already reached")
+    if (weight_staleness or 0) > 14:
+        flags.append("weight not logged in >14 days — can't verify pace")
+    progress["review_flags"] = flags
+
+    return {"goal": goal, "progress": progress}
+
+
+def _latest_body_stats(lookback_days: int = 30) -> dict:
+    """Latest weight + body-fat + lean/muscle mass from Garmin body
+    composition (Renpho syncs here). Only weight is consumed elsewhere; this
+    surfaces the composition fields for recomposition context."""
+    today = date.today()
+    out: dict[str, Any] = {
+        "weight_kg": None, "body_fat_pct": None, "lean_mass_kg": None,
+        "muscle_mass_kg": None, "fat_mass_kg": None, "as_of": None,
+        "staleness_days": None,
+    }
+    try:
+        bc = get_body_composition(
+            startdate=(today - timedelta(days=lookback_days)).isoformat(),
+            enddate=today.isoformat(),
+        )
+    except Exception:  # noqa: BLE001
+        return out
+    entries = (bc or {}).get("dateWeightList") or []
+    if not entries:
+        return out
+    latest = max(entries, key=lambda e: (e.get("date") or e.get("calendarDate") or ""))
+    w_g = latest.get("weight")
+    if w_g:
+        out["weight_kg"] = round(w_g / 1000.0, 1)
+    bf = latest.get("bodyFat")
+    if bf and out["weight_kg"]:
+        out["body_fat_pct"] = round(float(bf), 1)
+        out["fat_mass_kg"] = round(out["weight_kg"] * bf / 100.0, 1)
+        out["lean_mass_kg"] = round(out["weight_kg"] * (1 - bf / 100.0), 1)
+    mm = latest.get("muscleMass")
+    if mm:
+        out["muscle_mass_kg"] = round(mm / 1000.0, 1)
+    d_str = latest.get("date") or latest.get("calendarDate")
+    if d_str:
+        out["as_of"] = d_str[:10]
+        try:
+            out["staleness_days"] = (
+                today - datetime.strptime(d_str[:10], "%Y-%m-%d").date()
+            ).days
+        except (ValueError, TypeError):
+            pass
+    return out
+
+
+def _sport_bucket(title: str, hint: str | None = None) -> str:
+    t = f"{hint or ''} {title or ''}".lower()
+    if any(k in t for k in ("swim", "pool", "open water")):
+        return "swimming"
+    if any(k in t for k in ("run", "jog", "treadmill", "track")):
+        return "running"
+    if any(k in t for k in ("ride", "bike", "cycl", "spin", "rouvy", "zwift", "trainer")):
+        return "cycling"
+    if any(k in t for k in ("strength", "gym", "lift", "weights", "core", "mobility", "yoga")):
+        return "strength"
+    if "walk" in t or "hike" in t:
+        return "walking"
+    return "default"
+
+
+def _classify_intensity(title: str) -> str:
+    t = (title or "").lower()
+    if not t.strip():
+        return "easy"
+    if "recovery" in t:
+        return "recovery"
+    if "vo2" in t or "v02" in t:
+        return "vo2"
+    if any(k in t for k in ("threshold", "lthr", "race pace", "interval",
+                            "anaerobic", "hard")):
+        return "threshold"
+    if any(k in t for k in ("tempo", "sweet spot", "sweetspot", "sst",
+                            "sub-threshold", "sub threshold")):
+        return "tempo"
+    if "long" in t:
+        return "long"
+    if any(k in t for k in ("easy", "endurance", "base", "aerobic",
+                            "zone 2", "z2", "conversational")):
+        return "easy"
+    return "easy"
+
+
+def _history_kcal_per_hour(history: list[dict]) -> dict[str, float]:
+    """Median kcal/hr per sport bucket from recent completed activities."""
+    samples: dict[str, list[float]] = {}
+    for a in history or []:
+        if not isinstance(a, dict):
+            continue
+        dur_s = a.get("duration") or a.get("elapsedDuration") or a.get("movingDuration")
+        cal = a.get("calories")
+        if not dur_s or not cal or dur_s < 600:  # skip <10min
+            continue
+        type_key = (a.get("activityType") or {}).get("typeKey") or ""
+        bucket = _sport_bucket(a.get("activityName") or "", type_key)
+        kcal_hr = cal / (dur_s / 3600.0)
+        if 150 <= kcal_hr <= 1600:  # sanity bounds
+            samples.setdefault(bucket, []).append(kcal_hr)
+    out = {}
+    for bucket, vals in samples.items():
+        if len(vals) >= 3:
+            vals.sort()
+            out[bucket] = round(vals[len(vals) // 2])
+    return out
+
+
+def _planned_hours(item: dict, intensity: str) -> tuple[float, str]:
+    """(hours, source). Prefer the linked workout's estimated duration, then
+    any duration on the calendar item, then a per-intensity default."""
+    for k in ("duration", "estimatedDurationInSecs", "estimatedDurationSecs"):
+        v = item.get(k)
+        if v:
+            return round(v / 3600.0, 2), "calendar"
+    wid = item.get("workoutId")
+    if wid:
+        try:
+            wo = get_workout_by_id(wid) or {}
+            secs = wo.get("estimatedDurationInSecs") or wo.get("estimatedDurationSecs")
+            if secs:
+                return round(secs / 3600.0, 2), "workout_detail"
+        except Exception:  # noqa: BLE001
+            pass
+    return _DEFAULT_HOURS.get(intensity, 1.0), "type_default"
+
+
+def _bmr(weight_kg, sex, height_cm, age):
+    """Mifflin-St Jeor when sex/height/age are known, else weight_kg x 22."""
+    if weight_kg and height_cm and age and sex in ("male", "female"):
+        base = weight_kg * 10 + height_cm * 6.25 - age * 5
+        return round(base + (5 if sex == "male" else -161))
+    if weight_kg:
+        return round(weight_kg * 22)
+    return None
+
+
+def generate_fueling_plan(
+    start_date: str | date | None = None,
+    days: int = 7,
+    save: bool = False,
+) -> dict:
+    """Build a forward fueling plan: per-day calorie + macro targets and a
+    per-workout fuel card for the next `days` days, from the stored fueling
+    goal + body stats + Garmin scheduled workouts. Formulas mirror
+    skills/weekly.md + skills/project-instructions.md.
+
+    Session burn is calibrated from the athlete's own 90-day history (median
+    kcal/hr per sport), falling back to a generic table. Every live fetch
+    degrades gracefully so the read-only web service can serve this from the
+    nightly pre-warmed cache.
+
+    If `save=True`, merges the per-day plan into the weekly snapshot (under
+    nutrition_plan) so nutrition_plan_vs_actual / /morning can track adherence;
+    existing snapshot fields are preserved.
+    """
+    days = max(1, min(int(days), 28))
+    start = _coerce_date(start_date) if start_date else date.today()
+    end = start + timedelta(days=days - 1)
+    notes: list[str] = []
+
+    goal_info = get_fueling_goal()
+    goal = goal_info.get("goal")
+    if not goal:
+        return {
+            "no_goal_available": True,
+            "message": "No fueling goal set. Call set_fueling_goal (goal_type + "
+                       "target_weight_kg + target_date) first.",
+            "window": {"start": start.isoformat(), "end": end.isoformat(), "days": days},
+        }
+
+    body = _latest_body_stats()
+    weight_kg = body.get("weight_kg") or goal.get("start_weight_kg")
+    if weight_kg is None:
+        try:
+            base = get_athlete_baseline()
+            weight_kg = base.get("weight_kg") if isinstance(base, dict) else None
+        except Exception:  # noqa: BLE001
+            pass
+    if not weight_kg:
+        return {
+            "error": "no_weight",
+            "message": "No recent weight from Garmin body composition or baseline. "
+                       "Log a weigh-in or pass start_weight_kg to set_fueling_goal.",
+            "window": {"start": start.isoformat(), "end": end.isoformat(), "days": days},
+        }
+
+    has_bmr_inputs = bool(goal.get("height_cm") and goal.get("age") and goal.get("sex"))
+    bmr = _bmr(weight_kg, goal.get("sex"), goal.get("height_cm"), goal.get("age"))
+    bmr_source = "mifflin_st_jeor" if has_bmr_inputs else "weight_x22_fallback"
+    if not has_bmr_inputs:
+        notes.append("BMR estimated as weight x22 — set sex/height/age via "
+                     "set_fueling_goal for a Mifflin-St Jeor value.")
+
+    # Goal daily kcal adjustment (deficit/surplus)
+    wr = _weeks_remaining(goal.get("target_date"))
+    gt = goal["goal_type"]
+    tgt = goal.get("target_weight_kg")
+    protein_per_kg = goal.get("protein_g_per_kg") or _PROTEIN_G_PER_KG_DEFAULT.get(gt, 1.6)
+    goal_adj = 0
+    if gt == "lose":
+        kg_to_lose = (weight_kg - tgt) if tgt else None
+        if kg_to_lose and kg_to_lose > 0 and wr:
+            raw = (kg_to_lose * 7700 / wr) / 7
+        else:
+            raw = 400  # moderate default cut when no target/timeline
+        goal_adj = -min(round(raw), 500)  # cap deficit at 500/day
+        if kg_to_lose and wr and raw > 500:
+            notes.append(f"Reaching {tgt}kg by {goal.get('target_date')} needs a "
+                         f"{round(raw)} kcal/day deficit; capped at 500 — extend "
+                         "the timeline to stay safe.")
+    elif gt == "gain":
+        goal_adj = 400  # midpoint of +300-500, carb-led
+
+    # Scheduled workouts across the window
+    scheduled_by_date: dict[str, list[dict]] = {}
+    try:
+        for it in get_scheduled_workouts(start.isoformat(), end.isoformat()):
+            d_str = (it.get("date") or "")[:10]
+            if d_str:
+                scheduled_by_date.setdefault(d_str, []).append(it)
+    except Exception as ex:  # noqa: BLE001
+        notes.append(f"Could not load scheduled workouts ({str(ex)[:120]}); days "
+                     "shown assume rest/easy — re-run when the calendar is warm.")
+
+    # 90-day history for burn calibration (best-effort)
+    history: list[dict] = []
+    try:
+        history = get_activities_in_range(
+            (start - timedelta(days=90)).isoformat(), start.isoformat()
+        ) or []
+    except Exception:  # noqa: BLE001
+        pass
+    hist_kcal_hr = _history_kcal_per_hour(history)
+
+    last_scheduled_date = max(scheduled_by_date) if scheduled_by_date else None
+
+    day_rows = []
+    totals = {"target_kcal": 0, "protein_g": 0, "carbs_g": 0, "fat_g": 0, "est_burn_kcal": 0}
+    plan_by_date: dict[str, dict] = {}
+
+    for i in range(days):
+        d = start + timedelta(days=i)
+        d_iso = d.isoformat()
+        sessions = []
+        for it in scheduled_by_date.get(d_iso, []):
+            title = (it.get("title") or it.get("workoutName")
+                     or it.get("workoutNameKey") or "")
+            intensity = _classify_intensity(title)
+            sport = _sport_bucket(title, it.get("sportTypeKey") or "")
+            hours, hrs_src = _planned_hours(it, intensity)
+            base_hr = hist_kcal_hr.get(sport) or _BASE_KCAL_PER_HOUR.get(
+                sport, _BASE_KCAL_PER_HOUR["default"])
+            burn = round(base_hr * _INTENSITY_MULT.get(intensity, 1.0) * hours)
+            sessions.append({
+                "title": title or sport, "sport": sport, "intensity": intensity,
+                "hours": hours, "hours_source": hrs_src, "burn_kcal": burn,
+                "burn_source": "history" if sport in hist_kcal_hr else "generic_table",
+            })
+        if not sessions:
+            sessions = [{"title": "rest", "sport": "rest", "intensity": "rest",
+                         "hours": 0.0, "hours_source": "none", "burn_kcal": 0,
+                         "burn_source": "none"}]
+
+        total_burn = sum(s["burn_kcal"] for s in sessions)
+        # Periodize carbs off the hardest session of the day
+        primary = max(sessions, key=lambda s: (_INTENSITY_ORDER.get(s["intensity"], 2),
+                                               s["hours"]))
+        carb_ratio = _CARB_G_PER_KG.get(primary["intensity"], 4.0)
+        if primary["intensity"] in ("endurance", "long") and primary["hours"] > 2:
+            carb_ratio = max(carb_ratio, 7.0)
+
+        expected_expenditure = round(bmr * 1.3 + total_burn)
+        target_kcal = max(round(bmr * 1.3 + total_burn + goal_adj), round(bmr * 1.2))
+        protein_g = round(weight_kg * protein_per_kg)
+        carbs_g = round(weight_kg * carb_ratio)
+        # Fat closes the gap to target, with a floor of ~0.5 g/kg
+        fat_g = round(max((target_kcal - protein_g * 4 - carbs_g * 4) / 9.0,
+                          weight_kg * 0.5))
+
+        fuel_cards = []
+        for s in sessions:
+            needs = s["hours"] >= 1.25 or s["intensity"] in ("tempo", "threshold", "vo2")
+            if not needs or s["intensity"] == "rest":
+                continue
+            hrs = max(s["hours"], 1.0)
+            during_per_hr = 60 if s["hours"] > 2 else (45 if s["hours"] > 1.5 else 35)
+            pre = 60 if (s["hours"] >= 2 or s["intensity"] in ("threshold", "vo2")) else 45
+            card = {
+                "session": s["title"], "intensity": s["intensity"], "hours": s["hours"],
+                "pre_carbs_g": pre,
+                "during_carbs_g_per_hr": during_per_hr,
+                "during_carbs_g_total": round(during_per_hr * hrs),
+                "post_protein_g": 25, "post_carbs_g": 60,
+                "fluid_ml_per_hr": 600, "sodium_mg_per_hr": 600,
+            }
+            if s["intensity"] in ("threshold", "vo2", "long") or s["hours"] >= 2:
+                card["caffeine_mg"] = round(weight_kg * 3)
+            if s["hours"] > 2.5:
+                card["note"] = ("long effort — push toward 60-90 g carbs/hr "
+                                "(glucose:fructose mix)")
+            fuel_cards.append(card)
+
+        row = {
+            "date": d_iso, "weekday": d.strftime("%a"),
+            "sessions": sessions,
+            "primary_intensity": primary["intensity"],
+            "est_burn_kcal": total_burn,
+            "expected_expenditure_kcal": expected_expenditure,
+            "target_kcal": target_kcal,
+            "protein_g": protein_g, "carbs_g": carbs_g, "fat_g": fat_g,
+            "carb_g_per_kg": carb_ratio,
+            "needs_fuel": bool(fuel_cards),
+            "fuel": fuel_cards,
+        }
+        day_rows.append(row)
+        for k in ("target_kcal", "protein_g", "carbs_g", "fat_g"):
+            totals[k] += row[k]
+        totals["est_burn_kcal"] += total_burn
+
+        plan_by_date[d_iso] = {
+            "session": "; ".join(s["title"] for s in sessions),
+            "target_kcal": target_kcal,
+            "expected_expenditure_kcal": expected_expenditure,
+            "protein_g": protein_g, "carbs_g": carbs_g, "fat_g": fat_g,
+            "notes": "fuel pre/during/post" if fuel_cards else "",
+        }
+
+    if last_scheduled_date and last_scheduled_date < end.isoformat():
+        notes.append(f"Garmin calendar has workouts through {last_scheduled_date}; "
+                     "later days assume rest/easy — re-run when the plan extends.")
+
+    result = {
+        "window": {"start": start.isoformat(), "end": end.isoformat(), "days": days},
+        "goal": goal,
+        "goal_progress": goal_info.get("progress"),
+        "body": body,
+        "bmr": {"value": bmr, "source": bmr_source, "weight_kg": weight_kg},
+        "daily_kcal_adjustment": goal_adj,
+        "protein_g_per_kg": protein_per_kg,
+        "days": day_rows,
+        "totals": totals,
+        "notes": notes,
+        "no_goal_available": False,
+    }
+
+    if save:
+        week_monday = (start - timedelta(days=start.weekday())).isoformat()
+        existing = cache.get(
+            "weekly_snapshots", {"date": week_monday}, key_parts=[week_monday],
+            ttl_seconds=IMMUTABLE_TTL,
+        )
+        snap = existing if isinstance(existing, dict) else {}
+        snap["date"] = snap.get("date") or week_monday
+        merged = dict(snap.get("nutrition_plan") or {})
+        merged.update(plan_by_date)
+        snap["nutrition_plan"] = merged
+        save_weekly_snapshot(snap)
+        result["saved_to_weekly_snapshot"] = snap["date"]
+
+    return result
+
+
 def get_lactate_threshold(
     startdate: str | date | None = None,
     enddate: str | date | None = None,
