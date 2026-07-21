@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1438,9 +1439,26 @@ def _history_kcal_per_hour(history: list[dict]) -> dict[str, float]:
     return out
 
 
+def _duration_from_title(title: str) -> float | None:
+    """Parse a session duration out of a workout title, e.g. '50min Aerobic
+    Run', "Master's Swim - 90min", '1.5h ride'. Returns hours or None.
+
+    Skips interval notation like '3x15min' or '4min Repeats' — those describe
+    a set, not the session length — by ignoring a minutes token preceded by
+    'x'/a digit and requiring 2-3 digits."""
+    t = (title or "").lower()
+    mh = re.search(r"(\d+(?:\.\d+)?)\s*(?:h|hr|hour)\b", t)
+    if mh:
+        return round(float(mh.group(1)), 2)
+    mm = re.search(r"(?<![x\d])(\d{2,3})\s*min", t)
+    if mm:
+        return round(int(mm.group(1)) / 60.0, 2)
+    return None
+
+
 def _planned_hours(item: dict, intensity: str) -> tuple[float, str]:
-    """(hours, source). Prefer the linked workout's estimated duration, then
-    any duration on the calendar item, then a per-intensity default."""
+    """(hours, source). Prefer an explicit calendar/workout duration, then a
+    duration embedded in the title, then a per-intensity default."""
     for k in ("duration", "estimatedDurationInSecs", "estimatedDurationSecs"):
         v = item.get(k)
         if v:
@@ -1454,6 +1472,9 @@ def _planned_hours(item: dict, intensity: str) -> tuple[float, str]:
                 return round(secs / 3600.0, 2), "workout_detail"
         except Exception:  # noqa: BLE001
             pass
+    title_hours = _duration_from_title(item.get("title") or item.get("workoutName") or "")
+    if title_hours:
+        return title_hours, "title"
     return _DEFAULT_HOURS.get(intensity, 1.0), "type_default"
 
 

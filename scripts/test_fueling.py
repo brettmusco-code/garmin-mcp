@@ -164,6 +164,14 @@ def main():
         check(f"  {d['date']} P/C/F sums within 8% of target",
               abs(kcal - d["target_kcal"]) <= 0.08 * d["target_kcal"] + 60)
 
+    print("title duration parsing:")
+    check("'50min Aerobic Run' -> ~0.83h", abs(g._duration_from_title("50min Aerobic Run") - 0.83) < 0.02)
+    check("\"Master's Swim - 90min\" -> 1.5h", g._duration_from_title("Master's Swim - 90min") == 1.5)
+    check("'3x15min Sweet Spot' not read as 15min", g._duration_from_title("3x15min Sweet Spot Bike") is None)
+    check("'4min Repeats' not read (interval, 1 digit)", g._duration_from_title("Punchy Threshold - 4min Repeats") is None)
+    check("'Endurance 1.5h ride' -> 1.5h", g._duration_from_title("Endurance 1.5h ride") == 1.5)
+    check("no-duration title -> None", g._duration_from_title("Short Run Off the Bike") is None)
+
     print("energy-availability guard:")
     check("every day has an EA value",
           all(d.get("energy_availability_kcal_per_kg_ffm") is not None for d in plan["days"]))
