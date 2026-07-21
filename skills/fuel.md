@@ -35,6 +35,8 @@ The math runs server-side in the MCP tool `generate_fueling_plan`, so this skill
 
 4. **Offer to persist:** after showing the plan, ask *"Save this as the week's plan so `/nutrition` and `/morning` track adherence?"* If yes, re-call `generate_fueling_plan(days, save=true)` — it merges the per-day targets into the weekly snapshot's `nutrition_plan` without touching other snapshot fields.
 
+5. **Optional visual dashboard:** if I ask for a dashboard / visual / shareable page, render one as an Artifact from the repo template `web/fuel-dashboard.html` — replace the object assigned to `const PLAN` in its `<script>` with the exact `generate_fueling_plan` JSON, and publish. The template is self-contained, theme-aware, and renders the goal header, today card, week table, energy-availability panel, weight-to-target bar, per-workout fuel timeline, and flags with no code changes needed.
+
 **Output format** — markdown headings directly. **Do NOT wrap in triple-backticks or code blocks.**
 
 ### Format
