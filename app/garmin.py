@@ -1603,6 +1603,7 @@ def generate_fueling_plan(
     periodize_deficit: bool | None = None,
     ea_min: float | None = None,
     min_kcal: float | None = None,
+    rebalance: bool | int = False,
 ) -> dict:
     """Build a forward fueling plan: per-day calorie + macro targets and a
     per-workout fuel card for the next `days` days, from the stored fueling
@@ -1704,6 +1705,44 @@ def generate_fueling_plan(
         goal_adj = 0  # no deficit during a carb-load / race week
         notes.append("Race-week carb load: deficit suspended; carbs raised to "
                      "~9 g/kg on every day of the window.")
+
+    # Rolling self-correction: compare recent logged days' actual intake
+    # against their expenditure-adjusted targets and spread the accumulated
+    # error across this window. rebalance=True looks at the current week to
+    # date (Mon..yesterday); an integer looks back that many days.
+    if rebalance and not carb_load:
+        if rebalance is True:
+            rb_days = date.today().weekday()  # Monday -> 0: fresh week, skip
+        else:
+            try:
+                rb_days = max(0, min(int(rebalance), 14))
+            except (TypeError, ValueError):
+                rb_days = 0
+        if rb_days:
+            try:
+                pva = nutrition_plan_vs_actual(days_back=min(rb_days + 1, 14))
+                today_iso = date.today().isoformat()
+                drift = 0.0
+                counted = 0
+                for r in pva.get("rows", []):
+                    if (r.get("date") or "") >= today_iso:
+                        continue  # today is still in progress
+                    if not r.get("foods_logged"):
+                        continue  # unlogged days are noise, not signal
+                    tgt_adj = r.get("adjusted_target_kcal") or r.get("target_kcal")
+                    if r.get("actual_kcal") is not None and tgt_adj is not None:
+                        drift += r["actual_kcal"] - tgt_adj
+                        counted += 1
+                if counted and abs(drift) > 100:
+                    goal_adj = round(goal_adj - drift / days)
+                    notes.append(
+                        f"Rebalanced from the last {counted} logged day(s): net "
+                        f"{round(drift):+} kcal vs expenditure-adjusted targets — "
+                        f"spreading {round(-drift / days):+} kcal/day across this "
+                        "window. Floors still apply."
+                    )
+            except Exception as ex:  # noqa: BLE001
+                notes.append(f"Rebalance skipped ({str(ex)[:100]}).")
 
     # Fat-free mass for the energy-availability guard (falls back to ~80% of
     # bodyweight when body fat isn't logged).
@@ -1816,9 +1855,11 @@ def generate_fueling_plan(
         # sessions and in a steep deficit, to spare lean mass.
         protein_bump = 0.0
         if primary["intensity"] in ("threshold", "vo2", "long"):
-            protein_bump += 0.15
+            protein_bump += 0.2
+        elif primary["intensity"] == "tempo":
+            protein_bump += 0.1
         if target_deficit >= 500:
-            protein_bump += 0.15
+            protein_bump += 0.1
         protein_per_kg_day = round(protein_per_kg + protein_bump, 2)
         protein_g = round(weight_kg * protein_per_kg_day)
         carbs_g = round(weight_kg * carb_ratio)
@@ -1958,6 +1999,88 @@ def generate_fueling_plan(
         result["saved_to_weekly_snapshot"] = snap["date"]
 
     return result
+
+
+def push_nutrition_targets_to_garmin(
+    target_date: str | date | None = None,
+    days: int = 1,
+) -> dict:
+    """EXPERIMENTAL: write the fueling plan's daily calorie/macro targets into
+    Garmin Connect's nutrition goals, so the Connect app shows OUR target
+    instead of Garmin's default. Garmin then applies its own activity
+    adjustment on top (dailyNutritionGoals.adjustedCalories rises with actual
+    burn), which yields in-app auto-adjustment after each workout.
+
+    Targets are read from the weekly snapshot's nutrition_plan — write one
+    first via generate_fueling_plan(save=true) or /weekly. Requires live
+    (non-readonly) mode: run from the cron env, not the web MCP.
+
+    Garmin has no official API for this; we PUT to the nutrition-service
+    endpoints the Connect app itself uses and report per-endpoint
+    diagnostics, so one live run tells you exactly what stuck.
+    """
+    days = max(1, min(int(days), 7))
+    start = _coerce_date(target_date) if target_date else date.today()
+
+    # Collect per-day targets from recent snapshots (latest wins per date).
+    plan: dict[str, dict] = {}
+    for snap in reversed(get_weekly_snapshots(weeks_back=2)):
+        plan.update(snap.get("nutrition_plan") or {})
+
+    c = get_client()
+    results = []
+    for i in range(days):
+        d_iso = (start + timedelta(days=i)).isoformat()
+        day = plan.get(d_iso)
+        if not isinstance(day, dict) or not day.get("target_kcal"):
+            results.append({"date": d_iso, "status": "no_plan_for_date"})
+            continue
+        payload = {
+            "calendarDate": d_iso,
+            "calories": day.get("target_kcal"),
+            "protein": day.get("protein_g"),
+            "carbohydrates": day.get("carbs_g"),
+            "fat": day.get("fat_g"),
+        }
+        attempts = []
+        ok = False
+        for method, path in (
+            ("PUT", "/nutrition-service/goals"),
+            ("PUT", f"/nutrition-service/nutrition/goals/{d_iso}"),
+            ("POST", "/nutrition-service/goals"),
+        ):
+            try:
+                resp = _call_with_backoff(c.connectapi, path, method=method, json=payload)
+                attempts.append({"endpoint": f"{method} {path}", "ok": True,
+                                 "response": resp})
+                ok = True
+                break
+            except TypeError:
+                # connectapi without method kwarg — go through the raw client
+                try:
+                    raw = c.client.request(method, "connectapi", path, json=payload)
+                    attempts.append({"endpoint": f"raw {method} {path}", "ok": True,
+                                     "status_code": getattr(raw, "status_code", None)})
+                    ok = True
+                    break
+                except Exception as ex2:  # noqa: BLE001
+                    attempts.append({"endpoint": f"raw {method} {path}", "ok": False,
+                                     "error": str(ex2)[:160]})
+            except Exception as ex:  # noqa: BLE001
+                attempts.append({"endpoint": f"{method} {path}", "ok": False,
+                                 "error": str(ex)[:160]})
+        results.append({"date": d_iso, "status": "pushed" if ok else "failed",
+                        "targets": payload, "attempts": attempts})
+
+    return {
+        "experimental": True,
+        "results": results,
+        "note": ("Garmin applies its own activity adjustment on top of the base "
+                 "goal (dailyNutritionGoals.adjustedCalories). Check tomorrow's "
+                 "food-log payload to confirm the pushed goal stuck; if every "
+                 "endpoint 4xx'd, Garmin changed the API and the attempts list "
+                 "shows what to fix."),
+    }
 
 
 def get_lactate_threshold(

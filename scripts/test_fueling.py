@@ -60,9 +60,15 @@ def _fake_put(tool, args, data, raise_on_error=False, key_parts=None):
     _STORE[_key(tool, key_parts)] = data
 
 
-cache.get = _fake_get          # type: ignore[assignment]
-cache.put = _fake_put          # type: ignore[assignment]
-cache.enabled = lambda: True   # type: ignore[assignment]
+def _fake_list_keys(tool_prefix=None, limit=100):
+    p = (tool_prefix.rstrip("/") + "/") if tool_prefix else ""
+    return [k for k in _STORE if k.startswith(p)]
+
+
+cache.get = _fake_get                 # type: ignore[assignment]
+cache.put = _fake_put                 # type: ignore[assignment]
+cache.list_keys = _fake_list_keys     # type: ignore[assignment]
+cache.enabled = lambda: True          # type: ignore[assignment]
 
 # --- stub Garmin fetchers ----------------------------------------------------
 TODAY = date.today()
@@ -282,6 +288,43 @@ def main():
     snap = _STORE.get(_key("weekly_snapshots", [monday]))
     check("snapshot persisted with nutrition_plan", bool(snap and snap.get("nutrition_plan")))
     check("nutrition_plan keyed by ISO date", TODAY.isoformat() in snap["nutrition_plan"])
+
+    print("rebalance from actuals:")
+    def _fake_pva(days_back=7):
+        return {"rows": [
+            {"date": (TODAY - timedelta(days=2)).isoformat(), "foods_logged": 5,
+             "actual_kcal": 3000, "adjusted_target_kcal": 2600},
+            {"date": (TODAY - timedelta(days=1)).isoformat(), "foods_logged": 4,
+             "actual_kcal": 2900, "adjusted_target_kcal": 2500},
+            {"date": TODAY.isoformat(), "foods_logged": 1,
+             "actual_kcal": 500, "adjusted_target_kcal": 2600},  # in-progress: ignored
+            {"date": (TODAY - timedelta(days=3)).isoformat(), "foods_logged": 0,
+             "actual_kcal": None, "adjusted_target_kcal": 2600},  # unlogged: ignored
+        ]}
+    g.nutrition_plan_vs_actual = _fake_pva
+    base_adj = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7)["daily_kcal_adjustment"]
+    plan_rb = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7, rebalance=3)
+    # +800 over across 2 logged days -> ~114/day tighter over 7 days
+    check("overeating tightens the window",
+          abs(plan_rb["daily_kcal_adjustment"] - (base_adj - 800 / 7)) <= 1)
+    check("rebalance note names 2 logged days",
+          any("Rebalanced from the last 2 logged" in n for n in plan_rb["notes"]))
+    check("rebalance off by default: adjustment unchanged",
+          g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7)["daily_kcal_adjustment"] == base_adj)
+
+    print("garmin push (experimental, offline):")
+    class _FailClient:
+        def connectapi(self, *a, **k):
+            raise RuntimeError("offline test")
+    g.get_client = lambda: _FailClient()
+    pushed = g.push_nutrition_targets_to_garmin(target_date=TODAY.isoformat(), days=1)
+    r0 = pushed["results"][0]
+    check("offline push fails with attempts logged",
+          r0["status"] == "failed" and len(r0["attempts"]) == 3)
+    check("payload carried the plan's target", r0["targets"]["calories"] > 0)
+    far = g.push_nutrition_targets_to_garmin(
+        target_date=(TODAY + timedelta(days=30)).isoformat(), days=1)
+    check("no-plan date reported cleanly", far["results"][0]["status"] == "no_plan_for_date")
 
     print("weight_x22 fallback when sex/height/age missing:")
     g.set_fueling_goal(goal_type="maintain")

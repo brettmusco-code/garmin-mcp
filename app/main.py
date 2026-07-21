@@ -544,6 +544,26 @@ TOOLS = [
                 "periodize_deficit": {"type": "boolean", "description": "override deficit periodization (default true for lose goals; false = flat)"},
                 "ea_min": {"type": "number", "description": "override the enforced EA minimum (kcal/kg FFM); 0 disables"},
                 "min_kcal": {"type": "number", "description": "override the absolute daily calorie floor; 0 disables"},
+                "rebalance": {"type": ["boolean", "number"], "description": "self-correct from recent logged days: true = week-to-date, N = last N days. Spreads the accumulated intake error (vs expenditure-adjusted targets) across this window. Default false"},
+            },
+        },
+    },
+    {
+        "name": "push_nutrition_targets_to_garmin",
+        "description": (
+            "EXPERIMENTAL: write the fueling plan's daily calorie/macro targets "
+            "into Garmin Connect's nutrition goals (so the Connect app shows the "
+            "plan's target, and Garmin's own activity adjustment then auto-raises "
+            "it with actual burn). Reads targets from the weekly snapshot's "
+            "nutrition_plan — save one first via generate_fueling_plan(save=true). "
+            "Only works in live (non-readonly) mode, i.e. from the cron env. "
+            "Returns per-endpoint diagnostics."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target_date": {"type": "string", "description": "YYYY-MM-DD; default today"},
+                "days": {"type": "number", "description": "how many days ahead to push, 1-7. Default 1."},
             },
         },
     },
@@ -731,6 +751,15 @@ def _call_tool(name: str, args: dict) -> Any:
             periodize_deficit=args.get("periodize_deficit"),
             ea_min=args.get("ea_min"),
             min_kcal=args.get("min_kcal"),
+            rebalance=args.get("rebalance", False),
+        )
+    if name == "push_nutrition_targets_to_garmin":
+        td = args.get("target_date")
+        if td and not DATE_RE.match(td):
+            raise ValueError("`target_date` must be YYYY-MM-DD")
+        return garmin.push_nutrition_targets_to_garmin(
+            target_date=td,
+            days=int(args.get("days", 1)),
         )
     raise ValueError(f"Unknown tool: {name}")
 
