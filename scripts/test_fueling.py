@@ -178,6 +178,32 @@ def main():
         check(f"  {d['date']} P/C/F sums within 8% of target",
               abs(kcal - d["target_kcal"]) <= 0.08 * d["target_kcal"] + 60)
 
+    print("deficit periodization (default for lose goals):")
+    check("config says periodized", plan["config"]["periodize_deficit"] is True)
+    check("rest day clamps at the floor", day2["target_kcal"] == round(bmr * 1.2))
+    check("hard day never cut deeper than flat",
+          abs(day0["kcal_adjustment"]) <= abs(plan["daily_kcal_adjustment"]) + 1)
+    check("shortfall note fires when floors bind",
+          any("could not absorb" in n for n in plan["notes"]))
+    plan_flat = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7,
+                                        periodize_deficit=False)
+    check("flat override: every day same adjustment",
+          len({d["kcal_adjustment"] for d in plan_flat["days"]}) == 1)
+    check("flat override echoed", plan_flat["config"]["periodize_deficit"] is False)
+
+    print("floors dropped (bmr_floor_mult=0, ea_floor=0):")
+    plan_nf = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7,
+                                      bmr_floor_mult=0, ea_floor=0)
+    check("no floor in config", plan_nf["config"]["bmr_floor_mult"] is None)
+    check("some day dips below BMRx1.2",
+          any(d["target_kcal"] < round(bmr * 1.2) for d in plan_nf["days"]))
+    check("rest day takes a bigger cut than threshold day",
+          plan_nf["days"][2]["target_deficit_kcal"] > plan_nf["days"][0]["target_deficit_kcal"])
+    check("weekly deficit fully absorbed (no shortfall note)",
+          not any("could not absorb" in n for n in plan_nf["notes"]))
+    check("ea_floor=0 silences the RED-S note",
+          not any("Low energy availability" in n for n in plan_nf["notes"]))
+
     print("title duration parsing:")
     check("'50min Aerobic Run' -> ~0.83h", abs(g._duration_from_title("50min Aerobic Run") - 0.83) < 0.02)
     check("\"Master's Swim - 90min\" -> 1.5h", g._duration_from_title("Master's Swim - 90min") == 1.5)

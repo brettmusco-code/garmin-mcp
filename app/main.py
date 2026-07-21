@@ -498,7 +498,9 @@ TOOLS = [
                 "age": {"type": "number"},
                 "protein_g_per_kg": {"type": "number"},
                 "max_deficit_kcal": {"type": "number", "description": "daily deficit cap; default 500, pass 0 to remove the cap"},
-                "ea_floor": {"type": "number", "description": "energy-availability warning threshold (kcal/kg FFM); default 30"},
+                "ea_floor": {"type": "number", "description": "energy-availability warning threshold (kcal/kg FFM); default 30, 0 disables"},
+                "bmr_floor_mult": {"type": "number", "description": "daily-target floor as BMR multiple; default 1.2, 0 drops the floor"},
+                "periodize_deficit": {"type": "boolean", "description": "bank the deficit on rest/easy days (default true for lose goals)"},
                 "notes": {"type": "string"},
             },
             "required": ["goal_type"],
@@ -534,8 +536,10 @@ TOOLS = [
                 "save": {"type": "boolean", "description": "merge into weekly snapshot, default false"},
                 "carb_load": {"type": "boolean", "description": "race-week mode: no deficit, carbs ~9 g/kg. Default false"},
                 "max_deficit_kcal": {"type": "number", "description": "override the daily deficit cap (default 500 or goal value); 0 removes it"},
-                "ea_floor": {"type": "number", "description": "override the energy-availability warning threshold (default 30 or goal value)"},
+                "ea_floor": {"type": "number", "description": "override the energy-availability warning threshold (default 30 or goal value); 0 disables"},
                 "fuel_min_minutes": {"type": "number", "description": "min session length to get a fuel card. Default 90."},
+                "bmr_floor_mult": {"type": "number", "description": "override the daily-target floor as BMR multiple (default 1.2 or goal value); 0 drops it"},
+                "periodize_deficit": {"type": "boolean", "description": "override deficit periodization (default true for lose goals; false = flat)"},
             },
         },
     },
@@ -699,6 +703,8 @@ def _call_tool(name: str, args: dict) -> Any:
             protein_g_per_kg=args.get("protein_g_per_kg"),
             max_deficit_kcal=args.get("max_deficit_kcal"),
             ea_floor=args.get("ea_floor"),
+            bmr_floor_mult=args.get("bmr_floor_mult"),
+            periodize_deficit=args.get("periodize_deficit"),
             notes=args.get("notes"),
         )
     if name == "get_fueling_goal":
@@ -715,6 +721,8 @@ def _call_tool(name: str, args: dict) -> Any:
             max_deficit_kcal=args.get("max_deficit_kcal"),
             ea_floor=args.get("ea_floor"),
             fuel_min_minutes=int(args.get("fuel_min_minutes", 90)),
+            bmr_floor_mult=args.get("bmr_floor_mult"),
+            periodize_deficit=args.get("periodize_deficit"),
         )
     raise ValueError(f"Unknown tool: {name}")
 

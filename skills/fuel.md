@@ -27,12 +27,13 @@ The math runs server-side in the MCP tool `generate_fueling_plan`, so this skill
    - `body` (weight, `body_fat_pct`, `lean_mass_kg`, `muscle_mass_kg`, `staleness_days` — from Renpho→Garmin), `fat_free_mass_kg`
    - `bmr` (`value`, `source`), `daily_kcal_adjustment`, `protein_g_per_kg` (base)
    - `days[]` — per day: `sessions[]` (each with `kcal_per_hour` + `burn_source`), `primary_intensity`, `est_burn_kcal`, `target_kcal`, **`target_deficit_kcal`** (expenditure − target; >0 = deficit), `protein_g` / `carbs_g` / `fat_g`, **`protein_g_per_kg`** (that day's periodized value), `carb_g_per_kg`, `energy_availability_kcal_per_kg_ffm`, `needs_fuel`, and `fuel[]` cards
-   - `config` — the resolved knobs: `deficit_cap_kcal` (null = uncapped), `ea_floor_kcal_per_kg_ffm`, `fuel_min_minutes`
+   - `config` — the resolved knobs: `deficit_cap_kcal` (null = uncapped), `ea_floor_kcal_per_kg_ffm`, `fuel_min_minutes`, `bmr_floor_mult` (null = floor dropped), `periodize_deficit`
+   - **Deficit periodization** (default for lose goals): the weekly deficit is banked on rest/easy days while tempo/threshold/VO2/long days never take a deeper cut than the flat per-day amount — each day reports its own `kcal_adjustment`. `periodize_deficit=false` restores a flat daily deficit. When floors bind and part of the weekly deficit can't be absorbed, a shortfall note fires — surface it.
    - `totals` (incl. `target_deficit_kcal`), `notes[]` (low-EA / RED-S warning fires below the configured floor)
    - Guard flags: `no_goal_available`, `error` (e.g. `no_weight`).
    - **How macros work** (explain if asked): protein = bodyweight × a per-kg factor, *periodized* up (+0.15 g/kg on threshold/VO2/long days, +0.15 g/kg in a steep deficit) so it's not flat; carbs = bodyweight × a factor periodized by session type (3→8 g/kg); fat closes the gap to the calorie target. Session burn is calibrated from the athlete's own history — same sport **and** similar duration first (`burn_source: history_similar`), then sport median, then a generic table.
    - Fuel cards are emitted only for sessions **≥ `fuel_min_minutes` (default 90)**.
-   - Pass `carb_load=true` for race week — suspends the deficit and raises carbs to ~9 g/kg. Config overrides (all optional): `max_deficit_kcal` (0 removes the cap), `ea_floor` (lower to suppress warnings), `fuel_min_minutes`. These also persist on the goal via `set_fueling_goal`.
+   - Pass `carb_load=true` for race week — suspends the deficit and raises carbs to ~9 g/kg. Config overrides (all optional): `max_deficit_kcal` (0 removes the cap), `ea_floor` (0 disables the warning), `bmr_floor_mult` (0 drops the daily-target floor — targets may fall below BMR), `periodize_deficit`, `fuel_min_minutes`. These also persist on the goal via `set_fueling_goal`.
 
 3. **Render** using the format below. Fold every entry in `notes[]` into the Notes section verbatim (they carry horizon/BMR/deficit/pacing caveats). If `error` = `no_weight`, tell me to log a weigh-in (or pass `start_weight_kg` when setting the goal) and stop.
 
@@ -78,7 +79,7 @@ BMR {bmr.value} ({"measured" if source=mifflin_st_jeor else "est weight×22 — 
 - **Render as chat markdown. No wrapping code block.**
 - The tool owns the numbers — don't recompute targets/macros by hand; render what `generate_fueling_plan` returns. You only add real-food examples to the fuel cards and the prose reads.
 - Only show a per-workout fuel card for days where `needs_fuel` is true (the tool applies the ≥90-min `fuel_min_minutes` filter).
-- If `config.deficit_cap_kcal` is null (cap removed) or the EA floor was lowered, say so plainly and still surface any low-EA note — a lowered warning threshold doesn't make a steep deficit safe.
+- If `config.deficit_cap_kcal` is null (cap removed), the EA floor was lowered/disabled, or `bmr_floor_mult` is null (floor dropped), say so plainly — and always surface the below-BMR, macro-conflict, and shortfall notes verbatim. Removed guardrails don't make a steep deficit safe; the numbers still have to tell the truth.
 - Never invent a goal. If none is set, onboard via `set_fueling_goal` first; if `review_flags` fire, confirm before planning.
 - Surface `pace_flag` honestly — if the timeline needs more than the 500 kcal/day cap, say the target date is aggressive and suggest extending it rather than implying an unsafe deficit is fine.
 - If `bmr.source` is `weight_x22_fallback`, add one line inviting me to set sex/height/age for a precise BMR.

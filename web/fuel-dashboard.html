@@ -231,6 +231,8 @@ const PLAN = {
     "protein_g_per_kg": null,
     "max_deficit_kcal": null,
     "ea_floor": null,
+    "bmr_floor_mult": null,
+    "periodize_deficit": null,
     "notes": null,
     "set_date": "2026-07-21"
   },
@@ -264,7 +266,9 @@ const PLAN = {
   "config": {
     "deficit_cap_kcal": 500,
     "ea_floor_kcal_per_kg_ffm": 30,
-    "fuel_min_minutes": 90
+    "fuel_min_minutes": 90,
+    "bmr_floor_mult": 1.2,
+    "periodize_deficit": true
   },
   "days": [
     {
@@ -286,6 +290,7 @@ const PLAN = {
       "expected_expenditure_kcal": 2155,
       "target_kcal": 1990,
       "target_deficit_kcal": 165,
+      "kcal_adjustment": -165,
       "protein_g": 141,
       "carbs_g": 222,
       "fat_g": 60,
@@ -313,14 +318,15 @@ const PLAN = {
       "primary_intensity": "threshold",
       "est_burn_kcal": 1242,
       "expected_expenditure_kcal": 3397,
-      "target_kcal": 3012,
-      "target_deficit_kcal": 385,
+      "target_kcal": 3124,
+      "target_deficit_kcal": 273,
+      "kcal_adjustment": -273,
       "protein_g": 152,
       "carbs_g": 556,
       "fat_g": 37,
       "protein_g_per_kg": 2.05,
       "carb_g_per_kg": 7.5,
-      "energy_availability_kcal_per_kg_ffm": 27.8,
+      "energy_availability_kcal_per_kg_ffm": 29.6,
       "needs_fuel": false,
       "fuel": []
     },
@@ -342,14 +348,15 @@ const PLAN = {
       "primary_intensity": "recovery",
       "est_burn_kcal": 426,
       "expected_expenditure_kcal": 2581,
-      "target_kcal": 2196,
-      "target_deficit_kcal": 385,
-      "protein_g": 141,
+      "target_kcal": 1990,
+      "target_deficit_kcal": 591,
+      "kcal_adjustment": -591,
+      "protein_g": 152,
       "carbs_g": 296,
-      "fat_g": 50,
-      "protein_g_per_kg": 1.9,
+      "fat_g": 37,
+      "protein_g_per_kg": 2.05,
       "carb_g_per_kg": 4.0,
-      "energy_availability_kcal_per_kg_ffm": 27.8,
+      "energy_availability_kcal_per_kg_ffm": 24.6,
       "needs_fuel": false,
       "fuel": []
     },
@@ -371,14 +378,15 @@ const PLAN = {
       "primary_intensity": "easy",
       "est_burn_kcal": 570,
       "expected_expenditure_kcal": 2725,
-      "target_kcal": 2340,
-      "target_deficit_kcal": 385,
-      "protein_g": 141,
+      "target_kcal": 2043,
+      "target_deficit_kcal": 682,
+      "kcal_adjustment": -682,
+      "protein_g": 152,
       "carbs_g": 296,
-      "fat_g": 66,
-      "protein_g_per_kg": 1.9,
+      "fat_g": 37,
+      "protein_g_per_kg": 2.05,
       "carb_g_per_kg": 4.0,
-      "energy_availability_kcal_per_kg_ffm": 27.8,
+      "energy_availability_kcal_per_kg_ffm": 23.2,
       "needs_fuel": false,
       "fuel": []
     },
@@ -401,6 +409,7 @@ const PLAN = {
       "expected_expenditure_kcal": 2155,
       "target_kcal": 1990,
       "target_deficit_kcal": 165,
+      "kcal_adjustment": -165,
       "protein_g": 141,
       "carbs_g": 222,
       "fat_g": 60,
@@ -428,14 +437,15 @@ const PLAN = {
       "primary_intensity": "long",
       "est_burn_kcal": 2361,
       "expected_expenditure_kcal": 4516,
-      "target_kcal": 4131,
-      "target_deficit_kcal": 385,
+      "target_kcal": 4243,
+      "target_deficit_kcal": 273,
+      "kcal_adjustment": -273,
       "protein_g": 152,
       "carbs_g": 519,
-      "fat_g": 161,
+      "fat_g": 173,
       "protein_g_per_kg": 2.05,
       "carb_g_per_kg": 7.0,
-      "energy_availability_kcal_per_kg_ffm": 27.8,
+      "energy_availability_kcal_per_kg_ffm": 29.6,
       "needs_fuel": true,
       "fuel": [
         {
@@ -472,25 +482,26 @@ const PLAN = {
       "primary_intensity": "easy",
       "est_burn_kcal": 380,
       "expected_expenditure_kcal": 2535,
-      "target_kcal": 2150,
-      "target_deficit_kcal": 385,
-      "protein_g": 141,
+      "target_kcal": 1990,
+      "target_deficit_kcal": 545,
+      "kcal_adjustment": -545,
+      "protein_g": 152,
       "carbs_g": 296,
-      "fat_g": 45,
-      "protein_g_per_kg": 1.9,
+      "fat_g": 37,
+      "protein_g_per_kg": 2.05,
       "carb_g_per_kg": 4.0,
-      "energy_availability_kcal_per_kg_ffm": 27.8,
+      "energy_availability_kcal_per_kg_ffm": 25.3,
       "needs_fuel": false,
       "fuel": []
     }
   ],
   "totals": {
-    "target_kcal": 17809,
-    "protein_g": 1009,
+    "target_kcal": 17370,
+    "protein_g": 1042,
     "carbs_g": 2407,
-    "fat_g": 479,
+    "fat_g": 441,
     "est_burn_kcal": 4979,
-    "target_deficit_kcal": 2255
+    "target_deficit_kcal": 2694
   },
   "notes": [
     "Low energy availability (<30 kcal/kg fat-free mass) on 2026-07-28, 2026-07-29, 2026-07-30, 2026-08-01, 2026-08-02 \u2014 under-fueling / RED-S risk; ease the deficit or add carbs on those days."
@@ -504,7 +515,9 @@ const todayISO = new Date().toISOString().slice(0,10);
 const dow = (iso)=>{const d=new Date(iso+'T00:00:00');return d.toLocaleDateString(undefined,{weekday:'short'});};
 const dmd = (iso)=>{const d=new Date(iso+'T00:00:00');return d.toLocaleDateString(undefined,{month:'short',day:'numeric'});};
 
-const EAF = (PLAN.config && PLAN.config.ea_floor_kcal_per_kg_ffm) || 30;
+const EAF_RAW = PLAN.config ? PLAN.config.ea_floor_kcal_per_kg_ffm : 30;
+const EAF_DISABLED = !(EAF_RAW && EAF_RAW > 0);
+const EAF = EAF_DISABLED ? 30 : EAF_RAW; // colors keep the physiological reference
 function eaPill(ea){ if(ea==null) return 'good'; if(ea>=EAF) return 'good'; if(ea>=EAF-5) return 'warn'; return 'crit'; }
 function eaColor(ea){ if(ea==null) return 'var(--good)'; if(ea>=EAF) return 'var(--good)'; if(ea>=EAF-5) return 'var(--warn)'; return 'var(--crit)'; }
 
@@ -520,7 +533,8 @@ function macroRow(lab, key, grams, kcalTot){
 function render(){
   const g = PLAN.goal, gp = PLAN.goal_progress||{}, b = PLAN.body||{}, w = PLAN.window;
   $('range').textContent = `${dmd(w.start)} – ${dmd(w.end)}`;
-  $('eaSub').textContent = `Intake minus exercise, per kg fat-free mass. Under ${EAF} = under-fueling risk.`;
+  $('eaSub').textContent = `Intake minus exercise, per kg fat-free mass. Under ${EAF} = under-fueling risk.`
+    + (EAF_DISABLED ? ' Warning floor disabled — colors show the physiological reference.' : '');
 
   const gt = g.goal_type;
   const goalTxt = gt==='maintain'
