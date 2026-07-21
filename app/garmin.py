@@ -1471,6 +1471,7 @@ def generate_fueling_plan(
     start_date: str | date | None = None,
     days: int = 7,
     save: bool = False,
+    carb_load: bool = False,
 ) -> dict:
     """Build a forward fueling plan: per-day calorie + macro targets and a
     per-workout fuel card for the next `days` days, from the stored fueling
@@ -1544,6 +1545,15 @@ def generate_fueling_plan(
     elif gt == "gain":
         goal_adj = 400  # midpoint of +300-500, carb-led
 
+    if carb_load:
+        goal_adj = 0  # no deficit during a carb-load / race week
+        notes.append("Race-week carb load: deficit suspended; carbs raised to "
+                     "~9 g/kg on every day of the window.")
+
+    # Fat-free mass for the energy-availability guard (falls back to ~80% of
+    # bodyweight when body fat isn't logged).
+    ffm_kg = body.get("lean_mass_kg") or round(weight_kg * 0.8, 1)
+
     # Scheduled workouts across the window
     scheduled_by_date: dict[str, list[dict]] = {}
     try:
@@ -1601,6 +1611,8 @@ def generate_fueling_plan(
         carb_ratio = _CARB_G_PER_KG.get(primary["intensity"], 4.0)
         if primary["intensity"] in ("endurance", "long") and primary["hours"] > 2:
             carb_ratio = max(carb_ratio, 7.0)
+        if carb_load:
+            carb_ratio = 9.0
 
         expected_expenditure = round(bmr * 1.3 + total_burn)
         target_kcal = max(round(bmr * 1.3 + total_burn + goal_adj), round(bmr * 1.2))
@@ -1609,6 +1621,11 @@ def generate_fueling_plan(
         # Fat closes the gap to target, with a floor of ~0.5 g/kg
         fat_g = round(max((target_kcal - protein_g * 4 - carbs_g * 4) / 9.0,
                           weight_kg * 0.5))
+
+        # Energy availability = (intake − exercise energy) / fat-free mass.
+        # Sports-science low-EA threshold is ~30 kcal/kg FFM/day; below ~25
+        # is a clear RED-S / under-fueling risk.
+        energy_availability = round((target_kcal - total_burn) / ffm_kg, 1) if ffm_kg else None
 
         fuel_cards = []
         for s in sessions:
@@ -1642,6 +1659,7 @@ def generate_fueling_plan(
             "target_kcal": target_kcal,
             "protein_g": protein_g, "carbs_g": carbs_g, "fat_g": fat_g,
             "carb_g_per_kg": carb_ratio,
+            "energy_availability_kcal_per_kg_ffm": energy_availability,
             "needs_fuel": bool(fuel_cards),
             "fuel": fuel_cards,
         }
@@ -1662,14 +1680,23 @@ def generate_fueling_plan(
         notes.append(f"Garmin calendar has workouts through {last_scheduled_date}; "
                      "later days assume rest/easy — re-run when the plan extends.")
 
+    low_ea = [d["date"] for d in day_rows
+              if (d.get("energy_availability_kcal_per_kg_ffm") or 99) < 30]
+    if low_ea:
+        notes.append("Low energy availability (<30 kcal/kg fat-free mass) on "
+                     f"{', '.join(low_ea)} — under-fueling / RED-S risk; ease the "
+                     "deficit or add carbs on those days.")
+
     result = {
         "window": {"start": start.isoformat(), "end": end.isoformat(), "days": days},
         "goal": goal,
         "goal_progress": goal_info.get("progress"),
         "body": body,
         "bmr": {"value": bmr, "source": bmr_source, "weight_kg": weight_kg},
+        "fat_free_mass_kg": ffm_kg,
         "daily_kcal_adjustment": goal_adj,
         "protein_g_per_kg": protein_per_kg,
+        "carb_load": carb_load,
         "days": day_rows,
         "totals": totals,
         "notes": notes,

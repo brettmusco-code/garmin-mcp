@@ -164,6 +164,19 @@ def main():
         check(f"  {d['date']} P/C/F sums within 8% of target",
               abs(kcal - d["target_kcal"]) <= 0.08 * d["target_kcal"] + 60)
 
+    print("energy-availability guard:")
+    check("every day has an EA value",
+          all(d.get("energy_availability_kcal_per_kg_ffm") is not None for d in plan["days"]))
+    check("ffm surfaced (lean mass from body fat)", plan["fat_free_mass_kg"] > 0)
+
+    print("carb-load (race week) mode:")
+    plan_cl = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7, carb_load=True)
+    check("carb_load flag echoed", plan_cl["carb_load"] is True)
+    check("no deficit during carb load", plan_cl["daily_kcal_adjustment"] == 0)
+    check("all days at 9 g/kg carbs", all(d["carb_g_per_kg"] == 9.0 for d in plan_cl["days"]))
+    check("carb-load carbs > normal-day carbs",
+          plan_cl["days"][2]["carbs_g"] > plan["days"][2]["carbs_g"])
+
     print("save=True merges into weekly snapshot:")
     plan2 = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7, save=True)
     check("saved_to_weekly_snapshot present", "saved_to_weekly_snapshot" in plan2)

@@ -24,11 +24,12 @@ The math runs server-side in the MCP tool `generate_fueling_plan`, so this skill
 
 2. **`generate_fueling_plan(days = {days or 7})`** — the engine. Returns everything needed:
    - `goal`, `goal_progress` (current vs target weight, `weeks_remaining`, `required_daily_kcal_change`, `kg_to_target`, `pace_flag`)
-   - `body` (weight, `body_fat_pct`, `lean_mass_kg`, `muscle_mass_kg`, `staleness_days` — from Renpho→Garmin)
+   - `body` (weight, `body_fat_pct`, `lean_mass_kg`, `muscle_mass_kg`, `staleness_days` — from Renpho→Garmin), `fat_free_mass_kg`
    - `bmr` (`value`, `source`), `daily_kcal_adjustment`, `protein_g_per_kg`
-   - `days[]` — per day: `sessions[]`, `primary_intensity`, `est_burn_kcal`, `target_kcal`, `protein_g` / `carbs_g` / `fat_g`, `carb_g_per_kg`, `needs_fuel`, and `fuel[]` cards
-   - `totals`, `notes[]`
+   - `days[]` — per day: `sessions[]`, `primary_intensity`, `est_burn_kcal`, `target_kcal`, `protein_g` / `carbs_g` / `fat_g`, `carb_g_per_kg`, `energy_availability_kcal_per_kg_ffm`, `needs_fuel`, and `fuel[]` cards
+   - `totals`, `notes[]` (includes a low-energy-availability / RED-S warning when any day drops below 30 kcal/kg FFM)
    - Guard flags: `no_goal_available`, `error` (e.g. `no_weight`).
+   - Pass `carb_load=true` for race week — suspends the deficit and raises carbs to ~9 g/kg across the window. Trigger it when I say I'm racing/tapering or invoke `/fuel carb_load`.
 
 3. **Render** using the format below. Fold every entry in `notes[]` into the Notes section verbatim (they carry horizon/BMR/deficit/pacing caveats). If `error` = `no_weight`, tell me to log a weigh-in (or pass `start_weight_kg` when setting the goal) and stop.
 

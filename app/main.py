@@ -530,6 +530,7 @@ TOOLS = [
                 "start_date": {"type": "string", "description": "YYYY-MM-DD; default today"},
                 "days": {"type": "number", "description": "Horizon 1-28. Default 7."},
                 "save": {"type": "boolean", "description": "merge into weekly snapshot, default false"},
+                "carb_load": {"type": "boolean", "description": "race-week mode: no deficit, carbs ~9 g/kg. Default false"},
             },
         },
     },
@@ -703,6 +704,7 @@ def _call_tool(name: str, args: dict) -> Any:
             start_date=sd,
             days=int(args.get("days", 7)),
             save=bool(args.get("save", False)),
+            carb_load=bool(args.get("carb_load", False)),
         )
     raise ValueError(f"Unknown tool: {name}")
 
