@@ -1202,21 +1202,22 @@ _INTENSITY_ORDER = {
 
 
 def _allocate_deficit(bases: list[float], intensities: list[str],
-                      flat_adj: float, floor_val: float) -> tuple[list[int], int]:
+                      flat_adj: float, floors: list[float]) -> tuple[list[int], int]:
     """Spread the weekly deficit (flat_adj x days, negative) across days,
     weighted toward rest/easy days.
 
-    Constraints: every day's target stays >= floor_val (>= 0), and hard days
-    (tempo/threshold/vo2/long) never take a deeper cut than the flat per-day
-    amount — periodization can only make hard days easier, never harder.
-    Water-fills clamped days' residual onto the rest. Returns (per-day
-    adjustments, unabsorbed weekly residual <= 0)."""
+    Constraints: every day's target stays >= its floor (floors[i], >= 0 —
+    typically max(BMR-multiple, EA-min x FFM + that day's burn)), and hard
+    days (tempo/threshold/vo2/long) never take a deeper cut than the flat
+    per-day amount — periodization can only make hard days easier, never
+    harder. Water-fills clamped days' residual onto the rest. Returns
+    (per-day adjustments, unabsorbed weekly residual <= 0)."""
     n = len(bases)
     budget = flat_adj * n
     hard = {"tempo", "threshold", "vo2", "long"}
 
     def _min_adj(i: int) -> float:
-        lo = floor_val - bases[i]           # keep target >= floor
+        lo = floors[i] - bases[i]           # keep target >= its floor
         if intensities[i] in hard:
             lo = max(lo, flat_adj)          # never deeper than the flat cut
         return min(lo, 0.0)
@@ -1254,6 +1255,8 @@ def set_fueling_goal(
     protein_g_per_kg: float | None = None,
     max_deficit_kcal: float | None = None,
     ea_floor: float | None = None,
+    ea_min: float | None = None,
+    min_kcal: float | None = None,
     bmr_floor_mult: float | None = None,
     periodize_deficit: bool | None = None,
     notes: str | None = None,
@@ -1270,6 +1273,13 @@ def set_fueling_goal(
         on the daily target is separate and always applies.
       ea_floor: energy-availability warning threshold in kcal/kg fat-free
         mass. Default 30 when unset; lower it (or 0) to suppress warnings.
+      ea_min: ENFORCED energy-availability minimum — every day's calorie
+        target is floored at ea_min x FFM + that day's exercise burn, so the
+        floor scales with training. Unset = not enforced. (Reference: 30
+        conservative, 25 aggressive-but-reasonable, below that is RED-S
+        territory.)
+      min_kcal: absolute daily calorie floor regardless of anything else.
+        Unset = none.
       bmr_floor_mult: floor on the daily calorie target as a BMR multiple.
         Default 1.2 when unset; pass 0 to drop the floor entirely (targets
         may then fall below BMR — the plan will say so, loudly).
@@ -1315,6 +1325,8 @@ def set_fueling_goal(
         "protein_g_per_kg": round(float(protein_g_per_kg), 2) if protein_g_per_kg else None,
         "max_deficit_kcal": round(float(max_deficit_kcal)) if max_deficit_kcal is not None else None,
         "ea_floor": round(float(ea_floor), 1) if ea_floor is not None else None,
+        "ea_min": round(float(ea_min), 1) if ea_min is not None else None,
+        "min_kcal": round(float(min_kcal)) if min_kcal is not None else None,
         "bmr_floor_mult": round(float(bmr_floor_mult), 2) if bmr_floor_mult is not None else None,
         "periodize_deficit": bool(periodize_deficit) if periodize_deficit is not None else None,
         "notes": notes,
@@ -1589,6 +1601,8 @@ def generate_fueling_plan(
     fuel_min_minutes: int = 90,
     bmr_floor_mult: float | None = None,
     periodize_deficit: bool | None = None,
+    ea_min: float | None = None,
+    min_kcal: float | None = None,
 ) -> dict:
     """Build a forward fueling plan: per-day calorie + macro targets and a
     per-workout fuel card for the next `days` days, from the stored fueling
@@ -1659,6 +1673,10 @@ def generate_fueling_plan(
     floor_val = round(bmr * floor_mult) if floor_mult > 0 else 0
     pd_raw = periodize_deficit if periodize_deficit is not None else goal.get("periodize_deficit")
     periodize = True if pd_raw is None else bool(pd_raw)
+    em_raw = ea_min if ea_min is not None else goal.get("ea_min")
+    ea_min_val = em_raw if (em_raw and em_raw > 0) else None
+    mk_raw = min_kcal if min_kcal is not None else goal.get("min_kcal")
+    min_kcal_val = mk_raw if (mk_raw and mk_raw > 0) else None
 
     goal_adj = 0
     if gt == "lose":
@@ -1753,6 +1771,17 @@ def generate_fueling_plan(
             "base_target": bmr * 1.3 + total_burn,
         })
 
+    # Per-day floors: BMR multiple (if active), enforced EA minimum (scales
+    # with each day's burn), and the absolute min_kcal — whichever is highest.
+    floors: list[float] = []
+    for p in prelim:
+        f = float(floor_val)
+        if ea_min_val and ffm_kg:
+            f = max(f, ea_min_val * ffm_kg + p["total_burn"])
+        if min_kcal_val:
+            f = max(f, min_kcal_val)
+        floors.append(f)
+
     # Per-day deficit: flat, or periodized toward rest/easy days (hard days
     # never take a deeper cut than the flat amount).
     periodize_applied = (periodize and gt == "lose" and goal_adj < 0
@@ -1762,7 +1791,7 @@ def generate_fueling_plan(
         day_adjs, residual = _allocate_deficit(
             [p["base_target"] for p in prelim],
             [p["primary"]["intensity"] for p in prelim],
-            goal_adj, floor_val,
+            goal_adj, floors,
         )
     else:
         day_adjs = [goal_adj] * days
@@ -1780,7 +1809,7 @@ def generate_fueling_plan(
         carb_ratio = p["carb_ratio"]
 
         expected_expenditure = round(p["base_target"])
-        target_kcal = max(round(p["base_target"] + day_adjs[i]), floor_val, 0)
+        target_kcal = max(round(p["base_target"] + day_adjs[i]), round(floors[i]), 0)
         target_deficit = expected_expenditure - target_kcal  # >0 = deficit that day
 
         # Protein is anchored to bodyweight but periodized up on hard/long
@@ -1859,9 +1888,17 @@ def generate_fueling_plan(
                      "later days assume rest/easy — re-run when the plan extends.")
 
     if periodize_applied and residual < -50:
-        notes.append(f"Periodized deficit could not absorb {abs(residual)} kcal of the "
-                     "weekly target (floors / hard-day limits reached) — actual pace "
-                     "will run slower than the goal.")
+        msg = (f"Periodized deficit could not absorb {abs(residual)} kcal of the "
+               "weekly target (floors / hard-day limits reached) — actual pace "
+               "will run slower than the goal.")
+        achieved_wk = -sum(day_adjs) * (7.0 / days)  # achievable weekly deficit
+        kg_to_go = (weight_kg - tgt) if (gt == "lose" and tgt) else None
+        if kg_to_go and kg_to_go > 0 and achieved_wk > 100:
+            eta = date.today() + timedelta(weeks=kg_to_go * 7700 / achieved_wk)
+            msg += (f" At the achievable ~{round(achieved_wk)} kcal/wk "
+                    f"(~{round(achieved_wk / 7700, 2)} kg/wk), {tgt}kg lands "
+                    f"~{eta.isoformat()}.")
+        notes.append(msg)
     below_bmr = [d["date"] for d in day_rows if d["target_kcal"] < bmr]
     if below_bmr:
         notes.append(f"Daily target falls below BMR on {', '.join(below_bmr)} — this is "
@@ -1897,6 +1934,8 @@ def generate_fueling_plan(
             "fuel_min_minutes": fuel_min_minutes,
             "bmr_floor_mult": (floor_mult if floor_mult > 0 else None),
             "periodize_deficit": periodize_applied,
+            "ea_min_kcal_per_kg_ffm": ea_min_val,
+            "min_kcal": min_kcal_val,
         },
         "days": day_rows,
         "totals": totals,

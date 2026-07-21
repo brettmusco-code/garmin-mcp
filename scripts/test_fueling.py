@@ -204,6 +204,35 @@ def main():
     check("ea_floor=0 silences the RED-S note",
           not any("Low energy availability" in n for n in plan_nf["notes"]))
 
+    print("enforced EA minimum + absolute kcal floor:")
+    plan_ea25 = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7,
+                                        bmr_floor_mult=0, ea_floor=25, ea_min=25)
+    check("config echoes ea_min", plan_ea25["config"]["ea_min_kcal_per_kg_ffm"] == 25)
+    check("every day EA >= ea_min (within rounding)",
+          all(d["energy_availability_kcal_per_kg_ffm"] >= 24.5 for d in plan_ea25["days"]))
+    ffm = plan_ea25["fat_free_mass_kg"]
+    check("hard-day target floored at ea_min*FFM + burn",
+          all(d["target_kcal"] >= round(25 * ffm + d["est_burn_kcal"]) - 1
+              for d in plan_ea25["days"]))
+    plan_mk = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7,
+                                      bmr_floor_mult=0, ea_floor=0, min_kcal=2100)
+    check("config echoes min_kcal", plan_mk["config"]["min_kcal"] == 2100)
+    check("no day below the absolute floor",
+          all(d["target_kcal"] >= 2100 for d in plan_mk["days"]))
+    # infeasible pace + ea_min -> shortfall note carries an ETA
+    tight2 = (TODAY + timedelta(weeks=3)).isoformat()
+    g.set_fueling_goal(goal_type="lose", target_weight_kg=69.0, target_date=tight2,
+                       sex="male", height_cm=178, age=40, max_deficit_kcal=0,
+                       ea_min=25, ea_floor=25, bmr_floor_mult=0)
+    plan_eta = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7)
+    check("EA held at min even under an infeasible goal",
+          all(d["energy_availability_kcal_per_kg_ffm"] >= 24.5 for d in plan_eta["days"]))
+    check("shortfall note projects a landing date",
+          any("lands ~" in n for n in plan_eta["notes"]))
+    # restore the default lose goal for remaining checks
+    g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
+                       sex="male", height_cm=178, age=40)
+
     print("title duration parsing:")
     check("'50min Aerobic Run' -> ~0.83h", abs(g._duration_from_title("50min Aerobic Run") - 0.83) < 0.02)
     check("\"Master's Swim - 90min\" -> 1.5h", g._duration_from_title("Master's Swim - 90min") == 1.5)

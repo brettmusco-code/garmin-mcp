@@ -499,6 +499,8 @@ TOOLS = [
                 "protein_g_per_kg": {"type": "number"},
                 "max_deficit_kcal": {"type": "number", "description": "daily deficit cap; default 500, pass 0 to remove the cap"},
                 "ea_floor": {"type": "number", "description": "energy-availability warning threshold (kcal/kg FFM); default 30, 0 disables"},
+                "ea_min": {"type": "number", "description": "ENFORCED EA minimum: daily target floored at ea_min x FFM + day's burn. Unset = off"},
+                "min_kcal": {"type": "number", "description": "absolute daily calorie floor. Unset = none"},
                 "bmr_floor_mult": {"type": "number", "description": "daily-target floor as BMR multiple; default 1.2, 0 drops the floor"},
                 "periodize_deficit": {"type": "boolean", "description": "bank the deficit on rest/easy days (default true for lose goals)"},
                 "notes": {"type": "string"},
@@ -540,6 +542,8 @@ TOOLS = [
                 "fuel_min_minutes": {"type": "number", "description": "min session length to get a fuel card. Default 90."},
                 "bmr_floor_mult": {"type": "number", "description": "override the daily-target floor as BMR multiple (default 1.2 or goal value); 0 drops it"},
                 "periodize_deficit": {"type": "boolean", "description": "override deficit periodization (default true for lose goals; false = flat)"},
+                "ea_min": {"type": "number", "description": "override the enforced EA minimum (kcal/kg FFM); 0 disables"},
+                "min_kcal": {"type": "number", "description": "override the absolute daily calorie floor; 0 disables"},
             },
         },
     },
@@ -703,6 +707,8 @@ def _call_tool(name: str, args: dict) -> Any:
             protein_g_per_kg=args.get("protein_g_per_kg"),
             max_deficit_kcal=args.get("max_deficit_kcal"),
             ea_floor=args.get("ea_floor"),
+            ea_min=args.get("ea_min"),
+            min_kcal=args.get("min_kcal"),
             bmr_floor_mult=args.get("bmr_floor_mult"),
             periodize_deficit=args.get("periodize_deficit"),
             notes=args.get("notes"),
@@ -723,6 +729,8 @@ def _call_tool(name: str, args: dict) -> Any:
             fuel_min_minutes=int(args.get("fuel_min_minutes", 90)),
             bmr_floor_mult=args.get("bmr_floor_mult"),
             periodize_deficit=args.get("periodize_deficit"),
+            ea_min=args.get("ea_min"),
+            min_kcal=args.get("min_kcal"),
         )
     raise ValueError(f"Unknown tool: {name}")
 
