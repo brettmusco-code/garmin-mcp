@@ -2410,6 +2410,28 @@ def generate_fueling_plan(
         pass
     hist_samples = _history_samples(history)
 
+    # Completed activities *today* — used to swap the estimate for the real
+    # burn on the current day once a session is done, so today's target and
+    # energy-availability track reality instead of a projection.
+    today_iso = date.today().isoformat()
+    actual_today: list[dict] = []
+    if start.isoformat() <= today_iso <= end.isoformat():
+        for a in history:
+            if not isinstance(a, dict):
+                continue
+            if ((a.get("startTimeLocal") or a.get("startTimeGMT") or "")[:10]) != today_iso:
+                continue
+            dur_s = a.get("duration") or a.get("elapsedDuration") or a.get("movingDuration")
+            cal = a.get("calories")
+            if not dur_s or not cal or dur_s < 300:  # skip <5 min / no-calorie entries
+                continue
+            tk = (a.get("activityType") or {}).get("typeKey") or ""
+            hrs = round(dur_s / 3600.0, 2)
+            actual_today.append({
+                "sport": _sport_bucket(a.get("activityName") or "", tk),
+                "hours": hrs, "kcal": round(cal), "name": a.get("activityName") or "",
+            })
+
     last_scheduled_date = max(scheduled_by_date) if scheduled_by_date else None
 
     # Pass 1: resolve each day's sessions, burn, and carb ratio.
@@ -2429,12 +2451,36 @@ def generate_fueling_plan(
             sessions.append({
                 "title": title or sport, "sport": sport, "intensity": intensity,
                 "hours": hours, "hours_source": hrs_src, "burn_kcal": burn,
-                "kcal_per_hour": base_hr, "burn_source": burn_source,
+                "kcal_per_hour": base_hr, "burn_source": burn_source, "done": False,
             })
+
+        # Today: swap the estimate for the actual burn on sessions already done,
+        # and fold in any unplanned workouts, so "burned" reflects reality.
+        if d_iso == today_iso and actual_today:
+            remaining = list(actual_today)
+            for s in sessions:
+                m = next((x for x in remaining if x["sport"] == s["sport"]), None)
+                if not m:
+                    continue
+                remaining.remove(m)
+                s["burn_kcal"] = m["kcal"]                 # actual gross (matches Garmin)
+                s["hours"] = m["hours"] or s["hours"]
+                s["kcal_per_hour"] = round(m["kcal"] / m["hours"]) if m["hours"] else s["kcal_per_hour"]
+                s["burn_source"] = "actual_today"
+                s["done"] = True
+            for m in remaining:                            # unplanned completed workouts
+                sessions.append({
+                    "title": m["name"] or f"{m['sport'].title()} (logged)",
+                    "sport": m["sport"], "intensity": _classify_intensity(m["name"]),
+                    "hours": m["hours"], "hours_source": "actual", "burn_kcal": m["kcal"],
+                    "kcal_per_hour": round(m["kcal"] / m["hours"]) if m["hours"] else 0,
+                    "burn_source": "actual_today", "done": True,
+                })
+
         if not sessions:
             sessions = [{"title": "rest", "sport": "rest", "intensity": "rest",
                          "hours": 0.0, "hours_source": "none", "burn_kcal": 0,
-                         "burn_source": "none"}]
+                         "burn_source": "none", "done": False}]
 
         total_burn = sum(s["burn_kcal"] for s in sessions)   # gross (matches Garmin)
         # Net exercise energy = gross minus the resting metabolism the athlete

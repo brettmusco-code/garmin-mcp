@@ -133,6 +133,8 @@
   .sesslist{font-size:12.5px;}
   .sesslist .sr{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid var(--line);}
   .sesslist .sr small{color:var(--ink-faint);}
+  .sesslist .sr small.done{color:var(--good);font-weight:600;}
+  .sesslist .sr small.est{color:var(--ink-faint);opacity:.75;}
   .sesslist .sr.tot{border-bottom:0;border-top:1px solid var(--line);margin-top:2px;}
   .energy{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 9px;font-size:12px;
     color:var(--ink-dim);background:var(--panel-2);border:1px solid var(--line);
@@ -448,7 +450,8 @@ const PLAN = {
           "hours": 0.0,
           "hours_source": "none",
           "burn_kcal": 0,
-          "burn_source": "none"
+          "burn_source": "none",
+          "done": false
         }
       ],
       "primary_intensity": "rest",
@@ -512,7 +515,8 @@ const PLAN = {
           "hours_source": "calendar",
           "burn_kcal": 1242,
           "kcal_per_hour": 710,
-          "burn_source": "history_similar"
+          "burn_source": "history_similar",
+          "done": false
         }
       ],
       "primary_intensity": "threshold",
@@ -576,7 +580,8 @@ const PLAN = {
           "hours_source": "calendar",
           "burn_kcal": 426,
           "kcal_per_hour": 710,
-          "burn_source": "history_similar"
+          "burn_source": "history_similar",
+          "done": false
         }
       ],
       "primary_intensity": "recovery",
@@ -640,7 +645,8 @@ const PLAN = {
           "hours_source": "calendar",
           "burn_kcal": 570,
           "kcal_per_hour": 760,
-          "burn_source": "history_similar"
+          "burn_source": "history_similar",
+          "done": false
         }
       ],
       "primary_intensity": "easy",
@@ -703,7 +709,8 @@ const PLAN = {
           "hours": 0.0,
           "hours_source": "none",
           "burn_kcal": 0,
-          "burn_source": "none"
+          "burn_source": "none",
+          "done": false
         }
       ],
       "primary_intensity": "rest",
@@ -767,7 +774,8 @@ const PLAN = {
           "hours_source": "calendar",
           "burn_kcal": 2361,
           "kcal_per_hour": 710,
-          "burn_source": "history_sport"
+          "burn_source": "history_sport",
+          "done": false
         }
       ],
       "primary_intensity": "long",
@@ -853,7 +861,8 @@ const PLAN = {
           "hours_source": "calendar",
           "burn_kcal": 380,
           "kcal_per_hour": 760,
-          "burn_source": "history_sport"
+          "burn_source": "history_sport",
+          "done": false
         }
       ],
       "primary_intensity": "easy",
@@ -991,10 +1000,14 @@ function renderRecent(){
 function renderDay(d){
   const rest = d.primary_intensity==='rest';
   const sess = rest ? 'Rest day' : `${d.sessions.length} session${d.sessions.length>1?'s':''}`;
+  const anyActual = !rest && d.sessions.some(s=>s.burn_source==='actual_today');
   const sessList = rest ? '' :
-    `<div class="sesslist">` + d.sessions.map(s=>
-      `<div class="sr"><span>${s.title} <small>· ${s.hours}h · ${s.intensity}</small></span><span class="mono">${nf(s.burn_kcal)} kcal</span></div>`).join('')
-    + `<div class="sr tot"><b>Total burn <small>gross · Garmin</small></b><span class="mono"><b>${nf(d.est_burn_kcal)}</b> kcal</span></div></div>`;
+    `<div class="sesslist">` + d.sessions.map(s=>{
+      const done = s.burn_source==='actual_today';
+      const tag = done ? ` <small class="done">✓ actual</small>`
+                       : (s.done===false ? ` <small class="est">est</small>` : '');
+      return `<div class="sr"><span>${s.title} <small>· ${s.hours}h · ${s.intensity}</small>${tag}</span><span class="mono">${nf(s.burn_kcal)} kcal</span></div>`;}).join('')
+    + `<div class="sr tot"><b>Total burn <small>${anyActual?'actual so far + est':'gross · est'}</small></b><span class="mono"><b>${nf(d.est_burn_kcal)}</b> kcal</span></div></div>`;
   const kc = d.target_kcal;
   const macros = macroRow('Protein','protein',d.protein_g,kc)+macroRow('Carbs','carbs',d.carbs_g,kc)+macroRow('Fat','fat',d.fat_g,kc);
   const meals = (d.meals||[]).map(m=>{const wf=/^Workout fuel/.test(m.meal);
@@ -1055,7 +1068,8 @@ function render(){
     + dow(first.date).toUpperCase()+' '+dmd(first.date);
   $('todayKcal').textContent = nf(first.target_kcal);
   const sess = first.sessions.map(s=>s.title).join(' + ');
-  $('todayAdj').innerHTML = `${gt==='lose'?'Deficit':gt==='gain'?'Surplus':'Maintenance'} day · est burn <b>${nf(first.est_burn_kcal)}</b> · carbs <b>${first.carb_g_per_kg}g/kg</b>`;
+  const firstActual = (first.sessions||[]).some(s=>s.burn_source==='actual_today');
+  $('todayAdj').innerHTML = `${gt==='lose'?'Deficit':gt==='gain'?'Surplus':'Maintenance'} day · ${firstActual?'burn':'est burn'} <b>${nf(first.est_burn_kcal)}</b> · carbs <b>${first.carb_g_per_kg}g/kg</b>`;
   const kc0 = first.target_kcal;
   $('todayMacros').innerHTML =
     macroRow('Protein','protein',first.protein_g,kc0)+

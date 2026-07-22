@@ -194,6 +194,22 @@ def main():
     check("long ride carbs (7 g/kg) > recovery day carbs", day4["carbs_g"] > day1["carbs_g"])
     check("long ride burn > recovery burn", day4["est_burn_kcal"] > day1["est_burn_kcal"])
 
+    print("actual burn swaps the estimate on today's completed workouts:")
+    _save_air2 = g.get_activities_in_range
+    g.get_activities_in_range = lambda sd, ed, *a, **k: _fake_activities(sd, ed) + [
+        {"activityType": {"typeKey": "cycling"}, "activityName": "Bike Threshold 4x8min",
+         "duration": int(1.3 * 3600), "calories": 950,
+         "startTimeLocal": TODAY.isoformat() + " 07:00:00"}]
+    plan_act = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7)
+    g.get_activities_in_range = _save_air2
+    s_today = plan_act["days"][0]["sessions"][0]
+    check("today's completed session tagged actual_today", s_today["burn_source"] == "actual_today")
+    check("today's completed session marked done", s_today.get("done") is True)
+    check("burn = actual 950, not the estimate", s_today["burn_kcal"] == 950)
+    check("est burn total picks up the actual", plan_act["days"][0]["est_burn_kcal"] == 950)
+    check("future day still uses an estimate",
+          plan_act["days"][4]["sessions"][0]["burn_source"] != "actual_today")
+
     print("macro reconciliation:")
     for d in plan["days"]:
         kcal = d["protein_g"] * 4 + d["carbs_g"] * 4 + d["fat_g"] * 9
