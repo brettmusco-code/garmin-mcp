@@ -364,6 +364,31 @@ def main():
     g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
                        sex="male", height_cm=178, age=40)
 
+    print("race fueling calculator:")
+    rf = g.get_race_fueling("cycling", 5.0, weight_kg=77.0)
+    check("long race -> 90 g carbs/hr", rf["during"]["carbs_g_per_hr"] == 90)
+    check("during total scales with duration", rf["during"]["carbs_g_total"] == 450)
+    check("gels equivalent computed", rf["during"]["gels_equiv"] > 0)
+    check("carb-load protocol for long event", "carb_load" in rf)
+    check("pre-race caffeine ~3 mg/kg", rf["caffeine"]["pre_mg"] == round(77 * 3))
+    rf_short = g.get_race_fueling("running", 0.75, weight_kg=77.0)
+    check("sub-hour race: no during carbs", rf_short["during"]["carbs_g_per_hr"] == 0)
+    check("sub-90min: no carb load", "carb_load" not in rf_short)
+
+    print("per-day meal split:")
+    d0 = plan["days"][0]
+    tot_p = sum(m["protein_g"] for m in d0["meals"])
+    check("meals present", len(d0["meals"]) >= 4)
+    check("meal protein sums ~ day protein", abs(tot_p - d0["protein_g"]) <= 3)
+
+    print("heat-aware hydration (outdoor sessions):")
+    hot = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7, heat_c=33)
+    long_ride = hot["days"][4]["fuel"][0]  # outdoor 3.5h ride
+    check("hot day flags heat on the card", long_ride.get("heat_c") == 33)
+    check("hot day bumps sodium", long_ride["sodium_mg_per_hr"] > 600)
+    cool = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7, heat_c=18)
+    check("cool day: no heat bump", cool["days"][4]["fuel"][0].get("heat_c") is None)
+
     print("rebalance from actuals:")
     def _fake_pva(days_back=7):
         return {"rows": [

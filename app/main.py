@@ -506,6 +506,8 @@ TOOLS = [
                 "front_load": {"type": "number", "description": "0..0.9: steeper deficit early, tapering as weight nears target. 0 = flat linear pace"},
                 "max_loss_lb_per_week": {"type": "number", "description": "cap the loss rate in lb/week (friendlier than max_deficit_kcal; 1 lb ~ 3500 kcal)"},
                 "use_adaptive_tdee": {"type": "boolean", "description": "use measured maintenance (intake vs weight change) instead of BMR x1.3 once data is sufficient"},
+                "home_lat": {"type": "number", "description": "home latitude, for heat-aware hydration on outdoor sessions"},
+                "home_lon": {"type": "number", "description": "home longitude"},
                 "notes": {"type": "string"},
             },
             "required": ["goal_type"],
@@ -551,7 +553,29 @@ TOOLS = [
                 "front_load": {"type": "number", "description": "override front-loading 0..0.9 (default from goal): steeper deficit early, tapering as weight nears target"},
                 "max_loss_lb_per_week": {"type": "number", "description": "override the loss-rate cap in lb/week"},
                 "use_adaptive_tdee": {"type": "boolean", "description": "override use of measured maintenance instead of the BMR formula"},
+                "heat_c": {"type": "number", "description": "override forecast: assume this day's high (deg C) for heat-aware hydration on outdoor sessions"},
             },
+        },
+    },
+    {
+        "name": "get_race_fueling",
+        "description": (
+            "Race-day fueling calculator for a target event: pre-race meal, "
+            "carb-loading protocol (for long events), and hour-by-hour carbs, "
+            "fluid, sodium, and caffeine. Pass sport, expected duration_hours, "
+            "optional intensity, weight_kg (defaults to baseline), and hot=true "
+            "for heat."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "sport": {"type": "string", "description": "cycling | running | triathlon | swimming | ..."},
+                "duration_hours": {"type": "number"},
+                "intensity": {"type": "string"},
+                "weight_kg": {"type": "number"},
+                "hot": {"type": "boolean", "description": "hot conditions, default false"},
+            },
+            "required": ["sport", "duration_hours"],
         },
     },
     {
@@ -758,6 +782,8 @@ def _call_tool(name: str, args: dict) -> Any:
             front_load=args.get("front_load"),
             max_loss_lb_per_week=args.get("max_loss_lb_per_week"),
             use_adaptive_tdee=args.get("use_adaptive_tdee"),
+            home_lat=args.get("home_lat"),
+            home_lon=args.get("home_lon"),
             notes=args.get("notes"),
         )
     if name == "get_fueling_goal":
@@ -782,6 +808,17 @@ def _call_tool(name: str, args: dict) -> Any:
             front_load=args.get("front_load"),
             use_adaptive_tdee=args.get("use_adaptive_tdee"),
             max_loss_lb_per_week=args.get("max_loss_lb_per_week"),
+            heat_c=args.get("heat_c"),
+        )
+    if name == "get_race_fueling":
+        sport = args.get("sport")
+        dur = args.get("duration_hours")
+        if not sport or dur is None:
+            raise ValueError("`sport` and `duration_hours` are required")
+        return garmin.get_race_fueling(
+            sport=sport, duration_hours=float(dur),
+            intensity=args.get("intensity", "race"),
+            weight_kg=args.get("weight_kg"), hot=bool(args.get("hot", False)),
         )
     if name == "get_adaptive_tdee":
         return garmin.get_adaptive_tdee(weeks=int(args.get("weeks", 6)))

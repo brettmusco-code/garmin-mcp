@@ -1262,6 +1262,8 @@ def set_fueling_goal(
     front_load: float | None = None,
     max_loss_lb_per_week: float | None = None,
     use_adaptive_tdee: bool | None = None,
+    home_lat: float | None = None,
+    home_lon: float | None = None,
     notes: str | None = None,
 ) -> dict:
     """Persist the athlete's fueling goal to R2 (single active goal, keyed
@@ -1340,6 +1342,8 @@ def set_fueling_goal(
         "front_load": round(float(front_load), 2) if front_load is not None else None,
         "max_loss_lb_per_week": round(float(max_loss_lb_per_week), 2) if max_loss_lb_per_week is not None else None,
         "use_adaptive_tdee": bool(use_adaptive_tdee) if use_adaptive_tdee is not None else None,
+        "home_lat": round(float(home_lat), 4) if home_lat is not None else None,
+        "home_lon": round(float(home_lon), 4) if home_lon is not None else None,
         "notes": notes,
         "set_date": date.today().isoformat(),
     }
@@ -1602,6 +1606,116 @@ def _bmr(weight_kg, sex, height_cm, age):
     return None
 
 
+def _is_outdoor_session(sport: str, title: str) -> bool:
+    """Best-effort: is this planned session likely outdoors (so heat matters)?
+    Pools and indoor-trainer/treadmill cues are indoor; other runs/rides are
+    assumed outdoor."""
+    t = (title or "").lower()
+    if sport == "swimming":
+        return False
+    if any(k in t for k in ("trainer", "zwift", "rouvy", "indoor", "treadmill",
+                            "peloton", "wahoo", "kickr", "erg")):
+        return False
+    return sport in ("running", "cycling", "walking")
+
+
+def _meal_split(target_kcal: int, protein_g: int, carbs_g: int, fat_g: int,
+                needs_fuel: bool) -> list[dict]:
+    """Split a day's macros into meals so targets are actionable. Protein is
+    spread evenly (even absorption); carbs are weighted toward training when
+    the day has a fueled session; fat is kept lower around workouts."""
+    if needs_fuel:
+        meals = [("Breakfast", 0.25, 0.20, 0.30),
+                 ("Pre / peri-workout", 0.15, 0.30, 0.05),
+                 ("Lunch", 0.25, 0.20, 0.30),
+                 ("Dinner", 0.25, 0.25, 0.30),
+                 ("Snack", 0.10, 0.05, 0.05)]
+    else:
+        meals = [("Breakfast", 0.30, 0.25, 0.30),
+                 ("Lunch", 0.30, 0.30, 0.30),
+                 ("Dinner", 0.30, 0.30, 0.30),
+                 ("Snack", 0.10, 0.15, 0.10)]
+    out = []
+    for name, p_w, c_w, f_w in meals:
+        p = round(protein_g * p_w)
+        c = round(carbs_g * c_w)
+        f = round(fat_g * f_w)
+        out.append({"meal": name, "protein_g": p, "carbs_g": c, "fat_g": f,
+                    "kcal": p * 4 + c * 4 + f * 9})
+    return out
+
+
+def get_race_fueling(
+    sport: str,
+    duration_hours: float,
+    intensity: str = "race",
+    weight_kg: float | None = None,
+    hot: bool = False,
+) -> dict:
+    """Race-day fueling calculator: pre-race meal, carb loading (if long),
+    and hour-by-hour carbs / fluid / sodium / caffeine for the event.
+
+    sport: 'cycling' | 'running' | 'triathlon' | 'swimming' | ...
+    duration_hours: expected event duration.
+    """
+    dur = max(0.25, float(duration_hours))
+    sport = (sport or "").lower()
+    if weight_kg is None:
+        try:
+            b = get_athlete_baseline()
+            weight_kg = b.get("weight_kg") if isinstance(b, dict) else None
+        except Exception:  # noqa: BLE001
+            pass
+    w = weight_kg or 70.0
+
+    # Carbs/hr scales with duration (gut tolerance + demand).
+    if dur < 1.0:
+        carbs_hr = 0
+    elif dur <= 2.0:
+        carbs_hr = 45
+    elif dur <= 3.0:
+        carbs_hr = 70
+    else:
+        carbs_hr = 90  # multiple transportable carbs (glucose:fructose ~1:0.8)
+    during_total = round(carbs_hr * dur)
+    fluid_hr = 750 if hot else 550
+    sodium_hr = (900 if hot else 600) + (300 if dur > 3 else 0)
+
+    plan = {
+        "sport": sport, "duration_hours": round(dur, 2), "intensity": intensity,
+        "weight_kg": round(w, 1),
+        "pre_race_meal": {
+            "timing": "3-4 h before",
+            "carbs_g": round(w * (2 if dur < 2 else 3)),
+            "note": "low fat/fiber; familiar foods; top off with 30 g carbs 15 min pre",
+        },
+        "during": {
+            "carbs_g_per_hr": carbs_hr,
+            "carbs_g_total": during_total,
+            "fluid_ml_per_hr": fluid_hr,
+            "sodium_mg_per_hr": sodium_hr,
+            "gels_equiv": round(during_total / 22) if during_total else 0,
+            "note": ("swim leg: no feeding; fuel the bike, then run"
+                     if sport == "triathlon" else
+                     ("mix glucose:fructose sources above 60 g/hr" if carbs_hr >= 70 else "")),
+        },
+        "caffeine": {
+            "pre_mg": round(w * 3),
+            "during": "another ~1-2 mg/kg mid-race for events > 2 h",
+        },
+        "post": {"protein_g": round(w * 0.4), "carbs_g": round(w * 1.0),
+                 "note": "within 60 min; then a full meal"},
+    }
+    if dur >= 1.5:
+        plan["carb_load"] = {
+            "days": 2 if dur < 3 else 3,
+            "carbs_g_per_kg_per_day": "8-10" if dur < 3 else "10-12",
+            "carbs_g_per_day_example": f"{round(w * 8)}-{round(w * 12)}",
+            "note": "taper training while loading; expect +1-2 kg water weight",
+        }
+    return plan
+
+
 def get_adaptive_tdee(weeks: int = 6) -> dict:
     """Estimate the athlete's TRUE maintenance from logged intake vs actual
     weight change — far more accurate than BMR x 1.3 once there's data.
@@ -1780,6 +1894,7 @@ def generate_fueling_plan(
     front_load: float | None = None,
     use_adaptive_tdee: bool | None = None,
     max_loss_lb_per_week: float | None = None,
+    heat_c: float | None = None,
 ) -> dict:
     """Build a forward fueling plan: per-day calorie + macro targets and a
     per-workout fuel card for the next `days` days, from the stored fueling
@@ -1884,6 +1999,8 @@ def generate_fueling_plan(
     min_kcal_val = mk_raw if (mk_raw and mk_raw > 0) else None
     fl_raw = front_load if front_load is not None else goal.get("front_load")
     front_load_val = max(0.0, min(0.9, fl_raw)) if fl_raw else 0.0
+    home_lat = goal.get("home_lat")
+    home_lon = goal.get("home_lon")
 
     goal_adj = 0
     if gt == "lose":
@@ -2149,6 +2266,21 @@ def generate_fueling_plan(
                 if s["hours"] > 2.5:
                     card["note"] = ("long effort — push toward 60-90 g carbs/hr "
                                     "(glucose:fructose mix)")
+                # Heat: bump fluid + sodium for outdoor sessions on hot days.
+                if _is_outdoor_session(s["sport"], s["title"]):
+                    high_c = heat_c
+                    if high_c is None and home_lat is not None and home_lon is not None:
+                        try:
+                            high_c = weather.forecast_high_c(home_lat, home_lon, d_iso)
+                        except Exception:  # noqa: BLE001
+                            high_c = None
+                    if high_c is not None and high_c >= 28:
+                        card["fluid_ml_per_hr"] = round(card["fluid_ml_per_hr"] * 1.3)
+                        card["sodium_mg_per_hr"] = round(card["sodium_mg_per_hr"] * 1.6)
+                        card["heat_c"] = round(high_c)
+                        card["note"] = (f"~{round(high_c)}°C forecast — pre-cool, drink to "
+                                        "thirst+, extra sodium") + (
+                                        "; " + card["note"] if card.get("note") else "")
             fuel_cards.append(card)
 
         row = {
@@ -2166,6 +2298,7 @@ def generate_fueling_plan(
             "energy_availability_kcal_per_kg_ffm": energy_availability,
             "needs_fuel": bool(fuel_cards),
             "fuel": fuel_cards,
+            "meals": _meal_split(target_kcal, protein_g, carbs_g, fat_g, bool(fuel_cards)),
         }
         day_rows.append(row)
         for k in ("target_kcal", "protein_g", "carbs_g", "fat_g", "target_deficit_kcal"):
