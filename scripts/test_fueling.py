@@ -131,6 +131,19 @@ def main():
     check("goal saved", saved.get("saved") is True)
     check("start weight captured from baseline", saved["goal"]["start_weight_kg"] == 74.0)
 
+    print("set_fueling_goal reports a failed (read-only) write instead of lying:")
+    _save_put = cache.put
+    cache.put = lambda *a, **k: None          # simulate a write-denied R2 (no-op)
+    _STORE.pop("fueling_goal/current", None)   # nothing persisted
+    ro = g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0,
+                            target_date=target_date, sex="male", height_cm=178, age=40)
+    cache.put = _save_put
+    check("failed write -> saved is False", ro.get("saved") is False)
+    check("failed write -> actionable error", "not persisted" in (ro.get("error") or "").lower())
+    # restore a real goal for the rest of the suite
+    g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
+                       sex="male", height_cm=178, age=40)
+
     print("get_fueling_goal:")
     gi = g.get_fueling_goal()
     check("goal returned", gi["goal"]["goal_type"] == "lose")

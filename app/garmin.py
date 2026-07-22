@@ -1363,6 +1363,26 @@ def set_fueling_goal(
         "set_date": date.today().isoformat(),
     }
     cache.put("fueling_goal", {"key": "current"}, goal, key_parts=["current"])
+    # Verify the write actually landed. cache.put swallows errors (e.g. the
+    # read-only web service having write-denied R2 credentials), so without
+    # this read-back the caller would be told the goal saved when it silently
+    # vanished — which is exactly how a set goal can fail to persist and leave
+    # every later generate_fueling_plan returning no_goal_available.
+    persisted = cache.get(
+        "fueling_goal", {"key": "current"}, key_parts=["current"],
+        ttl_seconds=IMMUTABLE_TTL,
+    )
+    if not persisted:
+        return {
+            "saved": False,
+            "goal": goal,
+            "error": (
+                "Goal was NOT persisted — the server could not write it to the "
+                "cache (R2). This usually means the web service has read-only "
+                "S3/R2 credentials; give it read-write keys (AWS_ACCESS_KEY_ID / "
+                "AWS_SECRET_ACCESS_KEY, matching the cron writer) and retry."
+            ),
+        }
     return {"saved": True, "goal": goal}
 
 
