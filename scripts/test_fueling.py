@@ -210,6 +210,19 @@ def main():
     check("future day still uses an estimate",
           plan_act["days"][4]["sessions"][0]["burn_source"] != "actual_today")
 
+    print("burned vs projected split:")
+    d0 = plan_act["days"][0]
+    check("today exposes burned_kcal", "burned_kcal" in d0)
+    check("today exposes projected_burn_kcal", "projected_burn_kcal" in d0)
+    check("completed session counts as burned (950)", d0["burned_kcal"] == 950)
+    check("no remaining session -> projected is 0", d0["projected_burn_kcal"] == 0)
+    check("burned + projected == total burn",
+          d0["burned_kcal"] + d0["projected_burn_kcal"] == d0["est_burn_kcal"])
+    d4 = plan_act["days"][4]
+    check("future day has nothing burned yet", d4["burned_kcal"] == 0)
+    check("future day's whole burn is projected",
+          d4["projected_burn_kcal"] == d4["est_burn_kcal"])
+
     print("macro reconciliation:")
     for d in plan["days"]:
         kcal = d["protein_g"] * 4 + d["carbs_g"] * 4 + d["fat_g"] * 9
