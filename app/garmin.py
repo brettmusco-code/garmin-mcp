@@ -2483,6 +2483,12 @@ def generate_fueling_plan(
                          "burn_source": "none", "done": False}]
 
         total_burn = sum(s["burn_kcal"] for s in sessions)   # gross (matches Garmin)
+        # Split gross burn into what's already been logged today (completed
+        # sessions) vs what's still projected from sessions not yet done. On
+        # past/future days everything is "projected" (nothing is marked done),
+        # so burned_kcal is 0 and projected_burn_kcal == total_burn.
+        burned_kcal = sum(s["burn_kcal"] for s in sessions if s.get("done"))
+        projected_burn_kcal = total_burn - burned_kcal
         # Net exercise energy = gross minus the resting metabolism the athlete
         # would have burned during those same hours (already counted in the 24h
         # NEAT base). Only the net portion adds to daily expenditure — this is
@@ -2500,7 +2506,9 @@ def generate_fueling_plan(
             carb_ratio = 9.0
         prelim.append({
             "date": d_iso, "weekday": d.strftime("%a"), "sessions": sessions,
-            "total_burn": total_burn, "net_burn": net_burn, "primary": primary,
+            "total_burn": total_burn, "net_burn": net_burn,
+            "burned_kcal": burned_kcal, "projected_burn_kcal": projected_burn_kcal,
+            "primary": primary,
             "carb_ratio": carb_ratio,
             "base_target": neat_base + net_burn,
         })
@@ -2675,6 +2683,8 @@ def generate_fueling_plan(
             "sessions": sessions,
             "primary_intensity": primary["intensity"],
             "est_burn_kcal": total_burn,
+            "burned_kcal": p["burned_kcal"],
+            "projected_burn_kcal": p["projected_burn_kcal"],
             "net_exercise_kcal": p["net_burn"],
             "tef_kcal": tef_kcal,
             "expected_expenditure_kcal": expected_expenditure,

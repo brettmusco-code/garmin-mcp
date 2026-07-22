@@ -1001,13 +1001,20 @@ function renderDay(d){
   const rest = d.primary_intensity==='rest';
   const sess = rest ? 'Rest day' : `${d.sessions.length} session${d.sessions.length>1?'s':''}`;
   const anyActual = !rest && d.sessions.some(s=>s.burn_source==='actual_today');
+  const burned = d.burned_kcal||0, projd = d.projected_burn_kcal!=null?d.projected_burn_kcal:d.est_burn_kcal;
+  const mixed = burned>0 && projd>0;
+  const totLabel = mixed
+    ? `<b>Total burn</b> <span class="mono"><b>${nf(burned)}</b> burned <small>·</small> <b>+${nf(projd)}</b> projected <small>=</small> <b>${nf(d.est_burn_kcal)}</b></span>`
+    : burned>0
+      ? `<b>Total burn <small>actual</small></b><span class="mono"><b>${nf(d.est_burn_kcal)}</b> kcal</span>`
+      : `<b>Total burn <small>gross · est</small></b><span class="mono"><b>${nf(d.est_burn_kcal)}</b> kcal</span>`;
   const sessList = rest ? '' :
     `<div class="sesslist">` + d.sessions.map(s=>{
       const done = s.burn_source==='actual_today';
       const tag = done ? ` <small class="done">✓ actual</small>`
                        : (s.done===false ? ` <small class="est">est</small>` : '');
       return `<div class="sr"><span>${s.title} <small>· ${s.hours}h · ${s.intensity}</small>${tag}</span><span class="mono">${nf(s.burn_kcal)} kcal</span></div>`;}).join('')
-    + `<div class="sr tot"><b>Total burn <small>${anyActual?'actual so far + est':'gross · est'}</small></b><span class="mono"><b>${nf(d.est_burn_kcal)}</b> kcal</span></div></div>`;
+    + `<div class="sr tot">${totLabel}</div></div>`;
   const kc = d.target_kcal;
   const macros = macroRow('Protein','protein',d.protein_g,kc)+macroRow('Carbs','carbs',d.carbs_g,kc)+macroRow('Fat','fat',d.fat_g,kc);
   const meals = (d.meals||[]).map(m=>{const wf=/^Workout fuel/.test(m.meal);
@@ -1069,7 +1076,13 @@ function render(){
   $('todayKcal').textContent = nf(first.target_kcal);
   const sess = first.sessions.map(s=>s.title).join(' + ');
   const firstActual = (first.sessions||[]).some(s=>s.burn_source==='actual_today');
-  $('todayAdj').innerHTML = `${gt==='lose'?'Deficit':gt==='gain'?'Surplus':'Maintenance'} day · ${firstActual?'burn':'est burn'} <b>${nf(first.est_burn_kcal)}</b> · carbs <b>${first.carb_g_per_kg}g/kg</b>`;
+  const fBurned = first.burned_kcal||0, fProj = first.projected_burn_kcal!=null?first.projected_burn_kcal:first.est_burn_kcal;
+  const burnTxt = (fBurned>0 && fProj>0)
+    ? `burned <b>${nf(fBurned)}</b> · +<b>${nf(fProj)}</b> projected`
+    : fBurned>0
+      ? `burned <b>${nf(first.est_burn_kcal)}</b>`
+      : `est burn <b>${nf(first.est_burn_kcal)}</b>`;
+  $('todayAdj').innerHTML = `${gt==='lose'?'Deficit':gt==='gain'?'Surplus':'Maintenance'} day · ${burnTxt} · carbs <b>${first.carb_g_per_kg}g/kg</b>`;
   const kc0 = first.target_kcal;
   $('todayMacros').innerHTML =
     macroRow('Protein','protein',first.protein_g,kc0)+
