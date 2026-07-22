@@ -934,9 +934,12 @@ def _handle(req: dict) -> dict:
         return _exception_to_rpc_error(rpc_id, e)
 
 
-@app.get("/")
-@app.get("/health")
+@app.api_route("/", methods=["GET", "HEAD"])
+@app.api_route("/health", methods=["GET", "HEAD"])
 def health() -> PlainTextResponse:
+    # GET and HEAD both return 200 so uptime pingers (which default to HEAD)
+    # get a clean check instead of a 405 — and keep the free-tier web service
+    # from spinning down.
     mode = "readonly" if garmin.READONLY_MODE else "live"
     return PlainTextResponse(f"garmin-mcp ok ({mode})")
 
