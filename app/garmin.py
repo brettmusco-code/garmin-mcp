@@ -1186,6 +1186,9 @@ _DEFAULT_HOURS = {
     "rest": 0.0, "recovery": 0.75, "easy": 1.0, "endurance": 1.5,
     "long": 2.5, "tempo": 1.0, "threshold": 1.25, "vo2": 1.0,
 }
+# Rough default paces (m/s) to convert a distance-only workout into a duration
+# when neither an explicit estimate nor time-based steps are available.
+_DEFAULT_PACE_MPS = {"running": 3.0, "cycling": 7.8, "swimming": 1.0, "walking": 1.4}
 _PROTEIN_G_PER_KG_DEFAULT = {"lose": 1.9, "maintain": 1.6, "gain": 1.7}
 # Deficit-periodization weights: how much of the weekly deficit each day
 # type attracts. Rest/easy days bank the cut; hard days stay near
@@ -1628,6 +1631,13 @@ def _planned_hours(item: dict, intensity: str) -> tuple[float, str]:
                     or _workout_duration_secs(wo))
             if secs:
                 return round(secs / 3600.0, 2), "workout_detail"
+            # Distance-only workout: convert distance to time at a default pace.
+            dist = wo.get("estimatedDistanceInMeters")
+            if dist:
+                sport = (wo.get("sportType") or {}).get("sportTypeKey") or ""
+                mps = _DEFAULT_PACE_MPS.get(sport)
+                if mps:
+                    return round(dist / mps / 3600.0, 2), "workout_distance"
         except Exception:  # noqa: BLE001
             pass
     title_hours = _duration_from_title(item.get("title") or item.get("workoutName") or "")
@@ -1757,84 +1767,61 @@ def _is_outdoor_session(sport: str, title: str) -> bool:
     return sport in ("running", "cycling", "walking")
 
 
-def _largest_remainder(total: int, weights: list[float]) -> list[int]:
-    """Apportion integer `total` across len(weights) buckets proportional to
-    `weights`, summing to exactly `total` (largest-remainder rounding)."""
-    n = len(weights)
-    if n == 0 or total <= 0:
-        return [0] * n
-    s = sum(weights)
-    if s <= 0:
-        base = [total // n] * n
-        for i in range(total - sum(base)):
-            base[i] += 1
-        return base
-    raw = [total * w / s for w in weights]
-    out = [int(x) for x in raw]
-    order = sorted(range(n), key=lambda i: -(raw[i] - out[i]))
-    for i in range(total - sum(out)):
-        out[order[i % n]] += 1
-    return out
+_BREAKFAST_CAP_KCAL = 650   # a breakfast shouldn't balloon on a big training day
 
 
-def _align_peri_carbs(meals: list[dict], want: int) -> None:
-    """Set the 'Pre / peri-workout' meal's carbs to `want` (what the fuel cards
-    prescribe around the session) and re-apportion the rest of the day's carbs
-    across the other meals, so the day's total carbs stay fixed and the meal
-    plan tells the same story as the per-workout fuel cards."""
-    idx = next((i for i, m in enumerate(meals)
-                if m["meal"].startswith("Pre / peri")), None)
-    if idx is None:
+def _cap_meal(meals: list[dict], name: str, cap_kcal: int, spill_to: str) -> None:
+    """Cap one meal's calories, moving the trimmed macros to another meal so
+    the day's totals are preserved. Keeps big-day energy out of breakfast."""
+    src = next((m for m in meals if m["meal"] == name), None)
+    dst = next((m for m in meals if m["meal"] == spill_to), None)
+    if not src or not dst:
         return
-    total = sum(m["carbs_g"] for m in meals)
-    want = max(0, min(int(want), total))
-    others = [m for i, m in enumerate(meals) if i != idx]
-    alloc = _largest_remainder(total - want, [m["carbs_g"] for m in others])
-    for m, a in zip(others, alloc):
-        m["carbs_g"] = a
-    meals[idx]["carbs_g"] = want
+    kc = src["protein_g"] * 4 + src["carbs_g"] * 4 + src["fat_g"] * 9
+    if kc <= cap_kcal:
+        return
+    scale = cap_kcal / kc
+    for k in ("protein_g", "carbs_g", "fat_g"):
+        keep = round(src[k] * scale)
+        dst[k] += src[k] - keep
+        src[k] = keep
 
 
 def _meal_split(target_kcal: int, protein_g: int, carbs_g: int, fat_g: int,
                 needs_fuel: bool, skip_breakfast: bool = False,
-                peri_carbs_g: int | None = None) -> list[dict]:
-    """Split a day's macros into meals so targets are actionable. Protein is
-    spread evenly (even absorption); carbs are weighted toward training when
-    the day has a fueled session; fat is kept lower around workouts.
+                fuel_carbs_g: int = 0, fuel_protein_g: int = 0) -> list[dict]:
+    """Split a day's macros into meals so targets are actionable.
 
-    skip_breakfast: time-restricted eating — drop the Breakfast meal and
-    re-normalise the remaining meals so the day's full macros land in the
-    later eating window (pre/peri-workout fuel is preserved, since fueling a
-    session is separate from a sit-down breakfast).
+    The carbs/protein the fuel cards prescribe around the session(s) — pre +
+    during + post, summed across every fueled session — are carved out first
+    into a single 'Workout fuel' line, so the meal plan reconciles exactly with
+    the per-workout fuel timeline. The remaining energy goes to sit-down meals,
+    weighted toward lunch/dinner (not spread evenly) with a hard breakfast cap,
+    so a high-expenditure day doesn't produce a 1,500-kcal breakfast.
 
-    peri_carbs_g: when the day has fuel cards, force the 'Pre / peri-workout'
-    meal's carbs to the amount the cards prescribe (pre + during), so the
-    meal plan and the fuel timeline agree instead of contradicting."""
-    if needs_fuel:
-        meals = [("Breakfast", 0.25, 0.20, 0.30),
-                 ("Pre / peri-workout", 0.15, 0.30, 0.05),
-                 ("Lunch", 0.25, 0.20, 0.30),
-                 ("Dinner", 0.25, 0.25, 0.30),
-                 ("Snack", 0.10, 0.05, 0.05)]
-    else:
-        meals = [("Breakfast", 0.30, 0.25, 0.30),
-                 ("Lunch", 0.30, 0.30, 0.30),
-                 ("Dinner", 0.30, 0.30, 0.30),
-                 ("Snack", 0.10, 0.15, 0.10)]
+    skip_breakfast: time-restricted eating — drop the Breakfast meal (weekends
+    keep it) and shift its share into the later meals."""
+    out: list[dict] = []
+    fc = max(0, min(int(round(fuel_carbs_g or 0)), carbs_g))
+    fp = max(0, min(int(round(fuel_protein_g or 0)), protein_g))
+    if needs_fuel and (fc > 0 or fp > 0):
+        out.append({"meal": "Workout fuel (pre/during/post)",
+                    "protein_g": fp, "carbs_g": fc, "fat_g": 0})
+    rem_p, rem_c, rem_f = protein_g - fp, carbs_g - fc, fat_g
+
+    # Sit-down meals: weighted toward lunch/dinner, breakfast kept modest.
+    sit = [("Breakfast", 0.22), ("Lunch", 0.30), ("Dinner", 0.33), ("Snack", 0.15)]
     if skip_breakfast:
-        meals = [m for m in meals if m[0] != "Breakfast"]
-        sp = sum(m[1] for m in meals) or 1.0
-        sc = sum(m[2] for m in meals) or 1.0
-        sf = sum(m[3] for m in meals) or 1.0
-        meals = [(n, p / sp, c / sc, f / sf) for (n, p, c, f) in meals]
-    out = []
-    for name, p_w, c_w, f_w in meals:
-        p = round(protein_g * p_w)
-        c = round(carbs_g * c_w)
-        f = round(fat_g * f_w)
-        out.append({"meal": name, "protein_g": p, "carbs_g": c, "fat_g": f})
-    if needs_fuel and peri_carbs_g is not None:
-        _align_peri_carbs(out, peri_carbs_g)
+        sit = [(n, w) for (n, w) in sit if n != "Breakfast"]
+    sw = sum(w for _, w in sit) or 1.0
+    meals = [{"meal": n,
+              "protein_g": round(rem_p * w / sw),
+              "carbs_g": round(rem_c * w / sw),
+              "fat_g": round(rem_f * w / sw)} for (n, w) in sit]
+    if not skip_breakfast:
+        _cap_meal(meals, "Breakfast", _BREAKFAST_CAP_KCAL, "Dinner")
+    out.extend(meals)
+
     for m in out:
         m["kcal"] = m["protein_g"] * 4 + m["carbs_g"] * 4 + m["fat_g"] * 9
     return out
@@ -2447,8 +2434,10 @@ def generate_fueling_plan(
                 continue
             hrs = max(s["hours"], 1.0)
             is_swim = s["sport"] == "swimming"
-            during_per_hr = 60 if s["hours"] > 2 else (45 if s["hours"] > 1.5 else 35)
-            pre = 60 if (s["hours"] >= 2 or s["intensity"] in ("threshold", "vo2")) else 45
+            # Training carb rates — deliberately below race numbers (60-90 g/hr
+            # is a race-day target; get_race_fueling still uses those).
+            during_per_hr = 45 if s["hours"] > 3 else (40 if s["hours"] > 2 else 30)
+            pre = 40 if (s["hours"] >= 2 or s["intensity"] in ("threshold", "vo2")) else 30
             card = {
                 "session": s["title"], "intensity": s["intensity"], "hours": s["hours"],
                 # Never fuel swims pre or during — pool sessions don't take
@@ -2466,8 +2455,8 @@ def generate_fueling_plan(
                 if s["intensity"] in ("threshold", "vo2", "long") or s["hours"] >= 2:
                     card["caffeine_mg"] = round(weight_kg * 3)
                 if s["hours"] > 2.5:
-                    card["note"] = ("long effort — push toward 60-90 g carbs/hr "
-                                    "(glucose:fructose mix)")
+                    card["note"] = ("long effort — 45 g/hr is the training target; "
+                                    "save 60-90 g/hr (glucose:fructose) for racing")
                 # Heat: bump fluid + sodium for outdoor sessions on hot days.
                 if _is_outdoor_session(s["sport"], s["title"]):
                     high_c = heat_c
@@ -2485,9 +2474,12 @@ def generate_fueling_plan(
                                         "; " + card["note"] if card.get("note") else "")
             fuel_cards.append(card)
 
-        # Carbs to eat around the session(s), per the fuel cards — used to make
-        # the 'Pre / peri-workout' meal match the fuel timeline.
-        peri_carbs = sum(c["pre_carbs_g"] + c["during_carbs_g_total"] for c in fuel_cards)
+        # Total carbs/protein the fuel cards prescribe around the session(s) —
+        # pre + during + post, summed across every fueled session — so the meal
+        # plan's 'Workout fuel' line reconciles with the per-workout timeline.
+        fuel_carbs = sum(c["pre_carbs_g"] + c["during_carbs_g_total"] + c["post_carbs_g"]
+                         for c in fuel_cards)
+        fuel_protein = sum(c["post_protein_g"] for c in fuel_cards)
         # Weekday breakfast-skip (time-restricted eating) if the athlete set it.
         is_weekday = date.fromisoformat(d_iso).weekday() < 5
         skip_bf = bool(skip_breakfast_val and is_weekday)
@@ -2511,7 +2503,7 @@ def generate_fueling_plan(
             "skip_breakfast": skip_bf,
             "meals": _meal_split(target_kcal, protein_g, carbs_g, fat_g,
                                  bool(fuel_cards), skip_breakfast=skip_bf,
-                                 peri_carbs_g=peri_carbs if fuel_cards else None),
+                                 fuel_carbs_g=fuel_carbs, fuel_protein_g=fuel_protein),
         }
         day_rows.append(row)
         for k in ("target_kcal", "protein_g", "carbs_g", "fat_g", "target_deficit_kcal"):

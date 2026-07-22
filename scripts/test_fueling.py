@@ -410,13 +410,20 @@ def main():
     check("meal protein sums ~ day protein", abs(tot_p - d0["protein_g"]) <= 3)
     d4m = plan["days"][4]  # long-ride day, carries a fuel card
     check("meal carbs sum ~ day carbs", abs(sum(m["carbs_g"] for m in d4m["meals"]) - d4m["carbs_g"]) <= 3)
-    peri = next((m for m in d4m["meals"] if m["meal"].startswith("Pre / peri")), None)
-    fuel_peri = sum(c["pre_carbs_g"] + c["during_carbs_g_total"] for c in d4m["fuel"])
-    check("peri-workout meal present on a fueled day", peri is not None)
-    check("peri-workout meal carbs match the fuel cards",
-          peri["carbs_g"] == min(fuel_peri, d4m["carbs_g"]))
+    wfuel = next((m for m in d4m["meals"] if m["meal"].startswith("Workout fuel")), None)
+    fuel_total_c = sum(c["pre_carbs_g"] + c["during_carbs_g_total"] + c["post_carbs_g"]
+                       for c in d4m["fuel"])
+    fuel_total_p = sum(c["post_protein_g"] for c in d4m["fuel"])
+    check("workout-fuel meal present on a fueled day", wfuel is not None)
+    check("workout-fuel carbs match the cards (pre+during+post)",
+          wfuel["carbs_g"] == min(fuel_total_c, d4m["carbs_g"]))
+    check("workout-fuel protein matches the cards' post protein",
+          wfuel["protein_g"] == min(fuel_total_p, d4m["protein_g"]))
     check("meal kcal sums ~ day target",
           all(abs(sum(m["kcal"] for m in d["meals"]) - d["target_kcal"]) <= 30
+              for d in plan["days"]))
+    check("breakfast never balloons past its cap (~650 kcal)",
+          all(next((m["kcal"] for m in d["meals"] if m["meal"] == "Breakfast"), 0) <= 680
               for d in plan["days"]))
 
     print("weekday breakfast-skip (time-restricted eating):")
