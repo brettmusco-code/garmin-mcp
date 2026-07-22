@@ -106,6 +106,33 @@ def get_day(lat: float, lon: float, date_iso: str) -> dict | None:
     return data
 
 
+def forecast_high_c(lat: float, lon: float, date_iso: str) -> float | None:
+    """Forecast daily high (deg C) for an upcoming date. Cached 6h (forecasts
+    move). Returns None if unavailable or the date is outside the forecast
+    horizon."""
+    lat_r = _round_coord(lat)
+    lon_r = _round_coord(lon)
+    key_parts = [f"{lat_r:+.1f}", f"{lon_r:+.1f}", date_iso]
+    args = {"lat": lat_r, "lon": lon_r, "date": date_iso}
+    hit = cache.get("weather_forecast", args, key_parts=key_parts, ttl_seconds=6 * 3600)
+    if hit is not None:
+        return hit.get("high_c")
+    data = _fetch(FORECAST_URL, {
+        "latitude": lat_r, "longitude": lon_r,
+        "daily": "temperature_2m_max",
+        "start_date": date_iso, "end_date": date_iso,
+        "temperature_unit": "celsius", "timezone": "GMT",
+    })
+    high = None
+    try:
+        vals = data["daily"]["temperature_2m_max"]
+        high = vals[0] if vals else None
+    except (KeyError, TypeError, IndexError):
+        high = None
+    cache.put("weather_forecast", args, {"high_c": high}, key_parts=key_parts)
+    return high
+
+
 def _iter_hours(hourly: dict, start_utc: datetime, end_utc: datetime):
     """Yield per-hour dicts covering [start_utc, end_utc] from an
     Open-Meteo hourly response."""

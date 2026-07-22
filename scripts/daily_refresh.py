@@ -378,6 +378,20 @@ def main() -> int:
             break
     print()
 
+    # ---------- [optional] push fueling targets to Garmin ----------
+    # Opt-in via FUEL_PUSH_GARMIN=true. Pushes today's + tomorrow's targets
+    # from the weekly snapshot's nutrition_plan into Garmin Connect's
+    # nutrition goals (experimental — see push_nutrition_targets_to_garmin).
+    if os.environ.get("FUEL_PUSH_GARMIN", "").lower() in ("1", "true", "yes"):
+        print("Pushing fueling targets to Garmin (FUEL_PUSH_GARMIN=true)")
+        try:
+            res = garmin.push_nutrition_targets_to_garmin(days=2)
+            for r in res.get("results", []):
+                print(f"  {r['date']}: {r['status']}")
+        except Exception as ex:  # noqa: BLE001
+            print(f"  push failed: {ex}")
+        print()
+
     # ---------- summary ----------
     print("Cache totals:")
     for tool in ("daily_summary", "activities_month", "calendar_month",

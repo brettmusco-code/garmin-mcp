@@ -475,6 +475,146 @@ TOOLS = [
             },
         },
     },
+    {
+        "name": "set_fueling_goal",
+        "description": (
+            "Set/replace the athlete's fueling goal (target weight + timeline) "
+            "used by generate_fueling_plan and the /fuel skill. goal_type is "
+            "'lose', 'gain', or 'maintain'. For lose/gain, pass target_weight_kg "
+            "and target_date (YYYY-MM-DD). Optionally pass sex ('male'/'female'), "
+            "height_cm and age for an accurate Mifflin-St Jeor BMR, and "
+            "protein_g_per_kg to override the default. Persisted to R2 as the "
+            "single active goal."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "goal_type": {"type": "string", "enum": ["lose", "gain", "maintain"]},
+                "target_weight_kg": {"type": "number"},
+                "target_date": {"type": "string", "description": "YYYY-MM-DD"},
+                "start_weight_kg": {"type": "number", "description": "optional; defaults to current weight"},
+                "sex": {"type": "string", "enum": ["male", "female"]},
+                "height_cm": {"type": "number"},
+                "age": {"type": "number"},
+                "protein_g_per_kg": {"type": "number"},
+                "max_deficit_kcal": {"type": "number", "description": "daily deficit cap; default 500, pass 0 to remove the cap"},
+                "ea_floor": {"type": "number", "description": "energy-availability warning threshold (kcal/kg FFM); default 30, 0 disables"},
+                "ea_min": {"type": "number", "description": "ENFORCED EA minimum: daily target floored at ea_min x FFM + day's burn. Unset = off"},
+                "min_kcal": {"type": "number", "description": "absolute daily calorie floor. Unset = none"},
+                "bmr_floor_mult": {"type": "number", "description": "daily-target floor as BMR multiple; default 1.2, 0 drops the floor"},
+                "periodize_deficit": {"type": "boolean", "description": "bank the deficit on rest/easy days (default true for lose goals)"},
+                "front_load": {"type": "number", "description": "0..0.9: steeper deficit early, tapering as weight nears target. 0 = flat linear pace"},
+                "max_loss_lb_per_week": {"type": "number", "description": "cap the loss rate in lb/week (friendlier than max_deficit_kcal; 1 lb ~ 3500 kcal)"},
+                "use_adaptive_tdee": {"type": "boolean", "description": "use measured maintenance (intake vs weight change) instead of BMR x1.3 once data is sufficient"},
+                "home_lat": {"type": "number", "description": "home latitude, for heat-aware hydration on outdoor sessions"},
+                "home_lon": {"type": "number", "description": "home longitude"},
+                "notes": {"type": "string"},
+            },
+            "required": ["goal_type"],
+        },
+    },
+    {
+        "name": "get_fueling_goal",
+        "description": (
+            "Return the active fueling goal plus live progress: current weight "
+            "vs target, weeks remaining, required daily kcal change, goal age, "
+            "and review flags (stale goal, target passed, weight not logged). "
+            "Returns goal=null if none set."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "generate_fueling_plan",
+        "description": (
+            "Build a forward fueling plan for the next N days from the stored "
+            "goal + Garmin body composition + scheduled workouts: per-day "
+            "calorie target, macros (protein by bodyweight, carbs periodized by "
+            "session type, fat as balancer) and a per-workout fuel card "
+            "(pre/during/post carbs + protein, hydration, sodium, caffeine) for "
+            "sessions >=75 min or >=Z3. Session burn is calibrated from the "
+            "athlete's own 90-day history. Set save=true to merge the plan into "
+            "the weekly snapshot so nutrition_plan_vs_actual can track it."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "start_date": {"type": "string", "description": "YYYY-MM-DD; default today"},
+                "days": {"type": "number", "description": "Horizon 1-28. Default 7."},
+                "save": {"type": "boolean", "description": "merge into weekly snapshot, default false"},
+                "carb_load": {"type": "boolean", "description": "race-week mode: no deficit, carbs ~9 g/kg. Default false"},
+                "max_deficit_kcal": {"type": "number", "description": "override the daily deficit cap (default 500 or goal value); 0 removes it"},
+                "ea_floor": {"type": "number", "description": "override the energy-availability warning threshold (default 30 or goal value); 0 disables"},
+                "fuel_min_minutes": {"type": "number", "description": "min session length to get a fuel card. Default 90."},
+                "bmr_floor_mult": {"type": "number", "description": "override the daily-target floor as BMR multiple (default 1.2 or goal value); 0 drops it"},
+                "periodize_deficit": {"type": "boolean", "description": "override deficit periodization (default true for lose goals; false = flat)"},
+                "ea_min": {"type": "number", "description": "override the enforced EA minimum (kcal/kg FFM); 0 disables"},
+                "min_kcal": {"type": "number", "description": "override the absolute daily calorie floor; 0 disables"},
+                "rebalance": {"type": ["boolean", "number"], "description": "self-correct from recent logged days: true = week-to-date, N = last N days. Spreads the accumulated intake error (vs expenditure-adjusted targets) across this window. Default false"},
+                "front_load": {"type": "number", "description": "override front-loading 0..0.9 (default from goal): steeper deficit early, tapering as weight nears target"},
+                "max_loss_lb_per_week": {"type": "number", "description": "override the loss-rate cap in lb/week"},
+                "use_adaptive_tdee": {"type": "boolean", "description": "override use of measured maintenance instead of the BMR formula"},
+                "heat_c": {"type": "number", "description": "override forecast: assume this day's high (deg C) for heat-aware hydration on outdoor sessions"},
+            },
+        },
+    },
+    {
+        "name": "get_race_fueling",
+        "description": (
+            "Race-day fueling calculator for a target event: pre-race meal, "
+            "carb-loading protocol (for long events), and hour-by-hour carbs, "
+            "fluid, sodium, and caffeine. Pass sport, expected duration_hours, "
+            "optional intensity, weight_kg (defaults to baseline), and hot=true "
+            "for heat."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "sport": {"type": "string", "description": "cycling | running | triathlon | swimming | ..."},
+                "duration_hours": {"type": "number"},
+                "intensity": {"type": "string"},
+                "weight_kg": {"type": "number"},
+                "hot": {"type": "boolean", "description": "hot conditions, default false"},
+            },
+            "required": ["sport", "duration_hours"],
+        },
+    },
+    {
+        "name": "get_adaptive_tdee",
+        "description": (
+            "Estimate the athlete's TRUE maintenance from logged intake vs "
+            "actual weight change over recent weeks (more accurate than BMR x "
+            "1.3 once there's data). Returns total maintenance, the "
+            "non-exercise base, mean daily exercise burn, the formula base for "
+            "comparison, and a confidence rating. generate_fueling_plan uses "
+            "this as its energy base when use_adaptive_tdee is on and "
+            "confidence is sufficient."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "weeks": {"type": "number", "description": "window in weeks, 2-12. Default 6."},
+            },
+        },
+    },
+    {
+        "name": "push_nutrition_targets_to_garmin",
+        "description": (
+            "EXPERIMENTAL: write the fueling plan's daily calorie/macro targets "
+            "into Garmin Connect's nutrition goals (so the Connect app shows the "
+            "plan's target, and Garmin's own activity adjustment then auto-raises "
+            "it with actual burn). Reads targets from the weekly snapshot's "
+            "nutrition_plan — save one first via generate_fueling_plan(save=true). "
+            "Only works in live (non-readonly) mode, i.e. from the cron env. "
+            "Returns per-endpoint diagnostics."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target_date": {"type": "string", "description": "YYYY-MM-DD; default today"},
+                "days": {"type": "number", "description": "how many days ahead to push, 1-7. Default 1."},
+            },
+        },
+    },
 ]
 
 
@@ -616,6 +756,79 @@ def _call_tool(name: str, args: dict) -> Any:
     if name == "nutrition_trend":
         return garmin.nutrition_trend(
             weeks=int(args.get("weeks", 4))
+        )
+    if name == "set_fueling_goal":
+        gt = args.get("goal_type")
+        if gt not in ("lose", "gain", "maintain"):
+            raise ValueError("`goal_type` must be 'lose', 'gain', or 'maintain'")
+        td = args.get("target_date")
+        if td and not DATE_RE.match(td):
+            raise ValueError("`target_date` must be YYYY-MM-DD")
+        return garmin.set_fueling_goal(
+            goal_type=gt,
+            target_weight_kg=args.get("target_weight_kg"),
+            target_date=td,
+            start_weight_kg=args.get("start_weight_kg"),
+            sex=args.get("sex"),
+            height_cm=args.get("height_cm"),
+            age=args.get("age"),
+            protein_g_per_kg=args.get("protein_g_per_kg"),
+            max_deficit_kcal=args.get("max_deficit_kcal"),
+            ea_floor=args.get("ea_floor"),
+            ea_min=args.get("ea_min"),
+            min_kcal=args.get("min_kcal"),
+            bmr_floor_mult=args.get("bmr_floor_mult"),
+            periodize_deficit=args.get("periodize_deficit"),
+            front_load=args.get("front_load"),
+            max_loss_lb_per_week=args.get("max_loss_lb_per_week"),
+            use_adaptive_tdee=args.get("use_adaptive_tdee"),
+            home_lat=args.get("home_lat"),
+            home_lon=args.get("home_lon"),
+            notes=args.get("notes"),
+        )
+    if name == "get_fueling_goal":
+        return garmin.get_fueling_goal()
+    if name == "generate_fueling_plan":
+        sd = args.get("start_date")
+        if sd and not DATE_RE.match(sd):
+            raise ValueError("`start_date` must be YYYY-MM-DD")
+        return garmin.generate_fueling_plan(
+            start_date=sd,
+            days=int(args.get("days", 7)),
+            save=bool(args.get("save", False)),
+            carb_load=bool(args.get("carb_load", False)),
+            max_deficit_kcal=args.get("max_deficit_kcal"),
+            ea_floor=args.get("ea_floor"),
+            fuel_min_minutes=int(args.get("fuel_min_minutes", 90)),
+            bmr_floor_mult=args.get("bmr_floor_mult"),
+            periodize_deficit=args.get("periodize_deficit"),
+            ea_min=args.get("ea_min"),
+            min_kcal=args.get("min_kcal"),
+            rebalance=args.get("rebalance", False),
+            front_load=args.get("front_load"),
+            use_adaptive_tdee=args.get("use_adaptive_tdee"),
+            max_loss_lb_per_week=args.get("max_loss_lb_per_week"),
+            heat_c=args.get("heat_c"),
+        )
+    if name == "get_race_fueling":
+        sport = args.get("sport")
+        dur = args.get("duration_hours")
+        if not sport or dur is None:
+            raise ValueError("`sport` and `duration_hours` are required")
+        return garmin.get_race_fueling(
+            sport=sport, duration_hours=float(dur),
+            intensity=args.get("intensity", "race"),
+            weight_kg=args.get("weight_kg"), hot=bool(args.get("hot", False)),
+        )
+    if name == "get_adaptive_tdee":
+        return garmin.get_adaptive_tdee(weeks=int(args.get("weeks", 6)))
+    if name == "push_nutrition_targets_to_garmin":
+        td = args.get("target_date")
+        if td and not DATE_RE.match(td):
+            raise ValueError("`target_date` must be YYYY-MM-DD")
+        return garmin.push_nutrition_targets_to_garmin(
+            target_date=td,
+            days=int(args.get("days", 1)),
         )
     raise ValueError(f"Unknown tool: {name}")
 

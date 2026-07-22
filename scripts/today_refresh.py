@@ -297,7 +297,24 @@ def run_workout_check() -> int:
             if _is_rate_limit(ex):
                 return 1
 
+    _refresh_fueling_plan()
     return 0
+
+
+def _refresh_fueling_plan() -> None:
+    """If a fueling goal is set, regenerate the plan (self-correcting from
+    today's actuals) and save it into the weekly snapshot, so the dashboard /
+    /nutrition / /morning always reflect the latest intake and burn. No-op
+    when no goal is set. Runs every intraday refresh (~every few hours)."""
+    try:
+        if not (garmin.get_fueling_goal() or {}).get("goal"):
+            return
+        print("[fuel] regenerating fueling plan from latest actuals")
+        res = garmin.generate_fueling_plan(days=7, save=True, rebalance=True)
+        note = "; ".join(res.get("notes", [])[:1]) or "ok"
+        print(f"  saved -> {res.get('saved_to_weekly_snapshot')} ({note})")
+    except Exception as ex:  # noqa: BLE001
+        print(f"  fuel refresh skipped: {str(ex)[:160]}", file=sys.stderr)
 
 
 def main() -> int:
