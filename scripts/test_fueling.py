@@ -233,8 +233,8 @@ def main():
     plan_eta = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7)
     check("EA held at min even under an infeasible goal",
           all(d["energy_availability_kcal_per_kg_ffm"] >= 24.5 for d in plan_eta["days"]))
-    check("shortfall note projects a landing date",
-          any("lands ~" in n for n in plan_eta["notes"]))
+    check("projection gives a finish date under an infeasible goal",
+          plan_eta["projection"].get("projected_finish_date") is not None)
     # restore the default lose goal for remaining checks
     g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
                        sex="male", height_cm=178, age=40)
