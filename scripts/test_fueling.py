@@ -183,6 +183,10 @@ def main():
         kcal = d["protein_g"] * 4 + d["carbs_g"] * 4 + d["fat_g"] * 9
         check(f"  {d['date']} P/C/F sums within 8% of target",
               abs(kcal - d["target_kcal"]) <= 0.08 * d["target_kcal"] + 60)
+    check("fat never exceeds ~30% of calories (carbs are the flex macro)",
+          all(d["fat_g"] * 9 <= 0.30 * d["target_kcal"] + 20 for d in plan["days"]))
+    check("high-burn day routes surplus energy to carbs, not fat",
+          day4["carbs_g"] > day4["fat_g"])
 
     print("deficit periodization (default for lose goals):")
     check("config says periodized", plan["config"]["periodize_deficit"] is True)

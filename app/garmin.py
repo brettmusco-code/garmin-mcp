@@ -2413,6 +2413,9 @@ def generate_fueling_plan(
         carb_target_g = round(weight_kg * carb_ratio)   # periodized training need
         carbs_g = carb_target_g
         fat_floor_kcal = weight_kg * 0.5 * 9
+        # Fat ceiling: at most ~30% of calories (and never under the 0.5 g/kg
+        # floor). On a big training day the flex macro is carbs, not fat.
+        fat_ceiling_g = max(weight_kg * 0.5, target_kcal * 0.30 / 9.0)
         # Fat closes the gap to target, with a floor of ~0.5 g/kg.
         fat_g = max((target_kcal - protein_g * 4 - carbs_g * 4) / 9.0, weight_kg * 0.5)
         # If the calorie target can't hold the periodized carbs (a very steep
@@ -2424,6 +2427,12 @@ def generate_fueling_plan(
             carbs_g = max(0, round((target_kcal - protein_g * 4 - fat_floor_kcal) / 4.0))
             fat_g = weight_kg * 0.5
             carbs_trimmed = carbs_g < carb_target_g
+        elif fat_g > fat_ceiling_g:
+            # High-expenditure day: fat would balloon to fill the target, so
+            # cap it and route the surplus energy into carbs (glycogen for the
+            # work), keeping the day's macros summed to the target.
+            fat_g = fat_ceiling_g
+            carbs_g = max(carbs_g, round((target_kcal - protein_g * 4 - fat_g * 9) / 4.0))
         fat_g = round(fat_g)
 
         # Energy availability = (intake − exercise energy) / fat-free mass.

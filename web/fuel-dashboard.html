@@ -1,12 +1,4 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Fueling Plan</title>
-<!-- TEMPLATE: /fuel replaces the `const PLAN` object with generate_fueling_plan JSON, then republishes. Sample data below renders standalone. -->
-</head>
-<body>
+<!-- TEMPLATE: /fuel replaces the `const PLAN` object in the <script> with the generate_fueling_plan JSON, then publishes this as an Artifact. The embedded object below is sample data so the file renders standalone. -->
 <style>
   :root{
     --bg:#0e1520; --panel:#18232f; --panel-2:#1f2c3a; --line:#2a3a4c;
@@ -273,6 +265,7 @@ const PLAN = {
     "use_adaptive_tdee": null,
     "home_lat": null,
     "home_lon": null,
+    "skip_breakfast_weekdays": null,
     "notes": null,
     "set_date": "2026-07-22"
   },
@@ -318,6 +311,7 @@ const PLAN = {
     "ea_min_kcal_per_kg_ffm": null,
     "min_kcal": null,
     "front_load": null,
+    "skip_breakfast_weekdays": null,
     "energy_base_source": "bmr_x1.3"
   },
   "projection": {
@@ -449,6 +443,7 @@ const PLAN = {
       "energy_availability_kcal_per_kg_ffm": 31.3,
       "needs_fuel": false,
       "fuel": [],
+      "skip_breakfast": false,
       "meals": [
         {
           "meal": "Breakfast",
@@ -510,6 +505,7 @@ const PLAN = {
       "energy_availability_kcal_per_kg_ffm": 29.6,
       "needs_fuel": false,
       "fuel": [],
+      "skip_breakfast": false,
       "meals": [
         {
           "meal": "Breakfast",
@@ -571,6 +567,7 @@ const PLAN = {
       "energy_availability_kcal_per_kg_ffm": 24.6,
       "needs_fuel": false,
       "fuel": [],
+      "skip_breakfast": false,
       "meals": [
         {
           "meal": "Breakfast",
@@ -632,6 +629,7 @@ const PLAN = {
       "energy_availability_kcal_per_kg_ffm": 23.2,
       "needs_fuel": false,
       "fuel": [],
+      "skip_breakfast": false,
       "meals": [
         {
           "meal": "Breakfast",
@@ -692,6 +690,7 @@ const PLAN = {
       "energy_availability_kcal_per_kg_ffm": 31.3,
       "needs_fuel": false,
       "fuel": [],
+      "skip_breakfast": false,
       "meals": [
         {
           "meal": "Breakfast",
@@ -745,8 +744,8 @@ const PLAN = {
       "target_deficit_kcal": 273,
       "kcal_adjustment": -273,
       "protein_g": 156,
-      "carbs_g": 519,
-      "fat_g": 171,
+      "carbs_g": 587,
+      "fat_g": 141,
       "protein_g_per_kg": 2.1,
       "carb_g_per_kg": 7.0,
       "carbs_trimmed": false,
@@ -768,41 +767,42 @@ const PLAN = {
           "note": "long effort \u2014 push toward 60-90 g carbs/hr (glucose:fructose mix)"
         }
       ],
+      "skip_breakfast": false,
       "meals": [
         {
           "meal": "Breakfast",
           "protein_g": 39,
-          "carbs_g": 104,
-          "fat_g": 51,
-          "kcal": 1031
+          "carbs_g": 90,
+          "fat_g": 42,
+          "kcal": 894
         },
         {
           "meal": "Pre / peri-workout",
           "protein_g": 23,
-          "carbs_g": 156,
-          "fat_g": 9,
-          "kcal": 797
+          "carbs_g": 270,
+          "fat_g": 7,
+          "kcal": 1235
         },
         {
           "meal": "Lunch",
           "protein_g": 39,
-          "carbs_g": 104,
-          "fat_g": 51,
-          "kcal": 1031
+          "carbs_g": 90,
+          "fat_g": 42,
+          "kcal": 894
         },
         {
           "meal": "Dinner",
           "protein_g": 39,
-          "carbs_g": 130,
-          "fat_g": 51,
-          "kcal": 1135
+          "carbs_g": 113,
+          "fat_g": 42,
+          "kcal": 986
         },
         {
           "meal": "Snack",
           "protein_g": 16,
-          "carbs_g": 26,
-          "fat_g": 9,
-          "kcal": 249
+          "carbs_g": 23,
+          "fat_g": 7,
+          "kcal": 219
         }
       ]
     },
@@ -836,6 +836,7 @@ const PLAN = {
       "energy_availability_kcal_per_kg_ffm": 25.3,
       "needs_fuel": false,
       "fuel": [],
+      "skip_breakfast": false,
       "meals": [
         {
           "meal": "Breakfast",
@@ -871,8 +872,8 @@ const PLAN = {
   "totals": {
     "target_kcal": 17370,
     "protein_g": 1038,
-    "carbs_g": 2316,
-    "fat_g": 439,
+    "carbs_g": 2384,
+    "fat_g": 409,
     "est_burn_kcal": 4979,
     "target_deficit_kcal": 2694
   },
@@ -1130,6 +1131,3 @@ function drawProjection(){
 render();
 window.addEventListener('resize', drawProjection);
 </script>
-
-</body>
-</html>
