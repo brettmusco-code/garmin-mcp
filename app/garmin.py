@@ -2318,17 +2318,9 @@ def generate_fueling_plan(
                      "later days assume rest/easy — re-run when the plan extends.")
 
     if periodize_applied and residual < -50:
-        msg = (f"Periodized deficit could not absorb {abs(residual)} kcal of the "
-               "weekly target (floors / hard-day limits reached) — actual pace "
-               "will run slower than the goal.")
-        achieved_wk = -sum(day_adjs) * (7.0 / days)  # achievable weekly deficit
-        kg_to_go = (weight_kg - tgt) if (gt == "lose" and tgt) else None
-        if kg_to_go and kg_to_go > 0 and achieved_wk > 100:
-            eta = date.today() + timedelta(weeks=kg_to_go * 7700 / achieved_wk)
-            msg += (f" At the achievable ~{round(achieved_wk)} kcal/wk "
-                    f"(~{round(achieved_wk / 7700, 2)} kg/wk), {tgt}kg lands "
-                    f"~{eta.isoformat()}.")
-        notes.append(msg)
+        notes.append(f"Periodized deficit could not absorb {abs(residual)} kcal of the "
+                     "weekly target (floors / hard-day limits reached) — actual pace "
+                     "runs slower than the goal; see the projected finish date.")
     below_bmr = [d["date"] for d in day_rows if d["target_kcal"] < bmr]
     if below_bmr:
         notes.append(f"Daily target falls below BMR on {', '.join(below_bmr)} — this is "

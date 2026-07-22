@@ -16,6 +16,8 @@ On-demand, **forward-looking** fueling plan. Where `/weekly` reviews the past we
 
 The math runs server-side in the MCP tool `generate_fueling_plan`, so this skill mostly orchestrates and renders. The tool mirrors the formulas in `skills/weekly.md` + `skills/project-instructions.md` (Mifflin-St Jeor BMR, the capped-deficit weight-goal policy, carb periodization 3–8 g/kg, fueling windows), calibrating each session's calorie burn from your own 90-day history.
 
+Related tools: **`get_adaptive_tdee`** (measured maintenance from intake vs weight change), **`get_race_fueling`** (race-day calculator), **`push_nutrition_targets_to_garmin`** (write goals into the Garmin app). The plan output also carries a **`projection`** (forward weight curve + finish date), a per-day **`meals[]`** split, **`energy_base`** (bmr_x1.3 or adaptive_tdee), and heat-aware / swim-aware fuel cards. Swims never get pre/during fuel (post only); outdoor sessions get a fluid/sodium bump on hot days (needs `home_lat`/`home_lon` on the goal, or a `heat_c` override).
+
 ### Flow
 
 1. **`get_fueling_goal`** — pull the stored goal + live progress.
@@ -38,6 +40,8 @@ The math runs server-side in the MCP tool `generate_fueling_plan`, so this skill
 3. **Render** using the format below. Fold every entry in `notes[]` into the Notes section verbatim (they carry horizon/BMR/deficit/pacing caveats). If `error` = `no_weight`, tell me to log a weigh-in (or pass `start_weight_kg` when setting the goal) and stop.
 
 4. **Offer to persist:** after showing the plan, ask *"Save this as the week's plan so `/nutrition` and `/morning` track adherence?"* If yes, re-call `generate_fueling_plan(days, save=true)` — it merges the per-day targets into the weekly snapshot's `nutrition_plan` without touching other snapshot fields.
+
+4b. **Race week:** if I name a target event, call `get_race_fueling(sport, duration_hours, ...)` and present the pre-race meal, carb-load days, and hour-by-hour carbs/fluid/sodium/caffeine + gel count. Combine with `generate_fueling_plan(carb_load=true)` for the loading days.
 
 5. **Optional Garmin push:** if I ask to see targets in the Garmin Connect app, call `push_nutrition_targets_to_garmin` (EXPERIMENTAL — only works from the live/cron env, not the read-only web MCP; the nightly cron can do it automatically with `FUEL_PUSH_GARMIN=true`). Garmin then applies its own activity adjustment on top of the pushed base goal — in-app auto-adjust after each workout. Report the per-endpoint diagnostics honestly if it fails. Independently of the push, adherence tracking always auto-adjusts: `/nutrition` and `/morning` compare intake to `adjusted_target_kcal`, and `rebalance=true` folds the error into the next plan.
 

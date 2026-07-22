@@ -200,6 +200,11 @@
     </div>
   </section>
 
+  <section class="block" id="projBlock">
+    <div class="lead"><h2>Projected trajectory</h2><span id="projNote"></span></div>
+    <div class="card"><canvas id="projChart" height="220" style="width:100%;display:block"></canvas></div>
+  </section>
+
   <section class="block" id="fuelBlock">
     <div class="lead"><h2>Per-workout fuel</h2><span>pre &middot; during &middot; post</span></div>
     <div class="card tl" id="tl"></div>
@@ -236,6 +241,10 @@ const PLAN = {
     "bmr_floor_mult": null,
     "periodize_deficit": null,
     "front_load": null,
+    "max_loss_lb_per_week": null,
+    "use_adaptive_tdee": null,
+    "home_lat": null,
+    "home_lon": null,
     "notes": null,
     "set_date": "2026-07-22"
   },
@@ -262,19 +271,97 @@ const PLAN = {
     "source": "mifflin_st_jeor",
     "weight_kg": 74.1
   },
+  "energy_base": {
+    "value": 2155,
+    "source": "bmr_x1.3"
+  },
+  "adaptive_tdee": null,
   "fat_free_mass_kg": 63.6,
   "daily_kcal_adjustment": -385,
   "protein_g_per_kg": 1.9,
   "carb_load": false,
   "config": {
     "deficit_cap_kcal": 500,
+    "max_loss_lb_per_week": 1.0,
     "ea_floor_kcal_per_kg_ffm": 30,
     "fuel_min_minutes": 90,
     "bmr_floor_mult": 1.2,
     "periodize_deficit": true,
     "ea_min_kcal_per_kg_ffm": null,
     "min_kcal": null,
-    "front_load": null
+    "front_load": null,
+    "energy_base_source": "bmr_x1.3"
+  },
+  "projection": {
+    "points": [
+      {
+        "date": "2026-07-22",
+        "weight_kg": 74.1
+      },
+      {
+        "date": "2026-07-29",
+        "weight_kg": 73.95
+      },
+      {
+        "date": "2026-08-05",
+        "weight_kg": 73.8
+      },
+      {
+        "date": "2026-08-12",
+        "weight_kg": 73.65
+      },
+      {
+        "date": "2026-08-19",
+        "weight_kg": 73.5
+      },
+      {
+        "date": "2026-08-26",
+        "weight_kg": 73.35
+      },
+      {
+        "date": "2026-09-02",
+        "weight_kg": 73.2
+      },
+      {
+        "date": "2026-09-09",
+        "weight_kg": 73.04
+      },
+      {
+        "date": "2026-09-16",
+        "weight_kg": 72.89
+      },
+      {
+        "date": "2026-09-23",
+        "weight_kg": 72.74
+      },
+      {
+        "date": "2026-09-30",
+        "weight_kg": 72.59
+      },
+      {
+        "date": "2026-10-07",
+        "weight_kg": 72.44
+      },
+      {
+        "date": "2026-10-14",
+        "weight_kg": 72.29
+      },
+      {
+        "date": "2026-10-21",
+        "weight_kg": 72.14
+      },
+      {
+        "date": "2026-10-28",
+        "weight_kg": 72.0
+      }
+    ],
+    "target_weight_kg": 72.0,
+    "target_date": "2026-09-02",
+    "max_sustainable_deficit_kcal": 166,
+    "max_weekly_loss_kg": 0.15,
+    "projected_finish_date": "2026-10-28",
+    "projected_weeks": 14.0,
+    "beats_target_date": false
   },
   "days": [
     {
@@ -304,7 +391,37 @@ const PLAN = {
       "carb_g_per_kg": 3.0,
       "energy_availability_kcal_per_kg_ffm": 31.3,
       "needs_fuel": false,
-      "fuel": []
+      "fuel": [],
+      "meals": [
+        {
+          "meal": "Breakfast",
+          "protein_g": 42,
+          "carbs_g": 56,
+          "fat_g": 18,
+          "kcal": 554
+        },
+        {
+          "meal": "Lunch",
+          "protein_g": 42,
+          "carbs_g": 67,
+          "fat_g": 18,
+          "kcal": 598
+        },
+        {
+          "meal": "Dinner",
+          "protein_g": 42,
+          "carbs_g": 67,
+          "fat_g": 18,
+          "kcal": 598
+        },
+        {
+          "meal": "Snack",
+          "protein_g": 14,
+          "carbs_g": 33,
+          "fat_g": 6,
+          "kcal": 242
+        }
+      ]
     },
     {
       "date": "2026-07-28",
@@ -334,7 +451,37 @@ const PLAN = {
       "carb_g_per_kg": 7.5,
       "energy_availability_kcal_per_kg_ffm": 29.6,
       "needs_fuel": false,
-      "fuel": []
+      "fuel": [],
+      "meals": [
+        {
+          "meal": "Breakfast",
+          "protein_g": 47,
+          "carbs_g": 139,
+          "fat_g": 11,
+          "kcal": 843
+        },
+        {
+          "meal": "Lunch",
+          "protein_g": 47,
+          "carbs_g": 167,
+          "fat_g": 11,
+          "kcal": 955
+        },
+        {
+          "meal": "Dinner",
+          "protein_g": 47,
+          "carbs_g": 167,
+          "fat_g": 11,
+          "kcal": 955
+        },
+        {
+          "meal": "Snack",
+          "protein_g": 16,
+          "carbs_g": 83,
+          "fat_g": 4,
+          "kcal": 432
+        }
+      ]
     },
     {
       "date": "2026-07-29",
@@ -364,7 +511,37 @@ const PLAN = {
       "carb_g_per_kg": 4.0,
       "energy_availability_kcal_per_kg_ffm": 24.6,
       "needs_fuel": false,
-      "fuel": []
+      "fuel": [],
+      "meals": [
+        {
+          "meal": "Breakfast",
+          "protein_g": 44,
+          "carbs_g": 74,
+          "fat_g": 11,
+          "kcal": 571
+        },
+        {
+          "meal": "Lunch",
+          "protein_g": 44,
+          "carbs_g": 89,
+          "fat_g": 11,
+          "kcal": 631
+        },
+        {
+          "meal": "Dinner",
+          "protein_g": 44,
+          "carbs_g": 89,
+          "fat_g": 11,
+          "kcal": 631
+        },
+        {
+          "meal": "Snack",
+          "protein_g": 15,
+          "carbs_g": 44,
+          "fat_g": 4,
+          "kcal": 272
+        }
+      ]
     },
     {
       "date": "2026-07-30",
@@ -394,7 +571,37 @@ const PLAN = {
       "carb_g_per_kg": 4.0,
       "energy_availability_kcal_per_kg_ffm": 23.2,
       "needs_fuel": false,
-      "fuel": []
+      "fuel": [],
+      "meals": [
+        {
+          "meal": "Breakfast",
+          "protein_g": 44,
+          "carbs_g": 74,
+          "fat_g": 11,
+          "kcal": 571
+        },
+        {
+          "meal": "Lunch",
+          "protein_g": 44,
+          "carbs_g": 89,
+          "fat_g": 11,
+          "kcal": 631
+        },
+        {
+          "meal": "Dinner",
+          "protein_g": 44,
+          "carbs_g": 89,
+          "fat_g": 11,
+          "kcal": 631
+        },
+        {
+          "meal": "Snack",
+          "protein_g": 15,
+          "carbs_g": 44,
+          "fat_g": 4,
+          "kcal": 272
+        }
+      ]
     },
     {
       "date": "2026-07-31",
@@ -423,7 +630,37 @@ const PLAN = {
       "carb_g_per_kg": 3.0,
       "energy_availability_kcal_per_kg_ffm": 31.3,
       "needs_fuel": false,
-      "fuel": []
+      "fuel": [],
+      "meals": [
+        {
+          "meal": "Breakfast",
+          "protein_g": 42,
+          "carbs_g": 56,
+          "fat_g": 18,
+          "kcal": 554
+        },
+        {
+          "meal": "Lunch",
+          "protein_g": 42,
+          "carbs_g": 67,
+          "fat_g": 18,
+          "kcal": 598
+        },
+        {
+          "meal": "Dinner",
+          "protein_g": 42,
+          "carbs_g": 67,
+          "fat_g": 18,
+          "kcal": 598
+        },
+        {
+          "meal": "Snack",
+          "protein_g": 14,
+          "carbs_g": 33,
+          "fat_g": 6,
+          "kcal": 242
+        }
+      ]
     },
     {
       "date": "2026-08-01",
@@ -468,6 +705,43 @@ const PLAN = {
           "caffeine_mg": 222,
           "note": "long effort \u2014 push toward 60-90 g carbs/hr (glucose:fructose mix)"
         }
+      ],
+      "meals": [
+        {
+          "meal": "Breakfast",
+          "protein_g": 39,
+          "carbs_g": 104,
+          "fat_g": 51,
+          "kcal": 1031
+        },
+        {
+          "meal": "Pre / peri-workout",
+          "protein_g": 23,
+          "carbs_g": 156,
+          "fat_g": 9,
+          "kcal": 797
+        },
+        {
+          "meal": "Lunch",
+          "protein_g": 39,
+          "carbs_g": 104,
+          "fat_g": 51,
+          "kcal": 1031
+        },
+        {
+          "meal": "Dinner",
+          "protein_g": 39,
+          "carbs_g": 130,
+          "fat_g": 51,
+          "kcal": 1135
+        },
+        {
+          "meal": "Snack",
+          "protein_g": 16,
+          "carbs_g": 26,
+          "fat_g": 9,
+          "kcal": 249
+        }
       ]
     },
     {
@@ -498,7 +772,37 @@ const PLAN = {
       "carb_g_per_kg": 4.0,
       "energy_availability_kcal_per_kg_ffm": 25.3,
       "needs_fuel": false,
-      "fuel": []
+      "fuel": [],
+      "meals": [
+        {
+          "meal": "Breakfast",
+          "protein_g": 44,
+          "carbs_g": 74,
+          "fat_g": 11,
+          "kcal": 571
+        },
+        {
+          "meal": "Lunch",
+          "protein_g": 44,
+          "carbs_g": 89,
+          "fat_g": 11,
+          "kcal": 631
+        },
+        {
+          "meal": "Dinner",
+          "protein_g": 44,
+          "carbs_g": 89,
+          "fat_g": 11,
+          "kcal": 631
+        },
+        {
+          "meal": "Snack",
+          "protein_g": 15,
+          "carbs_g": 44,
+          "fat_g": 4,
+          "kcal": 272
+        }
+      ]
     }
   ],
   "totals": {
@@ -510,7 +814,8 @@ const PLAN = {
     "target_deficit_kcal": 2694
   },
   "notes": [
-    "Low energy availability (<30 kcal/kg fat-free mass) on 2026-07-28, 2026-07-29, 2026-07-30, 2026-08-01, 2026-08-02 \u2014 under-fueling / RED-S risk; ease the deficit or add carbs on those days."
+    "Low energy availability (<30 kcal/kg fat-free mass) on 2026-07-28, 2026-07-29, 2026-07-30, 2026-08-01, 2026-08-02 \u2014 under-fueling / RED-S risk; ease the deficit or add carbs on those days.",
+    "At the sustainable rate you reach 72.0kg around 2026-10-28 \u2014 later than the 2026-09-02 target."
   ],
   "no_goal_available": false
 };
@@ -635,8 +940,66 @@ function render(){
   const notes = PLAN.notes||[];
   if(notes.length){ $('flags').innerHTML = notes.map(n=>`<div class="flag"><span class="ic">!</span><span>${n}</span></div>`).join(''); }
   else $('flagBlock').style.display='none';
+
+  drawProjection();
+}
+
+function cssVar(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+
+function drawProjection(){
+  const proj = PLAN.projection || {};
+  const pts = proj.points || [];
+  if(pts.length < 2){ $('projBlock').style.display='none'; return; }
+  const g = PLAN.goal;
+  const fin = proj.projected_finish_date;
+  $('projNote').textContent = fin
+    ? `~${g.target_weight_kg}kg around ${dmd(fin)} · max ${proj.max_weekly_loss_kg} kg/wk`
+    : 'target not reached at the sustainable rate';
+
+  const cv = $('projChart');
+  const dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth, H = 220;
+  cv.width = W*dpr; cv.height = H*dpr;
+  const ctx = cv.getContext('2d'); ctx.scale(dpr,dpr);
+  const ink = cssVar('--ink'), dim = cssVar('--ink-faint'), line = cssVar('--line');
+  const carbs = cssVar('--carbs'), good = cssVar('--good');
+  const padL=44, padR=12, padT=14, padB=24;
+  const xs = pts.map(p=>new Date(p.date+'T00:00:00').getTime());
+  const ys = pts.map(p=>p.weight_kg);
+  const tgt = g.target_weight_kg;
+  const x0=Math.min(...xs), x1=Math.max(...xs);
+  const yMin=Math.min(tgt, ...ys)-0.5, yMax=Math.max(...ys)+0.5;
+  const X = t => padL + (t-x0)/((x1-x0)||1)*(W-padL-padR);
+  const Y = w => padT + (yMax-w)/((yMax-yMin)||1)*(H-padT-padB);
+
+  ctx.strokeStyle=line; ctx.lineWidth=1; ctx.fillStyle=dim;
+  ctx.font='10px ui-monospace,monospace'; ctx.textAlign='right'; ctx.textBaseline='middle';
+  for(let k=0;k<=3;k++){ const w=yMin+(yMax-yMin)*k/3; const y=Y(w);
+    ctx.globalAlpha=.5; ctx.beginPath(); ctx.moveTo(padL,y); ctx.lineTo(W-padR,y); ctx.stroke(); ctx.globalAlpha=1;
+    ctx.fillText(w.toFixed(1), padL-6, y); }
+
+  // target line
+  ctx.strokeStyle=good; ctx.setLineDash([4,4]); ctx.beginPath();
+  ctx.moveTo(padL,Y(tgt)); ctx.lineTo(W-padR,Y(tgt)); ctx.stroke(); ctx.setLineDash([]);
+  ctx.textAlign='left'; ctx.fillStyle=good; ctx.fillText('target '+tgt+'kg', padL+2, Y(tgt)-7);
+
+  // target-date marker
+  if(proj.target_date){ const tx=X(new Date(proj.target_date+'T00:00:00').getTime());
+    if(tx>=padL && tx<=W-padR){ ctx.strokeStyle=dim; ctx.globalAlpha=.6; ctx.beginPath();
+      ctx.moveTo(tx,padT); ctx.lineTo(tx,H-padB); ctx.stroke(); ctx.globalAlpha=1;
+      ctx.fillStyle=dim; ctx.textAlign='center'; ctx.fillText(dmd(proj.target_date), tx, H-8); } }
+
+  // projected curve
+  ctx.strokeStyle=carbs; ctx.lineWidth=2.5; ctx.beginPath();
+  pts.forEach((p,i)=>{ const x=X(xs[i]), y=Y(p.weight_kg); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+  ctx.stroke();
+  // endpoints
+  ctx.fillStyle=carbs;
+  [[xs[0],ys[0]],[xs[pts.length-1],ys[pts.length-1]]].forEach(([t,w])=>{
+    ctx.beginPath(); ctx.arc(X(t),Y(w),3.5,0,7); ctx.fill(); });
 }
 render();
+window.addEventListener('resize', drawProjection);
 </script>
 
 </body>
