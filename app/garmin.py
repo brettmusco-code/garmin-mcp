@@ -1186,7 +1186,20 @@ _DEFAULT_HOURS = {
     "rest": 0.0, "recovery": 0.75, "easy": 1.0, "endurance": 1.5,
     "long": 2.5, "tempo": 1.0, "threshold": 1.25, "vo2": 1.0,
 }
-_PROTEIN_G_PER_KG_DEFAULT = {"lose": 1.9, "maintain": 1.6, "gain": 1.7}
+# Rough default paces (m/s) to convert a distance-only workout into a duration
+# when neither an explicit estimate nor time-based steps are available.
+_DEFAULT_PACE_MPS = {"running": 3.0, "cycling": 7.8, "swimming": 1.0, "walking": 1.4}
+_PROTEIN_G_PER_KG_DEFAULT = {"lose": 2.2, "maintain": 1.6, "gain": 1.8}
+# Non-exercise activity factor on top of RMR (NEAT only, *excluding* the
+# thermic effect of food and exercise, which are added separately and
+# explicitly). A sedentary-to-light desk-plus-training athlete sits ~1.15;
+# BMR x 1.15 + explicit TEF recovers the classic ~1.3 "lightly active" TDEE
+# at maintenance, but now reacts to protein and to the size of the deficit.
+_NEAT_MULT = 1.15
+# Thermic effect of food: fraction of each macro's energy burned digesting it.
+# Protein is far more expensive to process than carbs or fat — the lever that
+# rewards a high-protein cut.
+_TEF_FRAC = {"protein": 0.25, "carbs": 0.08, "fat": 0.02}
 # Deficit-periodization weights: how much of the weekly deficit each day
 # type attracts. Rest/easy days bank the cut; hard days stay near
 # maintenance ("fuel for the work required").
@@ -1264,6 +1277,7 @@ def set_fueling_goal(
     use_adaptive_tdee: bool | None = None,
     home_lat: float | None = None,
     home_lon: float | None = None,
+    skip_breakfast_weekdays: bool | None = None,
     notes: str | None = None,
 ) -> dict:
     """Persist the athlete's fueling goal to R2 (single active goal, keyed
@@ -1344,6 +1358,7 @@ def set_fueling_goal(
         "use_adaptive_tdee": bool(use_adaptive_tdee) if use_adaptive_tdee is not None else None,
         "home_lat": round(float(home_lat), 4) if home_lat is not None else None,
         "home_lon": round(float(home_lon), 4) if home_lon is not None else None,
+        "skip_breakfast_weekdays": bool(skip_breakfast_weekdays) if skip_breakfast_weekdays is not None else None,
         "notes": notes,
         "set_date": date.today().isoformat(),
     }
@@ -1574,9 +1589,46 @@ def _duration_from_title(title: str) -> float | None:
     return None
 
 
+def _workout_duration_secs(wo: dict) -> float | None:
+    """Total planned duration (seconds) of a structured Garmin workout,
+    summed from its time-based steps. Repeat groups multiply their nested
+    steps by the iteration count. Distance- or lap-button-ended steps can't
+    be converted to time and contribute nothing, so the result is a floor —
+    used only when Garmin doesn't expose a top-level duration estimate."""
+    if not isinstance(wo, dict):
+        return None
+
+    def walk(steps) -> float:
+        tot = 0.0
+        for st in steps or []:
+            if not isinstance(st, dict):
+                continue
+            nested = st.get("workoutSteps") or st.get("steps")
+            if nested:  # RepeatGroupDTO — multiply the loop body by its reps
+                reps = st.get("numberOfIterations") or st.get("iterations") or 1
+                tot += walk(nested) * (reps if reps and reps > 0 else 1)
+                continue
+            ec = st.get("endCondition")
+            ec_key = ec.get("conditionTypeKey") if isinstance(ec, dict) else ec
+            val = st.get("endConditionValue") or st.get("endConditionValueInSecs")
+            if val and str(ec_key or "").lower().startswith("time"):
+                tot += float(val)
+        return tot
+
+    total = 0.0
+    segs = wo.get("workoutSegments") or []
+    if segs:
+        for seg in segs:
+            total += walk(seg.get("workoutSteps") or [])
+    else:
+        total += walk(wo.get("workoutSteps") or [])
+    return total if total > 0 else None
+
+
 def _planned_hours(item: dict, intensity: str) -> tuple[float, str]:
-    """(hours, source). Prefer an explicit calendar/workout duration, then a
-    duration embedded in the title, then a per-intensity default."""
+    """(hours, source). Prefer an explicit calendar/workout duration, then the
+    structured workout's own step durations, then a duration embedded in the
+    title, then a per-intensity default."""
     for k in ("duration", "estimatedDurationInSecs", "estimatedDurationSecs"):
         v = item.get(k)
         if v:
@@ -1585,9 +1637,17 @@ def _planned_hours(item: dict, intensity: str) -> tuple[float, str]:
     if wid:
         try:
             wo = get_workout_by_id(wid) or {}
-            secs = wo.get("estimatedDurationInSecs") or wo.get("estimatedDurationSecs")
+            secs = (wo.get("estimatedDurationInSecs") or wo.get("estimatedDurationSecs")
+                    or _workout_duration_secs(wo))
             if secs:
                 return round(secs / 3600.0, 2), "workout_detail"
+            # Distance-only workout: convert distance to time at a default pace.
+            dist = wo.get("estimatedDistanceInMeters")
+            if dist:
+                sport = (wo.get("sportType") or {}).get("sportTypeKey") or ""
+                mps = _DEFAULT_PACE_MPS.get(sport)
+                if mps:
+                    return round(dist / mps / 3600.0, 2), "workout_distance"
         except Exception:  # noqa: BLE001
             pass
     title_hours = _duration_from_title(item.get("title") or item.get("workoutName") or "")
@@ -1596,14 +1656,119 @@ def _planned_hours(item: dict, intensity: str) -> tuple[float, str]:
     return _DEFAULT_HOURS.get(intensity, 1.0), "type_default"
 
 
-def _bmr(weight_kg, sex, height_cm, age):
-    """Mifflin-St Jeor when sex/height/age are known, else weight_kg x 22."""
+def _bmr(weight_kg, sex, height_cm, age, ffm_kg=None):
+    """Resting metabolic rate, returned as (kcal, source).
+
+    Katch-McArdle (370 + 21.6 x fat-free mass) when a *measured* fat-free mass
+    is known — most accurate for a lean athlete with a real body-fat reading,
+    since it keys off lean mass rather than total weight. Falls back to
+    Mifflin-St Jeor from sex/height/age, then weight x 22."""
+    if ffm_kg and ffm_kg > 0:
+        return round(370 + 21.6 * ffm_kg), "katch_mcardle"
     if weight_kg and height_cm and age and sex in ("male", "female"):
         base = weight_kg * 10 + height_cm * 6.25 - age * 5
-        return round(base + (5 if sex == "male" else -161))
+        return round(base + (5 if sex == "male" else -161)), "mifflin_st_jeor"
     if weight_kg:
-        return round(weight_kg * 22)
-    return None
+        return round(weight_kg * 22), "weight_x22_fallback"
+    return None, "unavailable"
+
+
+def _today_actuals() -> dict | None:
+    """Logged intake + the actual foods eaten, with measured expenditure —
+    today if it's logged, else the most recent logged day in the last week
+    (so the readout is useful before today's data is pre-warmed). Powers the
+    dashboard's 'today so far' card."""
+    today = date.today()
+    today_iso = today.isoformat()
+    try:
+        ds = get_daily_summaries((today - timedelta(days=6)).isoformat(),
+                                 today_iso, ["nutrition_food_log", "stats_and_body"])
+    except Exception:  # noqa: BLE001
+        return None
+    fl_all = ds.get("nutrition_food_log") or {}
+    sb_all = ds.get("stats_and_body") or {}
+    # Prefer today; else the most recent day that actually has foods logged.
+    chosen = today_iso
+    for d_iso in sorted(fl_all, reverse=True):
+        v = fl_all[d_iso]
+        if isinstance(v, dict) and "error" not in v and (v.get("loggedFoodsWithServingSizes")):
+            chosen = d_iso
+            break
+    fl = fl_all.get(chosen)
+    sb = sb_all.get(chosen)
+    content, raw_foods, goals = {}, [], {}
+    if isinstance(fl, dict) and "error" not in fl:
+        content = fl.get("dailyNutritionContent") or {}
+        raw_foods = fl.get("loggedFoodsWithServingSizes") or []
+        goals = fl.get("dailyNutritionGoals") or {}
+    foods = []
+    for it in raw_foods[:60]:
+        md = it.get("foodMetaData") or {}
+        name = " ".join(x for x in [md.get("brandName"), md.get("foodName")] if x) or "food"
+        nc = it.get("nutritionContents") or []
+        first = nc[0] if (nc and isinstance(nc[0], dict)) else {}
+        kcal = first.get("calories")
+        foods.append({"name": name, "kcal": round(kcal) if kcal else None,
+                      "protein_g": first.get("protein"), "carbs_g": first.get("carbs"),
+                      "fat_g": first.get("fat")})
+    expenditure = None
+    if isinstance(sb, dict) and "error" not in sb:
+        expenditure = sb.get("totalKilocalories") or (
+            (sb.get("bmrKilocalories") or 0) + (sb.get("activeKilocalories") or 0)) or None
+    return {
+        "date": chosen,
+        "is_today": chosen == today_iso,
+        "consumed_kcal": content.get("calories"),
+        "protein_g": content.get("protein"),
+        "carbs_g": content.get("carbs"),
+        "fat_g": content.get("fat"),
+        "foods_logged": len(raw_foods),
+        "foods": foods,
+        "expenditure_kcal": round(expenditure) if expenditure else None,
+        "garmin_goal_kcal": goals.get("adjustedCalories") or goals.get("calories"),
+    }
+
+
+def _recent_days(n: int = 2) -> list[dict]:
+    """The last n days' actual consumed calories vs the planned target (from
+    the saved weekly snapshot) and measured expenditure — for a quick
+    'am I on plan' readout."""
+    today = date.today()
+    try:
+        ds = get_daily_summaries((today - timedelta(days=n)).isoformat(),
+                                 (today - timedelta(days=1)).isoformat(),
+                                 ["nutrition_food_log", "stats_and_body"])
+    except Exception:  # noqa: BLE001
+        return []
+    fl = ds.get("nutrition_food_log") or {}
+    sb = ds.get("stats_and_body") or {}
+    plan: dict = {}
+    try:
+        for snap in reversed(get_weekly_snapshots(weeks_back=2)):
+            plan.update(snap.get("nutrition_plan") or {})
+    except Exception:  # noqa: BLE001
+        pass
+    out = []
+    for i in range(n, 0, -1):
+        d = (today - timedelta(days=i)).isoformat()
+        v = fl.get(d)
+        s = sb.get(d)
+        consumed, foods = None, 0
+        if isinstance(v, dict) and "error" not in v:
+            consumed = (v.get("dailyNutritionContent") or {}).get("calories")
+            foods = len(v.get("loggedFoodsWithServingSizes") or [])
+        exp = None
+        if isinstance(s, dict) and "error" not in s:
+            exp = s.get("totalKilocalories") or (
+                (s.get("bmrKilocalories") or 0) + (s.get("activeKilocalories") or 0)) or None
+        out.append({
+            "date": d,
+            "consumed_kcal": round(consumed) if consumed else None,
+            "foods_logged": foods,
+            "plan_target_kcal": (plan.get(d) or {}).get("target_kcal"),
+            "expenditure_kcal": round(exp) if exp else None,
+        })
+    return out
 
 
 def _is_outdoor_session(sport: str, title: str) -> bool:
@@ -1619,29 +1784,84 @@ def _is_outdoor_session(sport: str, title: str) -> bool:
     return sport in ("running", "cycling", "walking")
 
 
+_BREAKFAST_CAP_KCAL = 650   # a breakfast shouldn't balloon on a big training day
+
+
+def _cap_meal(meals: list[dict], name: str, cap_kcal: int, spill_to: str) -> None:
+    """Cap one meal's calories, moving the trimmed macros to another meal so
+    the day's totals are preserved. Keeps big-day energy out of breakfast."""
+    src = next((m for m in meals if m["meal"] == name), None)
+    dst = next((m for m in meals if m["meal"] == spill_to), None)
+    if not src or not dst:
+        return
+    kc = src["protein_g"] * 4 + src["carbs_g"] * 4 + src["fat_g"] * 9
+    if kc <= cap_kcal:
+        return
+    scale = cap_kcal / kc
+    for k in ("protein_g", "carbs_g", "fat_g"):
+        keep = round(src[k] * scale)
+        dst[k] += src[k] - keep
+        src[k] = keep
+
+
+def _fill_macros(target_kcal, protein_g, carb_target_g, weight_kg):
+    """Given a calorie target, fixed protein, and the day's periodized carb
+    target, settle carbs + fat so the macros sum to the target. Fat fills the
+    gap with a 0.5 g/kg floor and a 30%-of-calories ceiling; when the target is
+    too low to hold the carbs, carbs are trimmed (flagged). Returns
+    (carbs_g, fat_g, carbs_trimmed)."""
+    carbs_g = carb_target_g
+    fat_floor_kcal = weight_kg * 0.5 * 9
+    fat_ceiling_g = max(weight_kg * 0.5, target_kcal * 0.30 / 9.0)
+    fat_g = max((target_kcal - protein_g * 4 - carbs_g * 4) / 9.0, weight_kg * 0.5)
+    carbs_trimmed = False
+    if protein_g * 4 + carbs_g * 4 + fat_g * 9 > target_kcal + 1:
+        carbs_g = max(0, round((target_kcal - protein_g * 4 - fat_floor_kcal) / 4.0))
+        fat_g = weight_kg * 0.5
+        carbs_trimmed = carbs_g < carb_target_g
+    elif fat_g > fat_ceiling_g:
+        fat_g = fat_ceiling_g
+        carbs_g = max(carbs_g, round((target_kcal - protein_g * 4 - fat_g * 9) / 4.0))
+    return carbs_g, round(fat_g), carbs_trimmed
+
+
 def _meal_split(target_kcal: int, protein_g: int, carbs_g: int, fat_g: int,
-                needs_fuel: bool) -> list[dict]:
-    """Split a day's macros into meals so targets are actionable. Protein is
-    spread evenly (even absorption); carbs are weighted toward training when
-    the day has a fueled session; fat is kept lower around workouts."""
-    if needs_fuel:
-        meals = [("Breakfast", 0.25, 0.20, 0.30),
-                 ("Pre / peri-workout", 0.15, 0.30, 0.05),
-                 ("Lunch", 0.25, 0.20, 0.30),
-                 ("Dinner", 0.25, 0.25, 0.30),
-                 ("Snack", 0.10, 0.05, 0.05)]
-    else:
-        meals = [("Breakfast", 0.30, 0.25, 0.30),
-                 ("Lunch", 0.30, 0.30, 0.30),
-                 ("Dinner", 0.30, 0.30, 0.30),
-                 ("Snack", 0.10, 0.15, 0.10)]
-    out = []
-    for name, p_w, c_w, f_w in meals:
-        p = round(protein_g * p_w)
-        c = round(carbs_g * c_w)
-        f = round(fat_g * f_w)
-        out.append({"meal": name, "protein_g": p, "carbs_g": c, "fat_g": f,
-                    "kcal": p * 4 + c * 4 + f * 9})
+                needs_fuel: bool, skip_breakfast: bool = False,
+                fuel_carbs_g: int = 0, fuel_protein_g: int = 0) -> list[dict]:
+    """Split a day's macros into meals so targets are actionable.
+
+    The carbs/protein the fuel cards prescribe around the session(s) — pre +
+    during + post, summed across every fueled session — are carved out first
+    into a single 'Workout fuel' line, so the meal plan reconciles exactly with
+    the per-workout fuel timeline. The remaining energy goes to sit-down meals,
+    weighted toward lunch/dinner (not spread evenly) with a hard breakfast cap,
+    so a high-expenditure day doesn't produce a 1,500-kcal breakfast.
+
+    skip_breakfast: time-restricted eating — drop the Breakfast meal (weekends
+    keep it) and shift its share into the later meals."""
+    out: list[dict] = []
+    fc = max(0, min(int(round(fuel_carbs_g or 0)), carbs_g))
+    fp = max(0, min(int(round(fuel_protein_g or 0)), protein_g))
+    if needs_fuel and (fc > 0 or fp > 0):
+        out.append({"meal": "Workout fuel (pre/during/post)",
+                    "protein_g": fp, "carbs_g": fc, "fat_g": 0})
+    rem_p, rem_c, rem_f = protein_g - fp, carbs_g - fc, fat_g
+
+    # Sit-down meals: weighted toward lunch/dinner, breakfast kept modest.
+    sit = [("Breakfast", 0.22), ("Lunch", 0.30), ("Dinner", 0.33), ("Snack", 0.15)]
+    if skip_breakfast:
+        sit = [(n, w) for (n, w) in sit if n != "Breakfast"]
+    sw = sum(w for _, w in sit) or 1.0
+    meals = [{"meal": n,
+              "protein_g": round(rem_p * w / sw),
+              "carbs_g": round(rem_c * w / sw),
+              "fat_g": round(rem_f * w / sw)} for (n, w) in sit]
+    if not skip_breakfast:
+        _cap_meal(meals, "Breakfast", _BREAKFAST_CAP_KCAL, "Dinner")
+    out.extend(meals)
+
+    for m in out:
+        m["kcal"] = m["protein_g"] * 4 + m["carbs_g"] * 4 + m["fat_g"] * 9
     return out
 
 
@@ -1878,6 +2098,85 @@ def _project_trajectory(weight_kg, target, start_w, target_date, front_load_val,
     return out
 
 
+def _weight_series(days: int = 35) -> list[tuple[str, float]]:
+    """Recent (date, weight_kg) points from Garmin body composition, oldest
+    first. Empty when no weigh-ins are available in the window."""
+    end = date.today()
+    start = end - timedelta(days=days)
+    try:
+        bc = get_body_composition(start.isoformat(), end.isoformat())
+    except Exception:  # noqa: BLE001
+        bc = None
+    rows = (bc or {}).get("dateWeightList") if isinstance(bc, dict) else None
+    out: list[tuple[str, float]] = []
+    for r in rows or []:
+        try:
+            d = str(r.get("date") or r.get("calendarDate") or "")[:10]
+            w = r.get("weight")
+            if w is None or not d:
+                continue
+            w = float(w)
+            if w > 500:            # grams -> kg
+                w /= 1000.0
+            out.append((d, round(w, 2)))
+        except (TypeError, ValueError):
+            continue
+    out.sort(key=lambda x: x[0])
+    return out
+
+
+def _weight_trend_calibration(goal: dict, weight_kg: float) -> dict | None:
+    """Compare the measured weight trend to what the planned deficit predicts
+    and, when there's enough data, nudge the non-exercise base to close the gap
+    — self-correcting for estimation error and metabolic adaptation.
+
+    Only ever *tightens* the base (losing slower than planned) and bounds the
+    correction to 12%, since loosening on noisy scale data could stall a cut.
+    Assumes the athlete has been eating roughly to target — stated in the note.
+    Returns a dict (possibly note-only) or None for non-lose goals."""
+    if (goal or {}).get("goal_type") != "lose":
+        return None
+    series = _weight_series(35)
+    if len(series) < 3:
+        return {"note": "Trend check: not enough recent weigh-ins to calibrate against "
+                        "your actual loss rate — sync weight a few times a week to unlock "
+                        "trend-based correction.", "confidence": "none"}
+    d0 = datetime.strptime(series[0][0], "%Y-%m-%d").date()
+    xs = [(datetime.strptime(d, "%Y-%m-%d").date() - d0).days for d, _ in series]
+    ys = [w for _, w in series]
+    if xs[-1] - xs[0] < 10:
+        return {"note": "Trend check: weigh-ins span under ~10 days — need a longer "
+                        "window to read the trend.", "confidence": "low"}
+    n = len(xs); sx = sum(xs); sy = sum(ys)
+    sxx = sum(x * x for x in xs); sxy = sum(x * y for x, y in zip(xs, ys))
+    slope = (n * sxy - sx * sy) / ((n * sxx - sx * sx) or 1)   # kg/day (neg = losing)
+    measured_kg_wk = round(slope * 7, 3)
+    wr = _weeks_remaining(goal.get("target_date"))
+    tgt = goal.get("target_weight_kg")
+    if not (wr and tgt and weight_kg > tgt):
+        return {"note": None, "confidence": "low", "measured_kg_per_week": measured_kg_wk}
+    expected_kg_wk = -round((weight_kg - tgt) / wr, 3)
+    conf = "high" if (n >= 4 and (xs[-1] - xs[0]) >= 21) else "medium"
+    exp, meas = abs(expected_kg_wk), -measured_kg_wk       # positive loss rates
+    factor = note = None
+    if exp > 0.05 and -0.05 <= meas < exp * 0.8:
+        shortfall = min(1.0, (exp - meas) / exp)
+        if conf == "high":
+            factor = round(max(0.88, 1 - 0.12 * shortfall), 3)
+            note = (f"Trend check: losing ~{abs(measured_kg_wk):.2f} kg/wk vs the "
+                    f"~{exp:.2f} kg/wk your deficit predicts — tightened the base "
+                    f"{round((1 - factor) * 100)}% to get back on pace (assumes you've "
+                    "eaten to target; log food to confirm).")
+        else:
+            note = (f"Trend check: losing ~{abs(measured_kg_wk):.2f} kg/wk vs ~{exp:.2f} "
+                    "predicted — need a few more weigh-ins before I auto-tighten the base.")
+    elif exp > 0.05 and meas > exp * 1.25:
+        note = (f"Trend check: losing ~{abs(measured_kg_wk):.2f} kg/wk, faster than the "
+                f"~{exp:.2f} kg/wk plan — ease the deficit if that's unintended.")
+    return {"applied_factor": factor, "note": note, "confidence": conf,
+            "measured_kg_per_week": measured_kg_wk, "expected_kg_per_week": expected_kg_wk}
+
+
 def generate_fueling_plan(
     start_date: str | date | None = None,
     days: int = 7,
@@ -1895,6 +2194,7 @@ def generate_fueling_plan(
     use_adaptive_tdee: bool | None = None,
     max_loss_lb_per_week: float | None = None,
     heat_c: float | None = None,
+    skip_breakfast_weekdays: bool | None = None,
 ) -> dict:
     """Build a forward fueling plan: per-day calorie + macro targets and a
     per-workout fuel card for the next `days` days, from the stored fueling
@@ -1941,18 +2241,26 @@ def generate_fueling_plan(
             "window": {"start": start.isoformat(), "end": end.isoformat(), "days": days},
         }
 
-    has_bmr_inputs = bool(goal.get("height_cm") and goal.get("age") and goal.get("sex"))
-    bmr = _bmr(weight_kg, goal.get("sex"), goal.get("height_cm"), goal.get("age"))
-    bmr_source = "mifflin_st_jeor" if has_bmr_inputs else "weight_x22_fallback"
-    if not has_bmr_inputs:
-        notes.append("BMR estimated as weight x22 — set sex/height/age via "
-                     "set_fueling_goal for a Mifflin-St Jeor value.")
+    # Fat-free mass: a *measured* value (from a Renpho body-fat reading) when
+    # present, else an ~80% of bodyweight fallback. The measured value keys
+    # both the RMR (Katch-McArdle) and the energy-availability guard.
+    measured_ffm = body.get("lean_mass_kg")
+    ffm_kg = measured_ffm or round(weight_kg * 0.8, 1)
 
-    # Non-exercise daily base: BMR x 1.3 by default, or the athlete's measured
-    # maintenance (adaptive TDEE) once there's enough logged data. Exercise
-    # burn is added per day on top of this base.
-    neat_base = bmr * 1.3
-    base_source = "bmr_x1.3"
+    bmr, bmr_source = _bmr(weight_kg, goal.get("sex"), goal.get("height_cm"),
+                           goal.get("age"), ffm_kg=measured_ffm)
+    if bmr_source == "weight_x22_fallback":
+        notes.append("BMR estimated as weight x22 — set sex/height/age via "
+                     "set_fueling_goal (or sync a Renpho body-fat reading) for a "
+                     "measured value.")
+
+    # Non-exercise daily base = RMR x NEAT factor (activity only, no exercise,
+    # no TEF — both added explicitly below), or the athlete's measured
+    # maintenance (adaptive TDEE) once there's enough logged food. Net exercise
+    # energy is added per day on top; TEF is added from the day's macros.
+    neat_base = bmr * _NEAT_MULT
+    base_source = "rmr_formula"
+    tef_applies = True
     adaptive = None
     at_raw = use_adaptive_tdee if use_adaptive_tdee is not None else goal.get("use_adaptive_tdee")
     if at_raw:
@@ -1960,15 +2268,28 @@ def generate_fueling_plan(
             adaptive = get_adaptive_tdee(weeks=6)
             neb = adaptive.get("non_exercise_base_kcal")
             if neb and adaptive.get("confidence") in ("medium", "high") \
-                    and 0.7 * bmr * 1.3 <= neb <= 1.5 * bmr * 1.3:
+                    and 0.7 * bmr * 1.3 <= neb <= 1.6 * bmr * 1.3:
+                # Measured maintenance already bakes in this athlete's real NEAT
+                # and TEF, so don't double-count TEF on top of it.
                 neat_base = neb
                 base_source = "adaptive_tdee"
+                tef_applies = False
                 if adaptive.get("note"):
                     notes.append(adaptive["note"])
             elif adaptive.get("confidence") == "low":
                 notes.append(adaptive.get("note") or "Adaptive TDEE: not enough data yet.")
         except Exception:  # noqa: BLE001
             pass
+
+    # Weigh-in trend recalibration: compare the measured weight trend to what
+    # the planned deficit predicts and nudge the base to close the gap.
+    trend_cal = _weight_trend_calibration(goal, weight_kg)
+    if trend_cal:
+        if trend_cal.get("applied_factor"):
+            neat_base *= trend_cal["applied_factor"]
+            base_source = base_source + "+weigh_in_trend"
+        if trend_cal.get("note"):
+            notes.append(trend_cal["note"])
 
     # Goal daily kcal adjustment (deficit/surplus)
     wr = _weeks_remaining(goal.get("target_date"))
@@ -1999,6 +2320,9 @@ def generate_fueling_plan(
     min_kcal_val = mk_raw if (mk_raw and mk_raw > 0) else None
     fl_raw = front_load if front_load is not None else goal.get("front_load")
     front_load_val = max(0.0, min(0.9, fl_raw)) if fl_raw else 0.0
+    sb_raw = skip_breakfast_weekdays if skip_breakfast_weekdays is not None \
+        else goal.get("skip_breakfast_weekdays")
+    skip_breakfast_val = bool(sb_raw)
     home_lat = goal.get("home_lat")
     home_lon = goal.get("home_lon")
 
@@ -2016,24 +2340,7 @@ def generate_fueling_plan(
             fl_frac = max(0.0, min(1.0, (weight_kg - tgt) / (start_w - tgt)))
             fl_mult = max(0.2, 1 + front_load_val * (2 * fl_frac - 1))
             raw *= fl_mult
-            notes.append(
-                f"Front-loaded ({round(front_load_val * 100)}%): with "
-                f"{round(fl_frac * 100)}% of the weight still to go, the deficit "
-                f"target runs {round((fl_mult - 1) * 100):+}% vs the linear pace, "
-                "easing as you approach goal (floors still cap it)."
-            )
         goal_adj = -round(raw) if uncapped else -min(round(raw), deficit_cap)
-        if uncapped and raw > 500:
-            floor_txt = (f"a floor of BMR x{floor_mult} still applies"
-                         if floor_mult > 0 else
-                         "no target floor is active — daily targets may fall below BMR")
-            notes.append(f"Deficit UNCAPPED at {round(raw)} kcal/day to reach {tgt}kg "
-                         f"by {goal.get('target_date')} — very aggressive; {floor_txt}. "
-                         "Watch recovery and EA.")
-        elif not uncapped and kg_to_lose and wr and raw > deficit_cap:
-            notes.append(f"Reaching {tgt}kg by {goal.get('target_date')} needs a "
-                         f"{round(raw)} kcal/day deficit; capped at {round(deficit_cap)} "
-                         "— extend the timeline to stay safe.")
     elif gt == "gain":
         goal_adj = 400  # midpoint of +300-500, carb-led
 
@@ -2080,9 +2387,7 @@ def generate_fueling_plan(
             except Exception as ex:  # noqa: BLE001
                 notes.append(f"Rebalance skipped ({str(ex)[:100]}).")
 
-    # Fat-free mass for the energy-availability guard (falls back to ~80% of
-    # bodyweight when body fat isn't logged).
-    ffm_kg = body.get("lean_mass_kg") or round(weight_kg * 0.8, 1)
+    # (ffm_kg and bmr were resolved above, before the base calculation.)
 
     # Scheduled workouts across the window
     scheduled_by_date: dict[str, list[dict]] = {}
@@ -2131,7 +2436,14 @@ def generate_fueling_plan(
                          "hours": 0.0, "hours_source": "none", "burn_kcal": 0,
                          "burn_source": "none"}]
 
-        total_burn = sum(s["burn_kcal"] for s in sessions)
+        total_burn = sum(s["burn_kcal"] for s in sessions)   # gross (matches Garmin)
+        # Net exercise energy = gross minus the resting metabolism the athlete
+        # would have burned during those same hours (already counted in the 24h
+        # NEAT base). Only the net portion adds to daily expenditure — this is
+        # what stops the base+gross double-count.
+        rmr_per_hr = (bmr or 0) / 24.0
+        net_burn = sum(max(0, round(s["burn_kcal"] - rmr_per_hr * s["hours"]))
+                       for s in sessions)
         # Periodize carbs off the hardest session of the day
         primary = max(sessions, key=lambda s: (_INTENSITY_ORDER.get(s["intensity"], 2),
                                                s["hours"]))
@@ -2142,8 +2454,9 @@ def generate_fueling_plan(
             carb_ratio = 9.0
         prelim.append({
             "date": d_iso, "weekday": d.strftime("%a"), "sessions": sessions,
-            "total_burn": total_burn, "primary": primary, "carb_ratio": carb_ratio,
-            "base_target": neat_base + total_burn,
+            "total_burn": total_burn, "net_burn": net_burn, "primary": primary,
+            "carb_ratio": carb_ratio,
+            "base_target": neat_base + net_burn,
         })
 
     # Per-day floors: BMR multiple (if active), enforced EA minimum (scales
@@ -2213,25 +2526,41 @@ def generate_fueling_plan(
         primary = p["primary"]
         carb_ratio = p["carb_ratio"]
 
-        expected_expenditure = round(p["base_target"])
-        target_kcal = max(round(p["base_target"] + day_adjs[i]), round(floors[i]), 0)
-        target_deficit = expected_expenditure - target_kcal  # >0 = deficit that day
+        # Expenditure before the thermic effect of food (RMR-NEAT base + net
+        # exercise), and the pre-TEF target after the goal deficit + floors.
+        exp_pre = round(p["base_target"])
+        target_pre = max(round(p["base_target"] + day_adjs[i]), round(floors[i]), 0)
+        pre_def = exp_pre - target_pre
 
-        # Protein is anchored to bodyweight but periodized up on hard/long
-        # sessions and in a steep deficit, to spare lean mass.
+        # Protein anchored to GOAL weight on a cut (not current scale weight),
+        # so it holds steady as you lean out instead of drifting down; nudged
+        # up on hard/long days and in a steep deficit to spare lean mass.
         protein_bump = 0.0
         if primary["intensity"] in ("threshold", "vo2", "long"):
             protein_bump += 0.2
         elif primary["intensity"] == "tempo":
             protein_bump += 0.1
-        if target_deficit >= 500:
+        if pre_def >= 500:
             protein_bump += 0.1
         protein_per_kg_day = round(protein_per_kg + protein_bump, 2)
-        protein_g = round(weight_kg * protein_per_kg_day)
-        carbs_g = round(weight_kg * carb_ratio)
-        # Fat closes the gap to target, with a floor of ~0.5 g/kg
-        fat_g = round(max((target_kcal - protein_g * 4 - carbs_g * 4) / 9.0,
-                          weight_kg * 0.5))
+        protein_ref_kg = tgt if (gt == "lose" and tgt) else weight_kg
+        protein_g = round(protein_ref_kg * protein_per_kg_day)
+        carb_target_g = round(weight_kg * carb_ratio)   # periodized training need
+
+        # Thermic effect of food: energy burned digesting the day's macros —
+        # real expenditure, protein-heavy. It raises both the burn and the food
+        # you can eat at the same net deficit, and rewards the high protein.
+        # Sized from the macros actually eaten (settle them at the pre-TEF
+        # target first, so a carb-trimmed day doesn't over-credit carb TEF).
+        c0, f0, _ = _fill_macros(target_pre, protein_g, carb_target_g, weight_kg)
+        tef_kcal = round(_TEF_FRAC["protein"] * protein_g * 4
+                         + _TEF_FRAC["carbs"] * c0 * 4
+                         + _TEF_FRAC["fat"] * f0 * 9) if tef_applies else 0
+        expected_expenditure = exp_pre + tef_kcal
+        target_kcal = target_pre + tef_kcal      # net deficit preserved
+        target_deficit = expected_expenditure - target_kcal  # == pre_def; >0 = deficit
+        carbs_g, fat_g, carbs_trimmed = _fill_macros(
+            target_kcal, protein_g, carb_target_g, weight_kg)
 
         # Energy availability = (intake − exercise energy) / fat-free mass.
         # Sports-science low-EA threshold is ~30 kcal/kg FFM/day; below ~25
@@ -2245,8 +2574,10 @@ def generate_fueling_plan(
                 continue
             hrs = max(s["hours"], 1.0)
             is_swim = s["sport"] == "swimming"
-            during_per_hr = 60 if s["hours"] > 2 else (45 if s["hours"] > 1.5 else 35)
-            pre = 60 if (s["hours"] >= 2 or s["intensity"] in ("threshold", "vo2")) else 45
+            # Training carb rates — deliberately below race numbers (60-90 g/hr
+            # is a race-day target; get_race_fueling still uses those).
+            during_per_hr = 45 if s["hours"] > 3 else (40 if s["hours"] > 2 else 30)
+            pre = 40 if (s["hours"] >= 2 or s["intensity"] in ("threshold", "vo2")) else 30
             card = {
                 "session": s["title"], "intensity": s["intensity"], "hours": s["hours"],
                 # Never fuel swims pre or during — pool sessions don't take
@@ -2264,8 +2595,8 @@ def generate_fueling_plan(
                 if s["intensity"] in ("threshold", "vo2", "long") or s["hours"] >= 2:
                     card["caffeine_mg"] = round(weight_kg * 3)
                 if s["hours"] > 2.5:
-                    card["note"] = ("long effort — push toward 60-90 g carbs/hr "
-                                    "(glucose:fructose mix)")
+                    card["note"] = ("long effort — 45 g/hr is the training target; "
+                                    "save 60-90 g/hr (glucose:fructose) for racing")
                 # Heat: bump fluid + sodium for outdoor sessions on hot days.
                 if _is_outdoor_session(s["sport"], s["title"]):
                     high_c = heat_c
@@ -2283,11 +2614,23 @@ def generate_fueling_plan(
                                         "; " + card["note"] if card.get("note") else "")
             fuel_cards.append(card)
 
+        # Total carbs/protein the fuel cards prescribe around the session(s) —
+        # pre + during + post, summed across every fueled session — so the meal
+        # plan's 'Workout fuel' line reconciles with the per-workout timeline.
+        fuel_carbs = sum(c["pre_carbs_g"] + c["during_carbs_g_total"] + c["post_carbs_g"]
+                         for c in fuel_cards)
+        fuel_protein = sum(c["post_protein_g"] for c in fuel_cards)
+        # Weekday breakfast-skip (time-restricted eating) if the athlete set it.
+        is_weekday = date.fromisoformat(d_iso).weekday() < 5
+        skip_bf = bool(skip_breakfast_val and is_weekday)
+
         row = {
             "date": d_iso, "weekday": p["weekday"],
             "sessions": sessions,
             "primary_intensity": primary["intensity"],
             "est_burn_kcal": total_burn,
+            "net_exercise_kcal": p["net_burn"],
+            "tef_kcal": tef_kcal,
             "expected_expenditure_kcal": expected_expenditure,
             "target_kcal": target_kcal,
             "target_deficit_kcal": target_deficit,
@@ -2295,10 +2638,14 @@ def generate_fueling_plan(
             "protein_g": protein_g, "carbs_g": carbs_g, "fat_g": fat_g,
             "protein_g_per_kg": protein_per_kg_day,
             "carb_g_per_kg": carb_ratio,
+            "carbs_trimmed": carbs_trimmed,
             "energy_availability_kcal_per_kg_ffm": energy_availability,
             "needs_fuel": bool(fuel_cards),
             "fuel": fuel_cards,
-            "meals": _meal_split(target_kcal, protein_g, carbs_g, fat_g, bool(fuel_cards)),
+            "skip_breakfast": skip_bf,
+            "meals": _meal_split(target_kcal, protein_g, carbs_g, fat_g,
+                                 bool(fuel_cards), skip_breakfast=skip_bf,
+                                 fuel_carbs_g=fuel_carbs, fuel_protein_g=fuel_protein),
         }
         day_rows.append(row)
         for k in ("target_kcal", "protein_g", "carbs_g", "fat_g", "target_deficit_kcal"):
@@ -2313,25 +2660,11 @@ def generate_fueling_plan(
             "notes": "fuel pre/during/post" if fuel_cards else "",
         }
 
-    if last_scheduled_date and last_scheduled_date < end.isoformat():
-        notes.append(f"Garmin calendar has workouts through {last_scheduled_date}; "
-                     "later days assume rest/easy — re-run when the plan extends.")
-
-    if periodize_applied and residual < -50:
-        notes.append(f"Periodized deficit could not absorb {abs(residual)} kcal of the "
-                     "weekly target (floors / hard-day limits reached) — actual pace "
-                     "runs slower than the goal; see the projected finish date.")
-    below_bmr = [d["date"] for d in day_rows if d["target_kcal"] < bmr]
-    if below_bmr:
-        notes.append(f"Daily target falls below BMR on {', '.join(below_bmr)} — this is "
-                     "what the goal pace demands, but it is not sustainable.")
-    macro_over = [d["date"] for d in day_rows
-                  if d["protein_g"] * 4 + d["carbs_g"] * 4 + d["fat_g"] * 9
-                  > d["target_kcal"] * 1.15]
-    if macro_over:
-        notes.append(f"On {', '.join(macro_over)} the macros needed to support training "
-                     "exceed the calorie target — the goal pace conflicts with fueling "
-                     "the plan; expect to run over target or under-fuel sessions.")
+    trimmed = [d["date"] for d in day_rows if d.get("carbs_trimmed")]
+    if trimmed:
+        notes.append(f"On {', '.join(trimmed)} the calorie target is too low to hold the "
+                     "carbs your training needs — carbs were cut to fit and those sessions "
+                     "will be under-fueled. Ease the deficit on training days to fix it.")
 
     low_ea = [d["date"] for d in day_rows
               if (d.get("energy_availability_kcal_per_kg_ffm") or 99) < ea_threshold]
@@ -2361,9 +2694,14 @@ def generate_fueling_plan(
         "goal_progress": goal_info.get("progress"),
         "body": body,
         "bmr": {"value": bmr, "source": bmr_source, "weight_kg": weight_kg},
-        "energy_base": {"value": round(neat_base), "source": base_source},
+        "energy_base": {"value": round(neat_base), "source": base_source,
+                        "neat_mult": _NEAT_MULT if base_source.startswith("rmr") else None,
+                        "model": "RMR x NEAT + net exercise + TEF" if tef_applies
+                                 else "measured maintenance + net exercise"},
         "adaptive_tdee": adaptive,
+        "weight_trend": trend_cal,
         "fat_free_mass_kg": ffm_kg,
+        "body_fat_pct": body.get("body_fat_pct"),
         "daily_kcal_adjustment": goal_adj,
         "protein_g_per_kg": protein_per_kg,
         "carb_load": carb_load,
@@ -2377,9 +2715,12 @@ def generate_fueling_plan(
             "ea_min_kcal_per_kg_ffm": ea_min_val,
             "min_kcal": min_kcal_val,
             "front_load": front_load_val or None,
+            "skip_breakfast_weekdays": skip_breakfast_val or None,
             "energy_base_source": base_source,
         },
         "projection": projection,
+        "today_actuals": _today_actuals(),
+        "recent_days": _recent_days(2),
         "days": day_rows,
         "totals": totals,
         "notes": notes,

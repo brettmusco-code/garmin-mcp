@@ -1,12 +1,4 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Fueling Plan</title>
-<!-- TEMPLATE: the /fuel skill replaces the object assigned to `const PLAN` in the <script> below with the JSON returned by the generate_fueling_plan MCP tool, then renders this page as an Artifact. The embedded object is sample data so the file renders standalone. -->
-</head>
-<body>
+<!-- TEMPLATE: /fuel replaces the `const PLAN` object in the <script> with the generate_fueling_plan JSON, then publishes this as an Artifact. The embedded object below is sample data so the file renders standalone. -->
 <style>
   :root{
     --bg:#0e1520; --panel:#18232f; --panel-2:#1f2c3a; --line:#2a3a4c;
@@ -32,10 +24,12 @@
 
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
-    line-height:1.5;-webkit-font-smoothing:antialiased;font-variant-numeric:tabular-nums;}
-  .wrap{max-width:1040px;margin:0 auto;padding:28px 20px 64px;}
+    line-height:1.5;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+    font-variant-numeric:tabular-nums;}
+  h1,h2,h3{text-wrap:balance;}
+  .wrap{max-width:1060px;margin:0 auto;padding:34px 22px 72px;}
   .num{font-family:var(--mono);font-variant-numeric:tabular-nums;}
-  .eyebrow{font-size:11px;letter-spacing:.16em;text-transform:uppercase;color:var(--ink-faint);font-weight:600;}
+  .eyebrow{font-size:10.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--ink-faint);font-weight:700;}
 
   header.top{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:16px;
     padding-bottom:18px;border-bottom:1px solid var(--line);margin-bottom:24px;}
@@ -43,7 +37,7 @@
   .brand .mark{width:34px;height:34px;border-radius:9px;background:
     conic-gradient(from 210deg,var(--carbs),var(--protein),var(--fat),var(--carbs));
     box-shadow:inset 0 0 0 2px rgba(0,0,0,.15);}
-  .brand h1{font-size:19px;letter-spacing:.02em;margin:0;font-weight:700;}
+  .brand h1{font-size:20px;letter-spacing:-.01em;margin:0;font-weight:700;}
   .brand h1 small{display:block;font-weight:500;font-size:12px;color:var(--ink-dim);letter-spacing:.04em;}
   .goalline{text-align:right;max-width:520px;}
   .goalline .g{font-size:14px;color:var(--ink);}
@@ -59,16 +53,16 @@
   .chip.crit{color:var(--crit);border-color:color-mix(in srgb,var(--crit) 45%,transparent);background:color-mix(in srgb,var(--crit) 12%,transparent);}
   .chip .dot{width:7px;height:7px;border-radius:50%;background:currentColor;}
 
-  .grid-top{display:grid;grid-template-columns:1.15fr .85fr;gap:16px;margin-bottom:16px;}
+  .grid-top{display:grid;grid-template-columns:1.15fr .85fr;gap:18px;margin-bottom:22px;}
   @media(max-width:760px){.grid-top{grid-template-columns:1fr;}}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
-    box-shadow:var(--shadow);padding:20px;}
-  .card h2{margin:0 0 2px;font-size:13px;letter-spacing:.02em;}
-  .card .sub{color:var(--ink-dim);font-size:12.5px;margin-bottom:16px;}
+    box-shadow:var(--shadow);padding:22px;}
+  .card h2{margin:0 0 2px;font-size:14.5px;font-weight:650;letter-spacing:-.01em;}
+  .card .sub{color:var(--ink-dim);font-size:12.5px;margin-bottom:18px;}
 
-  .kcal-big{display:flex;align-items:baseline;gap:10px;margin:2px 0 4px;}
-  .kcal-big .v{font-family:var(--mono);font-size:52px;font-weight:600;letter-spacing:-.02em;line-height:1;}
-  .kcal-big .u{color:var(--ink-dim);font-size:14px;}
+  .kcal-big{display:flex;align-items:baseline;gap:10px;margin:4px 0 4px;}
+  .kcal-big .v{font-family:var(--mono);font-size:56px;font-weight:600;letter-spacing:-.03em;line-height:.95;}
+  .kcal-big .u{color:var(--ink-dim);font-size:13.5px;font-weight:500;}
   .adj{font-size:12.5px;color:var(--ink-dim);margin-bottom:18px;}
   .adj b{font-family:var(--mono);}
   .macros{display:flex;flex-direction:column;gap:12px;}
@@ -94,10 +88,10 @@
 
   .weekwrap{overflow-x:auto;}
   table{width:100%;border-collapse:collapse;font-size:13px;min-width:720px;}
-  thead th{text-align:left;font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;
-    color:var(--ink-faint);font-weight:600;padding:0 10px 10px;border-bottom:1px solid var(--line);}
+  thead th{text-align:left;font-size:10px;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--ink-faint);font-weight:700;padding:0 10px 11px;border-bottom:1px solid var(--line);}
   thead th.r,td.r{text-align:right;}
-  tbody td{padding:11px 10px;border-bottom:1px solid var(--line);vertical-align:middle;}
+  tbody td{padding:13px 10px;border-bottom:1px solid var(--line);vertical-align:middle;}
   tbody tr:last-child td{border-bottom:0;}
   tbody tr.is-today{background:color-mix(in srgb,var(--accent) 7%,transparent);}
   .day-cell b{font-weight:600;}
@@ -112,6 +106,41 @@
   .eapill.good{color:var(--good);background:color-mix(in srgb,var(--good) 14%,transparent);}
   .eapill.warn{color:var(--warn);background:color-mix(in srgb,var(--warn) 15%,transparent);}
   .eapill.crit{color:var(--crit);background:color-mix(in srgb,var(--crit) 15%,transparent);}
+
+  .foods{margin-top:14px;display:flex;flex-direction:column;gap:0;max-height:230px;overflow:auto;}
+  .foods .f{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;
+    border-bottom:1px solid var(--line);padding:5px 0;}
+  .foods .f:last-child{border-bottom:0;}
+  .foods .fn{color:var(--ink);} .foods .fk{font-family:var(--mono);color:var(--ink-dim);white-space:nowrap;}
+  .foods .empty{color:var(--ink-faint);font-size:12.5px;padding:6px 0;}
+  tbody tr.clickable{cursor:pointer;transition:background .13s ease;}
+  tbody tr.clickable:hover{background:color-mix(in srgb,var(--carbs) 7%,transparent);}
+  tbody tr.clickable:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;
+    background:color-mix(in srgb,var(--carbs) 9%,transparent);}
+  .chip,.eapill,.fuelmark{transition:transform .13s ease;}
+  @media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important;}}
+  tbody tr.sel{background:color-mix(in srgb,var(--carbs) 14%,transparent);box-shadow:inset 3px 0 0 var(--carbs);}
+  .detail-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:14px;}
+  .detail-head .t{font-size:15px;font-weight:600;} .detail-head .t small{color:var(--ink-dim);font-weight:400;margin-left:8px;}
+  .detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;} @media(max-width:640px){.detail-grid{grid-template-columns:1fr;}}
+  .detail-grid h3{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);margin:0 0 8px;}
+  .mealrow{display:grid;grid-template-columns:1fr auto;gap:10px;font-size:12.5px;padding:6px 0;border-bottom:1px solid var(--line);}
+  .mealrow:last-child{border-bottom:0;} .mealrow .mm{font-family:var(--mono);color:var(--ink-dim);}
+  .mealrow.wfuel{background:color-mix(in srgb,var(--carbs) 9%,transparent);border-bottom-color:transparent;
+    margin:2px -8px 4px;padding:8px 10px;border-radius:8px;font-weight:600;}
+  .mealrow.wfuel .mm{color:var(--accent);}
+  .recent table{min-width:0;}
+  .sesslist{font-size:12.5px;}
+  .sesslist .sr{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid var(--line);}
+  .sesslist .sr small{color:var(--ink-faint);}
+  .sesslist .sr.tot{border-bottom:0;border-top:1px solid var(--line);margin-top:2px;}
+  .energy{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 9px;font-size:12px;
+    color:var(--ink-dim);background:var(--panel-2);border:1px solid var(--line);
+    border-radius:9px;padding:9px 13px;margin-bottom:16px;}
+  .energy b{font-family:var(--mono);color:var(--ink);}
+  .energy .op{color:var(--ink-faint);}
+  .energy .def{margin-left:auto;color:var(--good);font-weight:600;}
+  .energy .def b{color:var(--good);}
 
   .progress{display:grid;grid-template-columns:1fr;gap:14px;}
   .track{position:relative;height:12px;border-radius:8px;background:var(--panel-2);margin:26px 0 8px;}
@@ -138,10 +167,10 @@
   .phase .d b{font-family:var(--mono);}
   .phase .w{font-size:11.5px;color:var(--ink-dim);margin-top:4px;}
 
-  section.block{margin-top:16px;}
-  .block > .lead{display:flex;align-items:baseline;justify-content:space-between;margin:0 2px 12px;}
-  .block > .lead h2{font-size:13px;margin:0;letter-spacing:.02em;}
-  .block > .lead span{font-size:12px;color:var(--ink-dim);}
+  section.block{margin-top:24px;}
+  .block > .lead{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:0 2px 13px;}
+  .block > .lead h2{font-size:14.5px;font-weight:650;margin:0;letter-spacing:-.01em;}
+  .block > .lead span{font-size:12px;color:var(--ink-dim);text-align:right;}
 
   .flags{display:flex;flex-direction:column;gap:10px;}
   .flag{display:flex;gap:10px;align-items:flex-start;background:var(--panel);border:1px solid var(--line);
@@ -172,16 +201,18 @@
       <div class="today-session" id="todaySession"></div>
     </div>
 
-    <div class="card">
-      <h2>Energy availability</h2>
-      <div class="sub" id="eaSub">Intake minus exercise, per kg fat-free mass.</div>
-      <div class="ea-list" id="eaList"></div>
+    <div class="card" id="actualsCard">
+      <div class="eyebrow" id="actEyebrow">TODAY SO FAR</div>
+      <div class="kcal-big"><span class="v" id="actKcal">—</span><span class="u">kcal eaten</span></div>
+      <div class="adj" id="actMeta"></div>
+      <div class="macros" id="actMacros"></div>
+      <div class="foods" id="actFoods"></div>
     </div>
   </div>
 
   <div class="card">
     <h2>Week ahead</h2>
-    <div class="sub" id="weekSub">Daily targets, macros, and which sessions need a fuel plan.</div>
+    <div class="sub">Tap any day for its full fueling detail below.</div>
     <div class="weekwrap">
       <table>
         <thead><tr>
@@ -193,6 +224,11 @@
     </div>
   </div>
 
+  <section class="block" id="detailBlock">
+    <div class="lead"><h2>Day detail</h2><span>macros · meals · per-workout fuel</span></div>
+    <div class="card" id="detail"></div>
+  </section>
+
   <section class="block">
     <div class="lead"><h2>Weight &rarr; target</h2><span id="paceNote"></span></div>
     <div class="card progress">
@@ -200,14 +236,14 @@
     </div>
   </section>
 
+  <section class="block" id="recentBlock">
+    <div class="lead"><h2>Last 2 days</h2><span>actual intake vs plan</span></div>
+    <div class="card recent"><div id="recent"></div></div>
+  </section>
+
   <section class="block" id="projBlock">
     <div class="lead"><h2>Projected trajectory</h2><span id="projNote"></span></div>
     <div class="card"><canvas id="projChart" height="220" style="width:100%;display:block"></canvas></div>
-  </section>
-
-  <section class="block" id="fuelBlock">
-    <div class="lead"><h2>Per-workout fuel</h2><span>pre &middot; during &middot; post</span></div>
-    <div class="card tl" id="tl"></div>
   </section>
 
   <section class="block" id="flagBlock">
@@ -215,7 +251,7 @@
     <div class="flags" id="flags"></div>
   </section>
 
-  <footer>Generated by <b>generate_fueling_plan</b> &middot; burn calibrated from your Garmin history &middot; sample data shown</footer>
+  <footer><b>generate_fueling_plan</b> &middot; session burn calibrated from your 90-day Garmin history &middot; durations from TrainingPeaks&rarr;Garmin</footer>
 </div>
 
 <script>
@@ -245,6 +281,7 @@ const PLAN = {
     "use_adaptive_tdee": null,
     "home_lat": null,
     "home_lon": null,
+    "skip_breakfast_weekdays": null,
     "notes": null,
     "set_date": "2026-07-22"
   },
@@ -267,18 +304,25 @@ const PLAN = {
     "staleness_days": 1
   },
   "bmr": {
-    "value": 1658,
-    "source": "mifflin_st_jeor",
+    "value": 1744,
+    "source": "katch_mcardle",
     "weight_kg": 74.1
   },
   "energy_base": {
-    "value": 2155,
-    "source": "bmr_x1.3"
+    "value": 2006,
+    "source": "rmr_formula",
+    "neat_mult": 1.15,
+    "model": "RMR x NEAT + net exercise + TEF"
   },
   "adaptive_tdee": null,
+  "weight_trend": {
+    "note": "Trend check: not enough recent weigh-ins to calibrate against your actual loss rate \u2014 sync weight a few times a week to unlock trend-based correction.",
+    "confidence": "none"
+  },
   "fat_free_mass_kg": 63.6,
+  "body_fat_pct": 14.2,
   "daily_kcal_adjustment": -385,
-  "protein_g_per_kg": 1.9,
+  "protein_g_per_kg": 2.2,
   "carb_load": false,
   "config": {
     "deficit_cap_kcal": 500,
@@ -290,7 +334,8 @@ const PLAN = {
     "ea_min_kcal_per_kg_ffm": null,
     "min_kcal": null,
     "front_load": null,
-    "energy_base_source": "bmr_x1.3"
+    "skip_breakfast_weekdays": null,
+    "energy_base_source": "rmr_formula"
   },
   "projection": {
     "points": [
@@ -300,55 +345,55 @@ const PLAN = {
       },
       {
         "date": "2026-07-29",
-        "weight_kg": 73.95
+        "weight_kg": 73.94
       },
       {
         "date": "2026-08-05",
-        "weight_kg": 73.8
+        "weight_kg": 73.78
       },
       {
         "date": "2026-08-12",
-        "weight_kg": 73.65
+        "weight_kg": 73.62
       },
       {
         "date": "2026-08-19",
-        "weight_kg": 73.5
+        "weight_kg": 73.47
       },
       {
         "date": "2026-08-26",
-        "weight_kg": 73.35
+        "weight_kg": 73.31
       },
       {
         "date": "2026-09-02",
-        "weight_kg": 73.2
+        "weight_kg": 73.15
       },
       {
         "date": "2026-09-09",
-        "weight_kg": 73.04
+        "weight_kg": 72.99
       },
       {
         "date": "2026-09-16",
-        "weight_kg": 72.89
+        "weight_kg": 72.83
       },
       {
         "date": "2026-09-23",
-        "weight_kg": 72.74
+        "weight_kg": 72.67
       },
       {
         "date": "2026-09-30",
-        "weight_kg": 72.59
+        "weight_kg": 72.51
       },
       {
         "date": "2026-10-07",
-        "weight_kg": 72.44
+        "weight_kg": 72.36
       },
       {
         "date": "2026-10-14",
-        "weight_kg": 72.29
+        "weight_kg": 72.2
       },
       {
         "date": "2026-10-21",
-        "weight_kg": 72.14
+        "weight_kg": 72.04
       },
       {
         "date": "2026-10-28",
@@ -357,12 +402,40 @@ const PLAN = {
     ],
     "target_weight_kg": 72.0,
     "target_date": "2026-09-02",
-    "max_sustainable_deficit_kcal": 166,
-    "max_weekly_loss_kg": 0.15,
+    "max_sustainable_deficit_kcal": 174,
+    "max_weekly_loss_kg": 0.16,
     "projected_finish_date": "2026-10-28",
     "projected_weeks": 14.0,
     "beats_target_date": false
   },
+  "today_actuals": {
+    "date": "2026-07-22",
+    "is_today": true,
+    "consumed_kcal": null,
+    "protein_g": null,
+    "carbs_g": null,
+    "fat_g": null,
+    "foods_logged": 0,
+    "foods": [],
+    "expenditure_kcal": null,
+    "garmin_goal_kcal": null
+  },
+  "recent_days": [
+    {
+      "date": "2026-07-20",
+      "consumed_kcal": null,
+      "foods_logged": 0,
+      "plan_target_kcal": null,
+      "expenditure_kcal": null
+    },
+    {
+      "date": "2026-07-21",
+      "consumed_kcal": null,
+      "foods_logged": 0,
+      "plan_target_kcal": null,
+      "expenditure_kcal": null
+    }
+  ],
   "days": [
     {
       "date": "2026-07-27",
@@ -380,46 +453,50 @@ const PLAN = {
       ],
       "primary_intensity": "rest",
       "est_burn_kcal": 0,
-      "expected_expenditure_kcal": 2155,
-      "target_kcal": 1990,
-      "target_deficit_kcal": 165,
-      "kcal_adjustment": -165,
-      "protein_g": 141,
-      "carbs_g": 222,
-      "fat_g": 60,
-      "protein_g_per_kg": 1.9,
+      "net_exercise_kcal": 0,
+      "tef_kcal": 241,
+      "expected_expenditure_kcal": 2247,
+      "target_kcal": 2334,
+      "target_deficit_kcal": -87,
+      "kcal_adjustment": 0,
+      "protein_g": 158,
+      "carbs_g": 250,
+      "fat_g": 78,
+      "protein_g_per_kg": 2.2,
       "carb_g_per_kg": 3.0,
-      "energy_availability_kcal_per_kg_ffm": 31.3,
+      "carbs_trimmed": false,
+      "energy_availability_kcal_per_kg_ffm": 36.7,
       "needs_fuel": false,
       "fuel": [],
+      "skip_breakfast": false,
       "meals": [
         {
           "meal": "Breakfast",
-          "protein_g": 42,
-          "carbs_g": 56,
-          "fat_g": 18,
-          "kcal": 554
+          "protein_g": 35,
+          "carbs_g": 55,
+          "fat_g": 17,
+          "kcal": 513
         },
         {
           "meal": "Lunch",
-          "protein_g": 42,
-          "carbs_g": 67,
-          "fat_g": 18,
-          "kcal": 598
+          "protein_g": 47,
+          "carbs_g": 75,
+          "fat_g": 23,
+          "kcal": 695
         },
         {
           "meal": "Dinner",
-          "protein_g": 42,
-          "carbs_g": 67,
-          "fat_g": 18,
-          "kcal": 598
+          "protein_g": 52,
+          "carbs_g": 82,
+          "fat_g": 26,
+          "kcal": 770
         },
         {
           "meal": "Snack",
-          "protein_g": 14,
-          "carbs_g": 33,
-          "fat_g": 6,
-          "kcal": 242
+          "protein_g": 24,
+          "carbs_g": 38,
+          "fat_g": 12,
+          "kcal": 356
         }
       ]
     },
@@ -440,46 +517,50 @@ const PLAN = {
       ],
       "primary_intensity": "threshold",
       "est_burn_kcal": 1242,
-      "expected_expenditure_kcal": 3397,
-      "target_kcal": 3124,
-      "target_deficit_kcal": 273,
-      "kcal_adjustment": -273,
-      "protein_g": 156,
-      "carbs_g": 556,
+      "net_exercise_kcal": 1151,
+      "tef_kcal": 320,
+      "expected_expenditure_kcal": 3477,
+      "target_kcal": 3092,
+      "target_deficit_kcal": 385,
+      "kcal_adjustment": -385,
+      "protein_g": 173,
+      "carbs_g": 517,
       "fat_g": 37,
-      "protein_g_per_kg": 2.1,
+      "protein_g_per_kg": 2.4,
       "carb_g_per_kg": 7.5,
-      "energy_availability_kcal_per_kg_ffm": 29.6,
+      "carbs_trimmed": true,
+      "energy_availability_kcal_per_kg_ffm": 29.1,
       "needs_fuel": false,
       "fuel": [],
+      "skip_breakfast": false,
       "meals": [
         {
           "meal": "Breakfast",
-          "protein_g": 47,
-          "carbs_g": 139,
-          "fat_g": 11,
-          "kcal": 843
+          "protein_g": 36,
+          "carbs_g": 109,
+          "fat_g": 8,
+          "kcal": 652
         },
         {
           "meal": "Lunch",
-          "protein_g": 47,
-          "carbs_g": 167,
+          "protein_g": 52,
+          "carbs_g": 155,
           "fat_g": 11,
-          "kcal": 955
+          "kcal": 927
         },
         {
           "meal": "Dinner",
-          "protein_g": 47,
-          "carbs_g": 167,
-          "fat_g": 11,
-          "kcal": 955
+          "protein_g": 59,
+          "carbs_g": 176,
+          "fat_g": 12,
+          "kcal": 1048
         },
         {
           "meal": "Snack",
-          "protein_g": 16,
-          "carbs_g": 83,
-          "fat_g": 4,
-          "kcal": 432
+          "protein_g": 26,
+          "carbs_g": 78,
+          "fat_g": 6,
+          "kcal": 470
         }
       ]
     },
@@ -500,46 +581,50 @@ const PLAN = {
       ],
       "primary_intensity": "recovery",
       "est_burn_kcal": 426,
-      "expected_expenditure_kcal": 2581,
-      "target_kcal": 1990,
-      "target_deficit_kcal": 591,
-      "kcal_adjustment": -591,
-      "protein_g": 148,
+      "net_exercise_kcal": 372,
+      "tef_kcal": 255,
+      "expected_expenditure_kcal": 2633,
+      "target_kcal": 2348,
+      "target_deficit_kcal": 285,
+      "kcal_adjustment": -285,
+      "protein_g": 158,
       "carbs_g": 296,
-      "fat_g": 37,
-      "protein_g_per_kg": 2.0,
+      "fat_g": 59,
+      "protein_g_per_kg": 2.2,
       "carb_g_per_kg": 4.0,
-      "energy_availability_kcal_per_kg_ffm": 24.6,
+      "carbs_trimmed": false,
+      "energy_availability_kcal_per_kg_ffm": 30.2,
       "needs_fuel": false,
       "fuel": [],
+      "skip_breakfast": false,
       "meals": [
         {
           "meal": "Breakfast",
-          "protein_g": 44,
-          "carbs_g": 74,
-          "fat_g": 11,
-          "kcal": 571
+          "protein_g": 35,
+          "carbs_g": 65,
+          "fat_g": 13,
+          "kcal": 517
         },
         {
           "meal": "Lunch",
-          "protein_g": 44,
+          "protein_g": 47,
           "carbs_g": 89,
-          "fat_g": 11,
-          "kcal": 631
+          "fat_g": 18,
+          "kcal": 706
         },
         {
           "meal": "Dinner",
-          "protein_g": 44,
-          "carbs_g": 89,
-          "fat_g": 11,
-          "kcal": 631
+          "protein_g": 52,
+          "carbs_g": 98,
+          "fat_g": 19,
+          "kcal": 771
         },
         {
           "meal": "Snack",
-          "protein_g": 15,
+          "protein_g": 24,
           "carbs_g": 44,
-          "fat_g": 4,
-          "kcal": 272
+          "fat_g": 9,
+          "kcal": 353
         }
       ]
     },
@@ -560,46 +645,50 @@ const PLAN = {
       ],
       "primary_intensity": "easy",
       "est_burn_kcal": 570,
-      "expected_expenditure_kcal": 2725,
-      "target_kcal": 2043,
-      "target_deficit_kcal": 682,
-      "kcal_adjustment": -682,
-      "protein_g": 148,
+      "net_exercise_kcal": 516,
+      "tef_kcal": 255,
+      "expected_expenditure_kcal": 2777,
+      "target_kcal": 2348,
+      "target_deficit_kcal": 429,
+      "kcal_adjustment": -429,
+      "protein_g": 158,
       "carbs_g": 296,
-      "fat_g": 37,
-      "protein_g_per_kg": 2.0,
+      "fat_g": 59,
+      "protein_g_per_kg": 2.2,
       "carb_g_per_kg": 4.0,
-      "energy_availability_kcal_per_kg_ffm": 23.2,
+      "carbs_trimmed": false,
+      "energy_availability_kcal_per_kg_ffm": 28.0,
       "needs_fuel": false,
       "fuel": [],
+      "skip_breakfast": false,
       "meals": [
         {
           "meal": "Breakfast",
-          "protein_g": 44,
-          "carbs_g": 74,
-          "fat_g": 11,
-          "kcal": 571
+          "protein_g": 35,
+          "carbs_g": 65,
+          "fat_g": 13,
+          "kcal": 517
         },
         {
           "meal": "Lunch",
-          "protein_g": 44,
+          "protein_g": 47,
           "carbs_g": 89,
-          "fat_g": 11,
-          "kcal": 631
+          "fat_g": 18,
+          "kcal": 706
         },
         {
           "meal": "Dinner",
-          "protein_g": 44,
-          "carbs_g": 89,
-          "fat_g": 11,
-          "kcal": 631
+          "protein_g": 52,
+          "carbs_g": 98,
+          "fat_g": 19,
+          "kcal": 771
         },
         {
           "meal": "Snack",
-          "protein_g": 15,
+          "protein_g": 24,
           "carbs_g": 44,
-          "fat_g": 4,
-          "kcal": 272
+          "fat_g": 9,
+          "kcal": 353
         }
       ]
     },
@@ -619,46 +708,50 @@ const PLAN = {
       ],
       "primary_intensity": "rest",
       "est_burn_kcal": 0,
-      "expected_expenditure_kcal": 2155,
-      "target_kcal": 1990,
-      "target_deficit_kcal": 165,
-      "kcal_adjustment": -165,
-      "protein_g": 141,
-      "carbs_g": 222,
-      "fat_g": 60,
-      "protein_g_per_kg": 1.9,
+      "net_exercise_kcal": 0,
+      "tef_kcal": 241,
+      "expected_expenditure_kcal": 2247,
+      "target_kcal": 2334,
+      "target_deficit_kcal": -87,
+      "kcal_adjustment": 0,
+      "protein_g": 158,
+      "carbs_g": 250,
+      "fat_g": 78,
+      "protein_g_per_kg": 2.2,
       "carb_g_per_kg": 3.0,
-      "energy_availability_kcal_per_kg_ffm": 31.3,
+      "carbs_trimmed": false,
+      "energy_availability_kcal_per_kg_ffm": 36.7,
       "needs_fuel": false,
       "fuel": [],
+      "skip_breakfast": false,
       "meals": [
         {
           "meal": "Breakfast",
-          "protein_g": 42,
-          "carbs_g": 56,
-          "fat_g": 18,
-          "kcal": 554
+          "protein_g": 35,
+          "carbs_g": 55,
+          "fat_g": 17,
+          "kcal": 513
         },
         {
           "meal": "Lunch",
-          "protein_g": 42,
-          "carbs_g": 67,
-          "fat_g": 18,
-          "kcal": 598
+          "protein_g": 47,
+          "carbs_g": 75,
+          "fat_g": 23,
+          "kcal": 695
         },
         {
           "meal": "Dinner",
-          "protein_g": 42,
-          "carbs_g": 67,
-          "fat_g": 18,
-          "kcal": 598
+          "protein_g": 52,
+          "carbs_g": 82,
+          "fat_g": 26,
+          "kcal": 770
         },
         {
           "meal": "Snack",
-          "protein_g": 14,
-          "carbs_g": 33,
-          "fat_g": 6,
-          "kcal": 242
+          "protein_g": 24,
+          "carbs_g": 38,
+          "fat_g": 12,
+          "kcal": 356
         }
       ]
     },
@@ -679,68 +772,72 @@ const PLAN = {
       ],
       "primary_intensity": "long",
       "est_burn_kcal": 2361,
-      "expected_expenditure_kcal": 4516,
-      "target_kcal": 4243,
-      "target_deficit_kcal": 273,
-      "kcal_adjustment": -273,
-      "protein_g": 156,
-      "carbs_g": 519,
-      "fat_g": 171,
-      "protein_g_per_kg": 2.1,
+      "net_exercise_kcal": 2107,
+      "tef_kcal": 358,
+      "expected_expenditure_kcal": 4471,
+      "target_kcal": 4086,
+      "target_deficit_kcal": 385,
+      "kcal_adjustment": -385,
+      "protein_g": 173,
+      "carbs_g": 542,
+      "fat_g": 136,
+      "protein_g_per_kg": 2.4,
       "carb_g_per_kg": 7.0,
-      "energy_availability_kcal_per_kg_ffm": 29.6,
+      "carbs_trimmed": false,
+      "energy_availability_kcal_per_kg_ffm": 27.1,
       "needs_fuel": true,
       "fuel": [
         {
           "session": "Long ride Z2 endurance",
           "intensity": "long",
           "hours": 3.5,
-          "pre_carbs_g": 60,
-          "during_carbs_g_per_hr": 60,
-          "during_carbs_g_total": 210,
+          "pre_carbs_g": 40,
+          "during_carbs_g_per_hr": 45,
+          "during_carbs_g_total": 158,
           "post_protein_g": 25,
           "post_carbs_g": 60,
           "fluid_ml_per_hr": 600,
           "sodium_mg_per_hr": 600,
           "caffeine_mg": 222,
-          "note": "long effort \u2014 push toward 60-90 g carbs/hr (glucose:fructose mix)"
+          "note": "long effort \u2014 45 g/hr is the training target; save 60-90 g/hr (glucose:fructose) for racing"
         }
       ],
+      "skip_breakfast": false,
       "meals": [
         {
-          "meal": "Breakfast",
-          "protein_g": 39,
-          "carbs_g": 104,
-          "fat_g": 51,
-          "kcal": 1031
+          "meal": "Workout fuel (pre/during/post)",
+          "protein_g": 25,
+          "carbs_g": 258,
+          "fat_g": 0,
+          "kcal": 1132
         },
         {
-          "meal": "Pre / peri-workout",
-          "protein_g": 23,
-          "carbs_g": 156,
-          "fat_g": 9,
-          "kcal": 797
+          "meal": "Breakfast",
+          "protein_g": 33,
+          "carbs_g": 62,
+          "fat_g": 30,
+          "kcal": 650
         },
         {
           "meal": "Lunch",
-          "protein_g": 39,
-          "carbs_g": 104,
-          "fat_g": 51,
-          "kcal": 1031
+          "protein_g": 44,
+          "carbs_g": 85,
+          "fat_g": 41,
+          "kcal": 885
         },
         {
           "meal": "Dinner",
-          "protein_g": 39,
-          "carbs_g": 130,
-          "fat_g": 51,
-          "kcal": 1135
+          "protein_g": 49,
+          "carbs_g": 94,
+          "fat_g": 45,
+          "kcal": 977
         },
         {
           "meal": "Snack",
-          "protein_g": 16,
-          "carbs_g": 26,
-          "fat_g": 9,
-          "kcal": 249
+          "protein_g": 22,
+          "carbs_g": 43,
+          "fat_g": 20,
+          "kcal": 440
         }
       ]
     },
@@ -761,60 +858,66 @@ const PLAN = {
       ],
       "primary_intensity": "easy",
       "est_burn_kcal": 380,
-      "expected_expenditure_kcal": 2535,
-      "target_kcal": 1990,
-      "target_deficit_kcal": 545,
-      "kcal_adjustment": -545,
-      "protein_g": 148,
+      "net_exercise_kcal": 344,
+      "tef_kcal": 255,
+      "expected_expenditure_kcal": 2605,
+      "target_kcal": 2348,
+      "target_deficit_kcal": 257,
+      "kcal_adjustment": -257,
+      "protein_g": 158,
       "carbs_g": 296,
-      "fat_g": 37,
-      "protein_g_per_kg": 2.0,
+      "fat_g": 59,
+      "protein_g_per_kg": 2.2,
       "carb_g_per_kg": 4.0,
-      "energy_availability_kcal_per_kg_ffm": 25.3,
+      "carbs_trimmed": false,
+      "energy_availability_kcal_per_kg_ffm": 30.9,
       "needs_fuel": false,
       "fuel": [],
+      "skip_breakfast": false,
       "meals": [
         {
           "meal": "Breakfast",
-          "protein_g": 44,
-          "carbs_g": 74,
-          "fat_g": 11,
-          "kcal": 571
+          "protein_g": 35,
+          "carbs_g": 65,
+          "fat_g": 13,
+          "kcal": 517
         },
         {
           "meal": "Lunch",
-          "protein_g": 44,
+          "protein_g": 47,
           "carbs_g": 89,
-          "fat_g": 11,
-          "kcal": 631
+          "fat_g": 18,
+          "kcal": 706
         },
         {
           "meal": "Dinner",
-          "protein_g": 44,
-          "carbs_g": 89,
-          "fat_g": 11,
-          "kcal": 631
+          "protein_g": 52,
+          "carbs_g": 98,
+          "fat_g": 19,
+          "kcal": 771
         },
         {
           "meal": "Snack",
-          "protein_g": 15,
+          "protein_g": 24,
           "carbs_g": 44,
-          "fat_g": 4,
-          "kcal": 272
+          "fat_g": 9,
+          "kcal": 353
         }
       ]
     }
   ],
   "totals": {
-    "target_kcal": 17370,
-    "protein_g": 1038,
-    "carbs_g": 2407,
-    "fat_g": 439,
+    "target_kcal": 18890,
+    "protein_g": 1136,
+    "carbs_g": 2447,
+    "fat_g": 506,
     "est_burn_kcal": 4979,
-    "target_deficit_kcal": 2694
+    "target_deficit_kcal": 1567
   },
   "notes": [
-    "Low energy availability (<30 kcal/kg fat-free mass) on 2026-07-28, 2026-07-29, 2026-07-30, 2026-08-01, 2026-08-02 \u2014 under-fueling / RED-S risk; ease the deficit or add carbs on those days.",
+    "Trend check: not enough recent weigh-ins to calibrate against your actual loss rate \u2014 sync weight a few times a week to unlock trend-based correction.",
+    "On 2026-07-28 the calorie target is too low to hold the carbs your training needs \u2014 carbs were cut to fit and those sessions will be under-fueled. Ease the deficit on training days to fix it.",
+    "Low energy availability (<30 kcal/kg fat-free mass) on 2026-07-28, 2026-07-30, 2026-08-01 \u2014 under-fueling / RED-S risk; ease the deficit or add carbs on those days.",
     "At the sustainable rate you reach 72.0kg around 2026-10-28 \u2014 later than the 2026-09-02 target."
   ],
   "no_goal_available": false
@@ -841,11 +944,93 @@ function macroRow(lab, key, grams, kcalTot){
     <div class="g">${grams}g <small>${nf(kc)}</small></div></div>`;
 }
 
+function renderActuals(){
+  const a = PLAN.today_actuals;
+  if(!a){ $('actKcal').textContent='—'; $('actMeta').textContent='No Garmin food-log data yet.';
+          $('actMacros').innerHTML=''; $('actFoods').innerHTML=''; return; }
+  $('actEyebrow').textContent = (a.is_today ? 'TODAY SO FAR · ' : 'LAST LOGGED · ') + dmd(a.date);
+  $('actKcal').textContent = a.consumed_kcal ? nf(a.consumed_kcal) : '0';
+  const bits = [`<b>${a.foods_logged||0}</b> foods logged`];
+  if(a.expenditure_kcal) bits.push(`burned <b>${nf(a.expenditure_kcal)}</b>`);
+  if(a.consumed_kcal!=null && a.expenditure_kcal)
+    bits.push(`net <b>${(a.consumed_kcal-a.expenditure_kcal>0?'+':'')+nf(a.consumed_kcal-a.expenditure_kcal)}</b>`);
+  $('actMeta').innerHTML = bits.join(' · ');
+  const kc = a.consumed_kcal||0;
+  $('actMacros').innerHTML = (a.protein_g!=null && kc) ?
+    (macroRow('Protein','protein',Math.round(a.protein_g),kc)+
+     macroRow('Carbs','carbs',Math.round(a.carbs_g),kc)+
+     macroRow('Fat','fat',Math.round(a.fat_g),kc)) : '';
+  const foods = a.foods||[];
+  $('actFoods').innerHTML = foods.length
+    ? foods.map(f=>`<div class="f"><span class="fn">${f.name}</span><span class="fk">${f.kcal!=null?nf(f.kcal)+' kcal':''}</span></div>`).join('')
+    : `<div class="empty">Nothing logged yet today — log meals to unlock adaptive targets and rebalancing.</div>`;
+}
+
+function selectDay(idx){
+  document.querySelectorAll('#weekBody tr').forEach(r=>r.classList.toggle('sel', +r.dataset.idx===idx));
+  renderDay(PLAN.days[idx]);
+}
+
+function renderRecent(){
+  const r = PLAN.recent_days||[];
+  if(!r.length){ $('recentBlock').style.display='none'; return; }
+  $('recent').innerHTML = `<div class="weekwrap"><table><thead><tr>
+    <th>Day</th><th class="r">Eaten</th><th class="r">Plan</th><th class="r">Burned</th><th class="r">vs plan</th><th class="r">Foods</th>
+    </tr></thead><tbody>` + r.map(d=>{
+      const eaten=d.consumed_kcal, pl=d.plan_target_kcal, delta=(eaten!=null&&pl!=null)?eaten-pl:null;
+      const dc = delta==null?'var(--ink-faint)':(delta>0?'var(--warn)':'var(--good)');
+      return `<tr><td class="day-cell"><b>${dow(d.date)}</b><small>${dmd(d.date)}</small></td>
+        <td class="r mono">${eaten!=null?nf(eaten):'—'}</td>
+        <td class="r mono">${pl!=null?nf(pl):'—'}</td>
+        <td class="r mono">${d.expenditure_kcal!=null?nf(d.expenditure_kcal):'—'}</td>
+        <td class="r mono" style="color:${dc}">${delta==null?'—':(delta>0?'+':'')+nf(delta)}</td>
+        <td class="r mono ${d.foods_logged?'':'warn'}" style="${d.foods_logged?'':'color:var(--crit)'}">${d.foods_logged||0}</td></tr>`;
+    }).join('') + `</tbody></table></div>`;
+}
+
+function renderDay(d){
+  const rest = d.primary_intensity==='rest';
+  const sess = rest ? 'Rest day' : `${d.sessions.length} session${d.sessions.length>1?'s':''}`;
+  const sessList = rest ? '' :
+    `<div class="sesslist">` + d.sessions.map(s=>
+      `<div class="sr"><span>${s.title} <small>· ${s.hours}h · ${s.intensity}</small></span><span class="mono">${nf(s.burn_kcal)} kcal</span></div>`).join('')
+    + `<div class="sr tot"><b>Total burn <small>gross · Garmin</small></b><span class="mono"><b>${nf(d.est_burn_kcal)}</b> kcal</span></div></div>`;
+  const kc = d.target_kcal;
+  const macros = macroRow('Protein','protein',d.protein_g,kc)+macroRow('Carbs','carbs',d.carbs_g,kc)+macroRow('Fat','fat',d.fat_g,kc);
+  const meals = (d.meals||[]).map(m=>{const wf=/^Workout fuel/.test(m.meal);
+    return `<div class="mealrow${wf?' wfuel':''}"><span>${wf?'⛽ ':''}${m.meal}</span><span class="mm">${nf(m.kcal)} · ${m.protein_g}/${m.carbs_g}/${m.fat_g}</span></div>`;}).join('');
+  const fuel = (d.fuel||[]).map(f=>`
+    <div class="row"><div class="h"><div class="t">${f.session}<small>${f.hours}h · ${f.intensity}</small></div>
+      <div class="k">${f.caffeine_mg?('caffeine '+f.caffeine_mg+'mg'):''}</div></div>
+      <div class="phases">
+        <div class="phase"><div class="p">Pre · 60–90m</div><div class="d"><b>${f.pre_carbs_g}g</b> carbs</div><div class="w">${f.pre_carbs_g?'easy-digest, low fat/fiber':'—'}</div></div>
+        <div class="phase"><div class="p">During · ${f.hours}h</div><div class="d"><b>${f.during_carbs_g_per_hr}g</b>/hr → <b>${f.during_carbs_g_total}g</b></div><div class="w">${f.fluid_ml_per_hr}ml · ${f.sodium_mg_per_hr}mg Na/hr${f.note?' · '+f.note:''}</div></div>
+        <div class="phase"><div class="p">Post · &lt;60m</div><div class="d"><b>${f.post_protein_g}g</b> protein + <b>${f.post_carbs_g}g</b> carbs</div><div class="w">start the refuel window</div></div>
+      </div></div>`).join('');
+  const baseKc = d.expected_expenditure_kcal - (d.net_exercise_kcal||0) - (d.tef_kcal||0);
+  const energy = `<div class="energy">
+    <span>base <b>${nf(baseKc)}</b></span>
+    ${d.net_exercise_kcal?`<span class="op">+</span><span>net exercise <b>${nf(d.net_exercise_kcal)}</b></span>`:''}
+    ${d.tef_kcal?`<span class="op">+</span><span>digestion <b>${nf(d.tef_kcal)}</b></span>`:''}
+    <span class="op">=</span><span>burn <b>${nf(d.expected_expenditure_kcal)}</b></span>
+    <span class="op">−</span><span>eat <b>${nf(d.target_kcal)}</b></span>
+    <span class="def">${nf(d.target_deficit_kcal)} deficit</span></div>`;
+  $('detail').innerHTML = `
+    <div class="detail-head"><div class="t">${dow(d.date)} ${dmd(d.date)}<small>${sess}</small></div>
+      <div class="chip ${eaPill(d.energy_availability_kcal_per_kg_ffm)}"><span class="dot"></span>EA ${d.energy_availability_kcal_per_kg_ffm}</div></div>
+    ${sessList ? `<div style="margin-bottom:14px">${sessList}</div>` : ''}
+    ${energy}
+    <div class="detail-grid">
+      <div><h3>Targets · ${nf(d.target_kcal)} kcal</h3><div class="macros">${macros}</div></div>
+      <div><h3>Meals</h3>${meals}</div>
+    </div>
+    ${fuel ? `<div class="tl" style="margin-top:16px"><h3 style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);margin:0 0 10px">Per-workout fuel</h3>${fuel}</div>`
+           : `<div style="margin-top:14px;color:var(--ink-faint);font-size:12.5px">No session fuel needed (sessions under 90 min, or swim — post-swim refuel only).</div>`}`;
+}
+
 function render(){
   const g = PLAN.goal, gp = PLAN.goal_progress||{}, b = PLAN.body||{}, w = PLAN.window;
   $('range').textContent = `${dmd(w.start)} – ${dmd(w.end)}`;
-  $('eaSub').textContent = `Intake minus exercise, per kg fat-free mass. Under ${EAF} = under-fueling risk.`
-    + (EAF_DISABLED ? ' Warning floor disabled — colors show the physiological reference.' : '');
 
   const gt = g.goal_type;
   const goalTxt = gt==='maintain'
@@ -855,49 +1040,46 @@ function render(){
   const adj = PLAN.daily_kcal_adjustment;
   const meta = [];
   if(gp.weeks_remaining!=null) meta.push(`<span><b>${gp.weeks_remaining}</b> wk left</span>`);
-  meta.push(`<span>BMR <b>${nf(PLAN.bmr.value)}</b>${PLAN.bmr.source!=='mifflin_st_jeor'?' (est)':''}</span>`);
+  const bmrTag = PLAN.bmr.source==='katch_mcardle'?' <small style="color:var(--ink-faint)">Katch</small>'
+               : PLAN.bmr.source==='weight_x22_fallback'?' <small style="color:var(--ink-faint)">est</small>':'';
+  meta.push(`<span>BMR <b>${nf(PLAN.bmr.value)}</b>${bmrTag}</span>`);
   if(b.body_fat_pct!=null) meta.push(`<span>Body fat <b>${b.body_fat_pct}%</b></span>`);
   if(PLAN.fat_free_mass_kg) meta.push(`<span>FFM <b>${PLAN.fat_free_mass_kg}kg</b></span>`);
   meta.push(`<span>Daily <b>${adj>0?'+':''}${nf(adj)}</b></span>`);
   $('meta').innerHTML = meta.join('');
 
   const days = PLAN.days;
-  let today = days.find(d=>d.date>=todayISO) || days[0];
-  const isReal = today.date===todayISO;
-  $('todayEyebrow').textContent = (isReal?'TODAY · ':'') + dow(today.date).toUpperCase()+' '+dmd(today.date);
-  $('todayKcal').textContent = nf(today.target_kcal);
-  const sess = today.sessions.map(s=>s.title).join(' + ');
-  $('todayAdj').innerHTML = `${gt==='lose'?'Deficit':gt==='gain'?'Surplus':'Maintenance'} day · est burn <b>${nf(today.est_burn_kcal)}</b> · carbs <b>${today.carb_g_per_kg}g/kg</b>`;
-  const kc0 = today.target_kcal;
+  // Lead card = the first planned day (plan starts tomorrow).
+  const first = days[0];
+  $('todayEyebrow').textContent = (first.date===todayISO?'TODAY · ':'PLAN · ')
+    + dow(first.date).toUpperCase()+' '+dmd(first.date);
+  $('todayKcal').textContent = nf(first.target_kcal);
+  const sess = first.sessions.map(s=>s.title).join(' + ');
+  $('todayAdj').innerHTML = `${gt==='lose'?'Deficit':gt==='gain'?'Surplus':'Maintenance'} day · est burn <b>${nf(first.est_burn_kcal)}</b> · carbs <b>${first.carb_g_per_kg}g/kg</b>`;
+  const kc0 = first.target_kcal;
   $('todayMacros').innerHTML =
-    macroRow('Protein','protein',today.protein_g,kc0)+
-    macroRow('Carbs','carbs',today.carbs_g,kc0)+
-    macroRow('Fat','fat',today.fat_g,kc0);
-  const ea0 = today.energy_availability_kcal_per_kg_ffm;
-  $('todaySession').innerHTML = today.needs_fuel
-    ? `<div class="s">${sess}<small>fuel plan below ↓</small></div><div class="chip ${eaPill(ea0)}"><span class="dot"></span>EA ${ea0}</div>`
-    : `<div class="s ${today.primary_intensity==='rest'?'rest':''}">${today.primary_intensity==='rest'?'Rest day':sess}<small>no session fuel needed</small></div><div class="chip ${eaPill(ea0)}"><span class="dot"></span>EA ${ea0}</div>`;
+    macroRow('Protein','protein',first.protein_g,kc0)+
+    macroRow('Carbs','carbs',first.carbs_g,kc0)+
+    macroRow('Fat','fat',first.fat_g,kc0);
+  const ea0 = first.energy_availability_kcal_per_kg_ffm;
+  $('todaySession').innerHTML =
+    `<div class="s ${first.primary_intensity==='rest'?'rest':''}">${first.primary_intensity==='rest'?'Rest day':sess}<small>${first.needs_fuel?'tap the row for its fuel plan':'no session fuel needed'}</small></div><div class="chip ${eaPill(ea0)}"><span class="dot"></span>EA ${ea0}</div>`;
 
-  $('eaList').innerHTML = days.map(d=>{
-    const e = d.energy_availability_kcal_per_kg_ffm;
-    const pct = e==null?0:Math.max(5,Math.min(100, e/50*100));
-    return `<div class="ea-row"><span class="d">${dow(d.date)}</span>
-      <div class="ea-track"><span style="width:${pct}%;background:${eaColor(e)}"></span></div>
-      <span class="val" style="color:${eaColor(e)}">${e??'—'}</span></div>`;
-  }).join('');
+  renderActuals();
+  renderRecent();
 
-  $('weekBody').innerHTML = days.map(d=>{
+  $('weekBody').innerHTML = days.map((d,idx)=>{
     const kc = d.target_kcal;
     const seg=(gv,key)=>`<i style="width:${kc?Math.round(gv*(key==='fat'?9:4)/kc*100):0}%;background:${M[key]}"></i>`;
     const rest = d.primary_intensity==='rest';
     const sessTxt = rest? 'rest' : d.sessions.map(s=>s.title).join(' + ');
     const e = d.energy_availability_kcal_per_kg_ffm;
-    return `<tr class="${d.date===todayISO?'is-today':''}">
+    return `<tr class="clickable ${d.date===todayISO?'is-today':''}" data-idx="${idx}" tabindex="0" role="button" aria-label="${dow(d.date)} ${dmd(d.date)} — show fueling detail" onclick="selectDay(${idx})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();selectDay(${idx});}">
       <td class="day-cell"><b>${dow(d.date)}</b><small>${dmd(d.date)}</small></td>
       <td class="sess ${rest?'rest':''}">${sessTxt}</td>
       <td class="r mono">${d.est_burn_kcal?nf(d.est_burn_kcal):'—'}</td>
       <td class="r mono">${nf(d.target_kcal)}</td>
-      <td class="r mono" style="color:${d.target_deficit_kcal>0?'var(--warn)':'var(--ink-dim)'}">${d.target_deficit_kcal>0?'−'+nf(d.target_deficit_kcal):(d.target_deficit_kcal<0?'+'+nf(-d.target_deficit_kcal):'0')}</td>
+      <td class="r mono" style="color:${d.target_deficit_kcal>0?'var(--good)':(d.target_deficit_kcal<0?'var(--warn)':'var(--ink-dim)')}">${d.target_deficit_kcal>0?nf(d.target_deficit_kcal):(d.target_deficit_kcal<0?'+'+nf(-d.target_deficit_kcal):'0')}</td>
       <td><span class="pcf">${seg(d.protein_g,'protein')}${seg(d.carbs_g,'carbs')}${seg(d.fat_g,'fat')}</span>
           <span class="mono" style="font-size:11px;color:var(--ink-dim)"> ${d.protein_g}/${d.carbs_g}/${d.fat_g}</span></td>
       <td class="r mono">${d.carb_g_per_kg}</td>
@@ -923,19 +1105,7 @@ function render(){
       : '';
   } else { document.querySelector('#wtrack').closest('.block').style.display='none'; }
 
-  const fuelDays = days.filter(d=>d.needs_fuel);
-  $('tl').innerHTML = fuelDays.map(d=> d.fuel.map(f=>`
-    <div class="row">
-      <div class="h"><div class="t">${dow(d.date)} · ${f.session}
-        <small>${f.hours}h · ${f.intensity}</small></div>
-        <div class="k">${f.caffeine_mg?('caffeine '+f.caffeine_mg+'mg'):''}</div></div>
-      <div class="phases">
-        <div class="phase"><div class="p">Pre · 60–90m</div><div class="d"><b>${f.pre_carbs_g}g</b> carbs</div><div class="w">easy-digest, low fat/fiber</div></div>
-        <div class="phase"><div class="p">During · ${f.hours}h</div><div class="d"><b>${f.during_carbs_g_per_hr}g</b>/hr → <b>${f.during_carbs_g_total}g</b></div><div class="w">${f.fluid_ml_per_hr}ml · ${f.sodium_mg_per_hr}mg Na/hr${f.note?' · '+f.note:''}</div></div>
-        <div class="phase"><div class="p">Post · &lt;60m</div><div class="d"><b>${f.post_protein_g}g</b> protein + <b>${f.post_carbs_g}g</b> carbs</div><div class="w">start the refuel window</div></div>
-      </div>
-    </div>`).join('')).join('');
-  if(!fuelDays.length) $('fuelBlock').style.display='none';
+  selectDay(0);
 
   const notes = PLAN.notes||[];
   if(notes.length){ $('flags').innerHTML = notes.map(n=>`<div class="flag"><span class="ic">!</span><span>${n}</span></div>`).join(''); }
@@ -963,7 +1133,7 @@ function drawProjection(){
   const ctx = cv.getContext('2d'); ctx.scale(dpr,dpr);
   const ink = cssVar('--ink'), dim = cssVar('--ink-faint'), line = cssVar('--line');
   const carbs = cssVar('--carbs'), good = cssVar('--good');
-  const padL=44, padR=12, padT=14, padB=24;
+  const padL=44, padR=14, padT=16, padB=30;
   const xs = pts.map(p=>new Date(p.date+'T00:00:00').getTime());
   const ys = pts.map(p=>p.weight_kg);
   const tgt = g.target_weight_kg;
@@ -976,31 +1146,52 @@ function drawProjection(){
   ctx.font='10px ui-monospace,monospace'; ctx.textAlign='right'; ctx.textBaseline='middle';
   for(let k=0;k<=3;k++){ const w=yMin+(yMax-yMin)*k/3; const y=Y(w);
     ctx.globalAlpha=.5; ctx.beginPath(); ctx.moveTo(padL,y); ctx.lineTo(W-padR,y); ctx.stroke(); ctx.globalAlpha=1;
-    ctx.fillText(w.toFixed(1), padL-6, y); }
+    ctx.fillText(w.toFixed(1)+'kg', padL-6, y); }
+
+  // x-axis date labels
+  ctx.fillStyle=dim; ctx.textAlign='center'; ctx.textBaseline='top';
+  const step = Math.max(1, Math.ceil(pts.length/5));
+  const seen = new Set();
+  for(let i=0;i<pts.length;i+=step){ seen.add(i); ctx.fillText(dmd(pts[i].date), X(xs[i]), H-padB+8); }
+  const li = pts.length-1;
+  if(!seen.has(li)) ctx.fillText(dmd(pts[li].date), X(xs[li]), H-padB+8);
+  ctx.textBaseline='middle';
 
   // target line
   ctx.strokeStyle=good; ctx.setLineDash([4,4]); ctx.beginPath();
   ctx.moveTo(padL,Y(tgt)); ctx.lineTo(W-padR,Y(tgt)); ctx.stroke(); ctx.setLineDash([]);
   ctx.textAlign='left'; ctx.fillStyle=good; ctx.fillText('target '+tgt+'kg', padL+2, Y(tgt)-7);
 
-  // target-date marker
+  // target-date marker (label at top so it clears the x-axis dates)
   if(proj.target_date){ const tx=X(new Date(proj.target_date+'T00:00:00').getTime());
-    if(tx>=padL && tx<=W-padR){ ctx.strokeStyle=dim; ctx.globalAlpha=.6; ctx.beginPath();
-      ctx.moveTo(tx,padT); ctx.lineTo(tx,H-padB); ctx.stroke(); ctx.globalAlpha=1;
-      ctx.fillStyle=dim; ctx.textAlign='center'; ctx.fillText(dmd(proj.target_date), tx, H-8); } }
+    if(tx>=padL && tx<=W-padR){ ctx.strokeStyle=dim; ctx.globalAlpha=.55; ctx.setLineDash([3,3]);
+      ctx.beginPath(); ctx.moveTo(tx,padT); ctx.lineTo(tx,H-padB); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha=1;
+      ctx.fillStyle=dim; ctx.textAlign='center'; ctx.textBaseline='top';
+      ctx.fillText('goal '+dmd(proj.target_date), tx, padT+1); ctx.textBaseline='middle'; } }
 
+  // hex→#RRGGBBAA helper so canvas gets a real alpha (color-mix isn't reliable here)
+  const hx = c => c && c[0]==='#' && c.length===7;
+  const wa = (c,a)=> hx(c) ? c + a : c;   // append 2-digit alpha to a #RRGGBB
+  // area fill under the projected curve (accent fading to transparent)
+  const grad = ctx.createLinearGradient(0, padT, 0, H-padB);
+  grad.addColorStop(0, wa(carbs,'40'));
+  grad.addColorStop(1, wa(carbs,'00'));
+  ctx.fillStyle = grad; ctx.beginPath();
+  ctx.moveTo(X(xs[0]), H-padB);
+  pts.forEach((p,i)=>ctx.lineTo(X(xs[i]), Y(p.weight_kg)));
+  ctx.lineTo(X(xs[pts.length-1]), H-padB); ctx.closePath(); ctx.fill();
   // projected curve
-  ctx.strokeStyle=carbs; ctx.lineWidth=2.5; ctx.beginPath();
+  ctx.strokeStyle=carbs; ctx.lineWidth=2.5; ctx.lineJoin='round'; ctx.beginPath();
   pts.forEach((p,i)=>{ const x=X(xs[i]), y=Y(p.weight_kg); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
   ctx.stroke();
-  // endpoints
+  // start dot + emphasized finish (halo + core ringed against the panel)
   ctx.fillStyle=carbs;
-  [[xs[0],ys[0]],[xs[pts.length-1],ys[pts.length-1]]].forEach(([t,w])=>{
-    ctx.beginPath(); ctx.arc(X(t),Y(w),3.5,0,7); ctx.fill(); });
+  ctx.beginPath(); ctx.arc(X(xs[0]),Y(ys[0]),3,0,7); ctx.fill();
+  const fx=X(xs[pts.length-1]), fy=Y(ys[pts.length-1]);
+  ctx.beginPath(); ctx.arc(fx,fy,7.5,0,7); ctx.fillStyle=wa(carbs,'33'); ctx.fill();
+  ctx.beginPath(); ctx.arc(fx,fy,4,0,7); ctx.fillStyle=carbs; ctx.fill();
+  ctx.strokeStyle=cssVar('--panel')||'#fff'; ctx.lineWidth=1.5; ctx.stroke();
 }
 render();
 window.addEventListener('resize', drawProjection);
 </script>
-
-</body>
-</html>

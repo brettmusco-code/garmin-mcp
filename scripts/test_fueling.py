@@ -138,23 +138,39 @@ def main():
     check("kg to target = 2.0", gi["progress"]["kg_to_target"] == 2.0)
     check("required daily change negative", gi["progress"]["required_daily_kcal_change"] < 0)
 
-    print("generate_fueling_plan (Mifflin BMR):")
+    print("generate_fueling_plan (Katch-McArdle BMR from body-fat):")
     plan = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7)
     check("no error", "error" not in plan and not plan.get("no_goal_available"))
-    check("bmr from Mifflin-St Jeor", plan["bmr"]["source"] == "mifflin_st_jeor")
+    check("bmr from Katch-McArdle when body-fat is known",
+          plan["bmr"]["source"] == "katch_mcardle")
+    check("FFM measured from body-fat (not the 80% fallback)",
+          abs(plan["fat_free_mass_kg"] - round(74.1 * (1 - 0.14), 1)) <= 0.2)
+    check("Katch BMR = 370 + 21.6*FFM",
+          plan["bmr"]["value"] == round(370 + 21.6 * plan["fat_free_mass_kg"]))
     bmr = plan["bmr"]["value"]
     floor = round(bmr * 1.2)
     check("7 day rows", len(plan["days"]) == 7)
     check("all targets >= BMR*1.2 floor", all(d["target_kcal"] >= floor for d in plan["days"]))
     check("deficit capped at <=500", plan["daily_kcal_adjustment"] >= -500)
+    check("energy base = RMR x NEAT (below old x1.3)",
+          plan["energy_base"]["value"] == round(bmr * 1.15))
+    check("net exercise is below gross on a training day",
+          plan["days"][4]["net_exercise_kcal"] < plan["days"][4]["est_burn_kcal"])
+    check("TEF applied on the formula path (protein-weighted, >0)",
+          plan["days"][0]["tef_kcal"] > 0)
+    check("real deficit preserved: expenditure - target == pre-TEF deficit",
+          all(d["target_deficit_kcal"] == d["expected_expenditure_kcal"] - d["target_kcal"]
+              for d in plan["days"]))
 
     day0 = plan["days"][0]   # threshold (75min)
     day1 = plan["days"][1]   # recovery
     day4 = plan["days"][4]   # long ride
     day2 = plan["days"][2]   # rest
 
-    print("protein periodization (no longer static):")
-    check("rest-day protein = base 1.9 g/kg", day2["protein_g"] == round(74.1 * 1.9))
+    print("protein periodization (anchored to goal weight):")
+    check("protein anchored to goal weight (72kg), not scale weight",
+          day2["protein_g"] == round(72.0 * day2["protein_g_per_kg"]))
+    check("lose-goal protein base >= 2.2 g/kg", day2["protein_g_per_kg"] >= 2.2)
     check("threshold-day protein periodized up", day0["protein_g"] > day2["protein_g"])
     check("threshold-day protein_g_per_kg > rest", day0["protein_g_per_kg"] > day2["protein_g_per_kg"])
 
@@ -183,14 +199,19 @@ def main():
         kcal = d["protein_g"] * 4 + d["carbs_g"] * 4 + d["fat_g"] * 9
         check(f"  {d['date']} P/C/F sums within 8% of target",
               abs(kcal - d["target_kcal"]) <= 0.08 * d["target_kcal"] + 60)
+    check("fat never exceeds ~30% of calories (carbs are the flex macro)",
+          all(d["fat_g"] * 9 <= 0.30 * d["target_kcal"] + 20 for d in plan["days"]))
+    check("high-burn day routes surplus energy to carbs, not fat",
+          day4["carbs_g"] > day4["fat_g"])
 
     print("deficit periodization (default for lose goals):")
     check("config says periodized", plan["config"]["periodize_deficit"] is True)
-    check("rest day clamps at the floor", day2["target_kcal"] == round(bmr * 1.2))
+    check("rest day clamps at the floor (+ its TEF)",
+          day2["target_kcal"] == round(bmr * 1.2) + day2["tef_kcal"])
     check("hard day never cut deeper than flat",
           abs(day0["kcal_adjustment"]) <= abs(plan["daily_kcal_adjustment"]) + 1)
-    check("shortfall note fires when floors bind",
-          any("could not absorb" in n for n in plan["notes"]))
+    check("projection reports a finish date when floors bind",
+          plan["projection"].get("projected_finish_date") is not None)
     plan_flat = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7,
                                         periodize_deficit=False)
     check("flat override: every day same adjustment",
@@ -247,6 +268,30 @@ def main():
     check("'Endurance 1.5h ride' -> 1.5h", g._duration_from_title("Endurance 1.5h ride") == 1.5)
     check("no-duration title -> None", g._duration_from_title("Short Run Off the Bike") is None)
 
+    print("structured-workout step duration:")
+    _wo = {"workoutSegments": [{"workoutSteps": [
+        {"type": "ExecutableStepDTO", "endCondition": {"conditionTypeKey": "time"},
+         "endConditionValue": 900},
+        {"type": "RepeatGroupDTO", "numberOfIterations": 6, "workoutSteps": [
+            {"type": "ExecutableStepDTO", "endCondition": {"conditionTypeKey": "time"},
+             "endConditionValue": 1500},
+            {"type": "ExecutableStepDTO", "endCondition": {"conditionTypeKey": "time"},
+             "endConditionValue": 300}]},
+        {"type": "ExecutableStepDTO", "endCondition": {"conditionTypeKey": "time"},
+         "endConditionValue": 900}]}]}
+    check("repeat-group steps sum to 3.5h (12600s)", g._workout_duration_secs(_wo) == 12600)
+    check("distance-only steps -> None (no time to sum)",
+          g._workout_duration_secs({"workoutSegments": [{"workoutSteps": [
+              {"endCondition": {"conditionTypeKey": "distance"},
+               "endConditionValue": 5000}]}]}) is None)
+    _saved_gw = g.get_workout_by_id
+    g.get_workout_by_id = lambda wid, **k: _wo   # type: ignore[assignment]
+    hrs_sd, src_sd = g._planned_hours(
+        {"workoutId": 123, "title": "Aerobic Ride with Sweet Spot Surges"}, "tempo")
+    g.get_workout_by_id = _saved_gw              # type: ignore[assignment]
+    check("_planned_hours reads 3.5h from workout steps, not the 1h default", hrs_sd == 3.5)
+    check("_planned_hours source = workout_detail", src_sd == "workout_detail")
+
     print("energy-availability guard:")
     check("every day has an EA value",
           all(d.get("energy_availability_kcal_per_kg_ffm") is not None for d in plan["days"]))
@@ -302,7 +347,6 @@ def main():
           abs(front["daily_kcal_adjustment"]) > abs(flat["daily_kcal_adjustment"]))
     check("front-load ~1.5x at frac=1",
           abs(abs(front["daily_kcal_adjustment"]) - 1.5 * abs(flat["daily_kcal_adjustment"])) <= 2)
-    check("front-load note present", any("Front-loaded" in n for n in front["notes"]))
     # near target (current ~ target) the front-load should ease below linear
     g.get_athlete_baseline = lambda *a, **k: {"weight_kg": 70.3, "staleness_days": {"weight": 2}}
     g.get_body_composition = lambda startdate=None, enddate=None, **k: {"dateWeightList": [
@@ -312,6 +356,7 @@ def main():
     flat_near = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7, front_load=0)
     check("near target, front-loaded deficit eases below linear",
           abs(near["daily_kcal_adjustment"]) < abs(flat_near["daily_kcal_adjustment"]))
+    check("front-load reflected in config", front["config"]["front_load"] == 0.5)
     # restore stubs + default goal
     g.get_athlete_baseline = _fake_baseline
     g.get_body_composition = _fake_body_comp
@@ -359,7 +404,9 @@ def main():
     g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
                        sex="male", height_cm=178, age=40, use_adaptive_tdee=True)
     plan_at = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7)
-    check("plan adopts measured base", plan_at["energy_base"]["source"] == "adaptive_tdee")
+    check("plan adopts measured base", plan_at["energy_base"]["source"].startswith("adaptive_tdee"))
+    check("TEF not double-counted on measured maintenance",
+          all(d["tef_kcal"] == 0 for d in plan_at["days"]))
     g.nutrition_trend, g.get_activities_in_range = _save_nt, _save_air
     g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
                        sex="male", height_cm=178, age=40)
@@ -380,6 +427,37 @@ def main():
     tot_p = sum(m["protein_g"] for m in d0["meals"])
     check("meals present", len(d0["meals"]) >= 4)
     check("meal protein sums ~ day protein", abs(tot_p - d0["protein_g"]) <= 3)
+    d4m = plan["days"][4]  # long-ride day, carries a fuel card
+    check("meal carbs sum ~ day carbs", abs(sum(m["carbs_g"] for m in d4m["meals"]) - d4m["carbs_g"]) <= 3)
+    wfuel = next((m for m in d4m["meals"] if m["meal"].startswith("Workout fuel")), None)
+    fuel_total_c = sum(c["pre_carbs_g"] + c["during_carbs_g_total"] + c["post_carbs_g"]
+                       for c in d4m["fuel"])
+    fuel_total_p = sum(c["post_protein_g"] for c in d4m["fuel"])
+    check("workout-fuel meal present on a fueled day", wfuel is not None)
+    check("workout-fuel carbs match the cards (pre+during+post)",
+          wfuel["carbs_g"] == min(fuel_total_c, d4m["carbs_g"]))
+    check("workout-fuel protein matches the cards' post protein",
+          wfuel["protein_g"] == min(fuel_total_p, d4m["protein_g"]))
+    check("meal kcal sums ~ day target",
+          all(abs(sum(m["kcal"] for m in d["meals"]) - d["target_kcal"]) <= 30
+              for d in plan["days"]))
+    check("breakfast never balloons past its cap (~650 kcal)",
+          all(next((m["kcal"] for m in d["meals"] if m["meal"] == "Breakfast"), 0) <= 680
+              for d in plan["days"]))
+
+    print("weekday breakfast-skip (time-restricted eating):")
+    plan_sb = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7,
+                                      skip_breakfast_weekdays=True)
+    check("config echoes skip_breakfast_weekdays",
+          plan_sb["config"]["skip_breakfast_weekdays"] is True)
+    check("weekdays drop breakfast, weekends keep it",
+          all((not any(m["meal"] == "Breakfast" for m in d["meals"]))
+              == (date.fromisoformat(d["date"]).weekday() < 5)
+              for d in plan_sb["days"]))
+    check("skip-breakfast day still sums carbs to the day total",
+          all(abs(sum(m["carbs_g"] for m in d["meals"]) - d["carbs_g"]) <= 3 for d in plan_sb["days"]))
+    check("off by default: every day keeps breakfast",
+          all(any(m["meal"] == "Breakfast" for m in d["meals"]) for d in plan["days"]))
 
     print("heat-aware hydration (outdoor sessions):")
     hot = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7, heat_c=33)
@@ -426,9 +504,13 @@ def main():
         target_date=(TODAY + timedelta(days=30)).isoformat(), days=1)
     check("no-plan date reported cleanly", far["results"][0]["status"] == "no_plan_for_date")
 
-    print("weight_x22 fallback when sex/height/age missing:")
+    print("weight_x22 fallback when sex/height/age AND body-fat missing:")
+    _bc = g.get_body_composition
+    g.get_body_composition = lambda startdate=None, enddate=None, **k: {"dateWeightList": [
+        {"date": (TODAY - timedelta(days=1)).isoformat(), "weight": 74100}]}  # no bodyFat
     g.set_fueling_goal(goal_type="maintain")
     plan3 = g.generate_fueling_plan(days=3)
+    g.get_body_composition = _bc
     check("bmr fallback source", plan3["bmr"]["source"] == "weight_x22_fallback")
     check("maintain -> no deficit", plan3["daily_kcal_adjustment"] == 0)
 
