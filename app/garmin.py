@@ -2309,10 +2309,21 @@ def generate_fueling_plan(
             protein_bump += 0.1
         protein_per_kg_day = round(protein_per_kg + protein_bump, 2)
         protein_g = round(weight_kg * protein_per_kg_day)
-        carbs_g = round(weight_kg * carb_ratio)
-        # Fat closes the gap to target, with a floor of ~0.5 g/kg
-        fat_g = round(max((target_kcal - protein_g * 4 - carbs_g * 4) / 9.0,
-                          weight_kg * 0.5))
+        carb_target_g = round(weight_kg * carb_ratio)   # periodized training need
+        carbs_g = carb_target_g
+        fat_floor_kcal = weight_kg * 0.5 * 9
+        # Fat closes the gap to target, with a floor of ~0.5 g/kg.
+        fat_g = max((target_kcal - protein_g * 4 - carbs_g * 4) / 9.0, weight_kg * 0.5)
+        # If the calorie target can't hold the periodized carbs (a very steep
+        # deficit), trim carbs so the day's macros actually sum to the target.
+        # Protein is preserved; fat sits at its floor. The under-fueling is
+        # surfaced as a flag rather than a silent target/macro mismatch.
+        carbs_trimmed = False
+        if protein_g * 4 + carbs_g * 4 + fat_g * 9 > target_kcal + 1:
+            carbs_g = max(0, round((target_kcal - protein_g * 4 - fat_floor_kcal) / 4.0))
+            fat_g = weight_kg * 0.5
+            carbs_trimmed = carbs_g < carb_target_g
+        fat_g = round(fat_g)
 
         # Energy availability = (intake − exercise energy) / fat-free mass.
         # Sports-science low-EA threshold is ~30 kcal/kg FFM/day; below ~25
@@ -2376,6 +2387,7 @@ def generate_fueling_plan(
             "protein_g": protein_g, "carbs_g": carbs_g, "fat_g": fat_g,
             "protein_g_per_kg": protein_per_kg_day,
             "carb_g_per_kg": carb_ratio,
+            "carbs_trimmed": carbs_trimmed,
             "energy_availability_kcal_per_kg_ffm": energy_availability,
             "needs_fuel": bool(fuel_cards),
             "fuel": fuel_cards,
@@ -2394,13 +2406,11 @@ def generate_fueling_plan(
             "notes": "fuel pre/during/post" if fuel_cards else "",
         }
 
-    macro_over = [d["date"] for d in day_rows
-                  if d["protein_g"] * 4 + d["carbs_g"] * 4 + d["fat_g"] * 9
-                  > d["target_kcal"] * 1.15]
-    if macro_over:
-        notes.append(f"On {', '.join(macro_over)} the macros needed to support training "
-                     "exceed the calorie target — the goal pace conflicts with fueling "
-                     "the plan; expect to run over target or under-fuel sessions.")
+    trimmed = [d["date"] for d in day_rows if d.get("carbs_trimmed")]
+    if trimmed:
+        notes.append(f"On {', '.join(trimmed)} the calorie target is too low to hold the "
+                     "carbs your training needs — carbs were cut to fit and those sessions "
+                     "will be under-fueled. Ease the deficit on training days to fix it.")
 
     low_ea = [d["date"] for d in day_rows
               if (d.get("energy_availability_kcal_per_kg_ffm") or 99) < ea_threshold]

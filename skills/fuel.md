@@ -20,7 +20,7 @@ Related tools: **`get_adaptive_tdee`** (measured maintenance from intake vs weig
 
 ### Flow
 
-0. **Default to starting tomorrow** — pass `start_date` = tomorrow so the plan is forward-looking (today's eating is mostly done). Today's intake shows in `today_actuals` instead.
+0. **Start today** — leave `start_date` unset (defaults to today) so the plan includes today and the next 6 days; today's logged intake shows in `today_actuals` alongside today's target.
 
 1. **`get_fueling_goal`** — pull the stored goal + live progress.
    - **If `goal` is null:** onboard first. Ask for: goal_type (lose / gain / maintain), and for lose/gain the `target_weight_kg` + `target_date`. Also ask sex / `height_cm` / age once (Garmin doesn't expose them — without them BMR falls back to weight × 22). Then call **`set_fueling_goal`** with those and continue.

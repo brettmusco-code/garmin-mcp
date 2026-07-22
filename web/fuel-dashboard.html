@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Fueling Plan</title>
-<!-- TEMPLATE: the /fuel skill replaces the object assigned to `const PLAN` in the <script> below with the JSON returned by the generate_fueling_plan MCP tool, then renders this page as an Artifact. The embedded object is sample data so the file renders standalone. -->
+<!-- TEMPLATE: /fuel replaces the `const PLAN` object with generate_fueling_plan JSON, then republishes. Sample data below renders standalone. -->
 </head>
 <body>
 <style>
@@ -129,6 +129,10 @@
   .mealrow{display:grid;grid-template-columns:1fr auto;gap:10px;font-size:12.5px;padding:6px 0;border-bottom:1px solid var(--line);}
   .mealrow:last-child{border-bottom:0;} .mealrow .mm{font-family:var(--mono);color:var(--ink-dim);}
   .recent table{min-width:0;}
+  .sesslist{font-size:12.5px;}
+  .sesslist .sr{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid var(--line);}
+  .sesslist .sr small{color:var(--ink-faint);}
+  .sesslist .sr.tot{border-bottom:0;border-top:1px solid var(--line);margin-top:2px;}
 
   .progress{display:grid;grid-template-columns:1fr;gap:14px;}
   .track{position:relative;height:12px;border-radius:8px;background:var(--panel-2);margin:26px 0 8px;}
@@ -441,6 +445,7 @@ const PLAN = {
       "fat_g": 60,
       "protein_g_per_kg": 1.9,
       "carb_g_per_kg": 3.0,
+      "carbs_trimmed": false,
       "energy_availability_kcal_per_kg_ffm": 31.3,
       "needs_fuel": false,
       "fuel": [],
@@ -497,10 +502,11 @@ const PLAN = {
       "target_deficit_kcal": 273,
       "kcal_adjustment": -273,
       "protein_g": 156,
-      "carbs_g": 556,
+      "carbs_g": 542,
       "fat_g": 37,
       "protein_g_per_kg": 2.1,
       "carb_g_per_kg": 7.5,
+      "carbs_trimmed": true,
       "energy_availability_kcal_per_kg_ffm": 29.6,
       "needs_fuel": false,
       "fuel": [],
@@ -508,30 +514,30 @@ const PLAN = {
         {
           "meal": "Breakfast",
           "protein_g": 47,
-          "carbs_g": 139,
+          "carbs_g": 136,
           "fat_g": 11,
-          "kcal": 843
+          "kcal": 831
         },
         {
           "meal": "Lunch",
           "protein_g": 47,
-          "carbs_g": 167,
+          "carbs_g": 163,
           "fat_g": 11,
-          "kcal": 955
+          "kcal": 939
         },
         {
           "meal": "Dinner",
           "protein_g": 47,
-          "carbs_g": 167,
+          "carbs_g": 163,
           "fat_g": 11,
-          "kcal": 955
+          "kcal": 939
         },
         {
           "meal": "Snack",
           "protein_g": 16,
-          "carbs_g": 83,
+          "carbs_g": 81,
           "fat_g": 4,
-          "kcal": 432
+          "kcal": 424
         }
       ]
     },
@@ -557,10 +563,11 @@ const PLAN = {
       "target_deficit_kcal": 591,
       "kcal_adjustment": -591,
       "protein_g": 148,
-      "carbs_g": 296,
+      "carbs_g": 266,
       "fat_g": 37,
       "protein_g_per_kg": 2.0,
       "carb_g_per_kg": 4.0,
+      "carbs_trimmed": true,
       "energy_availability_kcal_per_kg_ffm": 24.6,
       "needs_fuel": false,
       "fuel": [],
@@ -568,30 +575,30 @@ const PLAN = {
         {
           "meal": "Breakfast",
           "protein_g": 44,
-          "carbs_g": 74,
+          "carbs_g": 66,
           "fat_g": 11,
-          "kcal": 571
+          "kcal": 539
         },
         {
           "meal": "Lunch",
           "protein_g": 44,
-          "carbs_g": 89,
+          "carbs_g": 80,
           "fat_g": 11,
-          "kcal": 631
+          "kcal": 595
         },
         {
           "meal": "Dinner",
           "protein_g": 44,
-          "carbs_g": 89,
+          "carbs_g": 80,
           "fat_g": 11,
-          "kcal": 631
+          "kcal": 595
         },
         {
           "meal": "Snack",
           "protein_g": 15,
-          "carbs_g": 44,
+          "carbs_g": 40,
           "fat_g": 4,
-          "kcal": 272
+          "kcal": 256
         }
       ]
     },
@@ -617,10 +624,11 @@ const PLAN = {
       "target_deficit_kcal": 682,
       "kcal_adjustment": -682,
       "protein_g": 148,
-      "carbs_g": 296,
+      "carbs_g": 279,
       "fat_g": 37,
       "protein_g_per_kg": 2.0,
       "carb_g_per_kg": 4.0,
+      "carbs_trimmed": true,
       "energy_availability_kcal_per_kg_ffm": 23.2,
       "needs_fuel": false,
       "fuel": [],
@@ -628,30 +636,30 @@ const PLAN = {
         {
           "meal": "Breakfast",
           "protein_g": 44,
-          "carbs_g": 74,
+          "carbs_g": 70,
           "fat_g": 11,
-          "kcal": 571
+          "kcal": 555
         },
         {
           "meal": "Lunch",
           "protein_g": 44,
-          "carbs_g": 89,
+          "carbs_g": 84,
           "fat_g": 11,
-          "kcal": 631
+          "kcal": 611
         },
         {
           "meal": "Dinner",
           "protein_g": 44,
-          "carbs_g": 89,
+          "carbs_g": 84,
           "fat_g": 11,
-          "kcal": 631
+          "kcal": 611
         },
         {
           "meal": "Snack",
           "protein_g": 15,
-          "carbs_g": 44,
+          "carbs_g": 42,
           "fat_g": 4,
-          "kcal": 272
+          "kcal": 264
         }
       ]
     },
@@ -680,6 +688,7 @@ const PLAN = {
       "fat_g": 60,
       "protein_g_per_kg": 1.9,
       "carb_g_per_kg": 3.0,
+      "carbs_trimmed": false,
       "energy_availability_kcal_per_kg_ffm": 31.3,
       "needs_fuel": false,
       "fuel": [],
@@ -740,6 +749,7 @@ const PLAN = {
       "fat_g": 171,
       "protein_g_per_kg": 2.1,
       "carb_g_per_kg": 7.0,
+      "carbs_trimmed": false,
       "energy_availability_kcal_per_kg_ffm": 29.6,
       "needs_fuel": true,
       "fuel": [
@@ -818,10 +828,11 @@ const PLAN = {
       "target_deficit_kcal": 545,
       "kcal_adjustment": -545,
       "protein_g": 148,
-      "carbs_g": 296,
+      "carbs_g": 266,
       "fat_g": 37,
       "protein_g_per_kg": 2.0,
       "carb_g_per_kg": 4.0,
+      "carbs_trimmed": true,
       "energy_availability_kcal_per_kg_ffm": 25.3,
       "needs_fuel": false,
       "fuel": [],
@@ -829,30 +840,30 @@ const PLAN = {
         {
           "meal": "Breakfast",
           "protein_g": 44,
-          "carbs_g": 74,
+          "carbs_g": 66,
           "fat_g": 11,
-          "kcal": 571
+          "kcal": 539
         },
         {
           "meal": "Lunch",
           "protein_g": 44,
-          "carbs_g": 89,
+          "carbs_g": 80,
           "fat_g": 11,
-          "kcal": 631
+          "kcal": 595
         },
         {
           "meal": "Dinner",
           "protein_g": 44,
-          "carbs_g": 89,
+          "carbs_g": 80,
           "fat_g": 11,
-          "kcal": 631
+          "kcal": 595
         },
         {
           "meal": "Snack",
           "protein_g": 15,
-          "carbs_g": 44,
+          "carbs_g": 40,
           "fat_g": 4,
-          "kcal": 272
+          "kcal": 256
         }
       ]
     }
@@ -860,12 +871,13 @@ const PLAN = {
   "totals": {
     "target_kcal": 17370,
     "protein_g": 1038,
-    "carbs_g": 2407,
+    "carbs_g": 2316,
     "fat_g": 439,
     "est_burn_kcal": 4979,
     "target_deficit_kcal": 2694
   },
   "notes": [
+    "On 2026-07-28, 2026-07-29, 2026-07-30, 2026-08-02 the calorie target is too low to hold the carbs your training needs \u2014 carbs were cut to fit and those sessions will be under-fueled. Ease the deficit on training days to fix it.",
     "Low energy availability (<30 kcal/kg fat-free mass) on 2026-07-28, 2026-07-29, 2026-07-30, 2026-08-01, 2026-08-02 \u2014 under-fueling / RED-S risk; ease the deficit or add carbs on those days.",
     "At the sustainable rate you reach 72.0kg around 2026-10-28 \u2014 later than the 2026-09-02 target."
   ],
@@ -939,7 +951,11 @@ function renderRecent(){
 
 function renderDay(d){
   const rest = d.primary_intensity==='rest';
-  const sess = rest ? 'Rest day' : d.sessions.map(s=>`${s.title} (${s.hours}h)`).join(' + ');
+  const sess = rest ? 'Rest day' : `${d.sessions.length} session${d.sessions.length>1?'s':''}`;
+  const sessList = rest ? '' :
+    `<div class="sesslist">` + d.sessions.map(s=>
+      `<div class="sr"><span>${s.title} <small>· ${s.hours}h · ${s.intensity}</small></span><span class="mono">${nf(s.burn_kcal)} kcal</span></div>`).join('')
+    + `<div class="sr tot"><b>Total burn</b><span class="mono"><b>${nf(d.est_burn_kcal)}</b> kcal</span></div></div>`;
   const kc = d.target_kcal;
   const macros = macroRow('Protein','protein',d.protein_g,kc)+macroRow('Carbs','carbs',d.carbs_g,kc)+macroRow('Fat','fat',d.fat_g,kc);
   const meals = (d.meals||[]).map(m=>`<div class="mealrow"><span>${m.meal}</span><span class="mm">${nf(m.kcal)} · ${m.protein_g}/${m.carbs_g}/${m.fat_g}</span></div>`).join('');
@@ -954,6 +970,7 @@ function renderDay(d){
   $('detail').innerHTML = `
     <div class="detail-head"><div class="t">${dow(d.date)} ${dmd(d.date)}<small>${sess}</small></div>
       <div class="chip ${eaPill(d.energy_availability_kcal_per_kg_ffm)}"><span class="dot"></span>EA ${d.energy_availability_kcal_per_kg_ffm}</div></div>
+    ${sessList ? `<div style="margin-bottom:16px">${sessList}</div>` : ''}
     <div class="detail-grid">
       <div><h3>Targets · ${nf(d.target_kcal)} kcal</h3><div class="macros">${macros}</div></div>
       <div><h3>Meals</h3>${meals}</div>
