@@ -1264,6 +1264,7 @@ def set_fueling_goal(
     use_adaptive_tdee: bool | None = None,
     home_lat: float | None = None,
     home_lon: float | None = None,
+    skip_breakfast_weekdays: bool | None = None,
     notes: str | None = None,
 ) -> dict:
     """Persist the athlete's fueling goal to R2 (single active goal, keyed
@@ -1344,6 +1345,7 @@ def set_fueling_goal(
         "use_adaptive_tdee": bool(use_adaptive_tdee) if use_adaptive_tdee is not None else None,
         "home_lat": round(float(home_lat), 4) if home_lat is not None else None,
         "home_lon": round(float(home_lon), 4) if home_lon is not None else None,
+        "skip_breakfast_weekdays": bool(skip_breakfast_weekdays) if skip_breakfast_weekdays is not None else None,
         "notes": notes,
         "set_date": date.today().isoformat(),
     }
@@ -1574,9 +1576,46 @@ def _duration_from_title(title: str) -> float | None:
     return None
 
 
+def _workout_duration_secs(wo: dict) -> float | None:
+    """Total planned duration (seconds) of a structured Garmin workout,
+    summed from its time-based steps. Repeat groups multiply their nested
+    steps by the iteration count. Distance- or lap-button-ended steps can't
+    be converted to time and contribute nothing, so the result is a floor —
+    used only when Garmin doesn't expose a top-level duration estimate."""
+    if not isinstance(wo, dict):
+        return None
+
+    def walk(steps) -> float:
+        tot = 0.0
+        for st in steps or []:
+            if not isinstance(st, dict):
+                continue
+            nested = st.get("workoutSteps") or st.get("steps")
+            if nested:  # RepeatGroupDTO — multiply the loop body by its reps
+                reps = st.get("numberOfIterations") or st.get("iterations") or 1
+                tot += walk(nested) * (reps if reps and reps > 0 else 1)
+                continue
+            ec = st.get("endCondition")
+            ec_key = ec.get("conditionTypeKey") if isinstance(ec, dict) else ec
+            val = st.get("endConditionValue") or st.get("endConditionValueInSecs")
+            if val and str(ec_key or "").lower().startswith("time"):
+                tot += float(val)
+        return tot
+
+    total = 0.0
+    segs = wo.get("workoutSegments") or []
+    if segs:
+        for seg in segs:
+            total += walk(seg.get("workoutSteps") or [])
+    else:
+        total += walk(wo.get("workoutSteps") or [])
+    return total if total > 0 else None
+
+
 def _planned_hours(item: dict, intensity: str) -> tuple[float, str]:
-    """(hours, source). Prefer an explicit calendar/workout duration, then a
-    duration embedded in the title, then a per-intensity default."""
+    """(hours, source). Prefer an explicit calendar/workout duration, then the
+    structured workout's own step durations, then a duration embedded in the
+    title, then a per-intensity default."""
     for k in ("duration", "estimatedDurationInSecs", "estimatedDurationSecs"):
         v = item.get(k)
         if v:
@@ -1585,7 +1624,8 @@ def _planned_hours(item: dict, intensity: str) -> tuple[float, str]:
     if wid:
         try:
             wo = get_workout_by_id(wid) or {}
-            secs = wo.get("estimatedDurationInSecs") or wo.get("estimatedDurationSecs")
+            secs = (wo.get("estimatedDurationInSecs") or wo.get("estimatedDurationSecs")
+                    or _workout_duration_secs(wo))
             if secs:
                 return round(secs / 3600.0, 2), "workout_detail"
         except Exception:  # noqa: BLE001
@@ -1717,11 +1757,59 @@ def _is_outdoor_session(sport: str, title: str) -> bool:
     return sport in ("running", "cycling", "walking")
 
 
+def _largest_remainder(total: int, weights: list[float]) -> list[int]:
+    """Apportion integer `total` across len(weights) buckets proportional to
+    `weights`, summing to exactly `total` (largest-remainder rounding)."""
+    n = len(weights)
+    if n == 0 or total <= 0:
+        return [0] * n
+    s = sum(weights)
+    if s <= 0:
+        base = [total // n] * n
+        for i in range(total - sum(base)):
+            base[i] += 1
+        return base
+    raw = [total * w / s for w in weights]
+    out = [int(x) for x in raw]
+    order = sorted(range(n), key=lambda i: -(raw[i] - out[i]))
+    for i in range(total - sum(out)):
+        out[order[i % n]] += 1
+    return out
+
+
+def _align_peri_carbs(meals: list[dict], want: int) -> None:
+    """Set the 'Pre / peri-workout' meal's carbs to `want` (what the fuel cards
+    prescribe around the session) and re-apportion the rest of the day's carbs
+    across the other meals, so the day's total carbs stay fixed and the meal
+    plan tells the same story as the per-workout fuel cards."""
+    idx = next((i for i, m in enumerate(meals)
+                if m["meal"].startswith("Pre / peri")), None)
+    if idx is None:
+        return
+    total = sum(m["carbs_g"] for m in meals)
+    want = max(0, min(int(want), total))
+    others = [m for i, m in enumerate(meals) if i != idx]
+    alloc = _largest_remainder(total - want, [m["carbs_g"] for m in others])
+    for m, a in zip(others, alloc):
+        m["carbs_g"] = a
+    meals[idx]["carbs_g"] = want
+
+
 def _meal_split(target_kcal: int, protein_g: int, carbs_g: int, fat_g: int,
-                needs_fuel: bool) -> list[dict]:
+                needs_fuel: bool, skip_breakfast: bool = False,
+                peri_carbs_g: int | None = None) -> list[dict]:
     """Split a day's macros into meals so targets are actionable. Protein is
     spread evenly (even absorption); carbs are weighted toward training when
-    the day has a fueled session; fat is kept lower around workouts."""
+    the day has a fueled session; fat is kept lower around workouts.
+
+    skip_breakfast: time-restricted eating — drop the Breakfast meal and
+    re-normalise the remaining meals so the day's full macros land in the
+    later eating window (pre/peri-workout fuel is preserved, since fueling a
+    session is separate from a sit-down breakfast).
+
+    peri_carbs_g: when the day has fuel cards, force the 'Pre / peri-workout'
+    meal's carbs to the amount the cards prescribe (pre + during), so the
+    meal plan and the fuel timeline agree instead of contradicting."""
     if needs_fuel:
         meals = [("Breakfast", 0.25, 0.20, 0.30),
                  ("Pre / peri-workout", 0.15, 0.30, 0.05),
@@ -1733,13 +1821,22 @@ def _meal_split(target_kcal: int, protein_g: int, carbs_g: int, fat_g: int,
                  ("Lunch", 0.30, 0.30, 0.30),
                  ("Dinner", 0.30, 0.30, 0.30),
                  ("Snack", 0.10, 0.15, 0.10)]
+    if skip_breakfast:
+        meals = [m for m in meals if m[0] != "Breakfast"]
+        sp = sum(m[1] for m in meals) or 1.0
+        sc = sum(m[2] for m in meals) or 1.0
+        sf = sum(m[3] for m in meals) or 1.0
+        meals = [(n, p / sp, c / sc, f / sf) for (n, p, c, f) in meals]
     out = []
     for name, p_w, c_w, f_w in meals:
         p = round(protein_g * p_w)
         c = round(carbs_g * c_w)
         f = round(fat_g * f_w)
-        out.append({"meal": name, "protein_g": p, "carbs_g": c, "fat_g": f,
-                    "kcal": p * 4 + c * 4 + f * 9})
+        out.append({"meal": name, "protein_g": p, "carbs_g": c, "fat_g": f})
+    if needs_fuel and peri_carbs_g is not None:
+        _align_peri_carbs(out, peri_carbs_g)
+    for m in out:
+        m["kcal"] = m["protein_g"] * 4 + m["carbs_g"] * 4 + m["fat_g"] * 9
     return out
 
 
@@ -1993,6 +2090,7 @@ def generate_fueling_plan(
     use_adaptive_tdee: bool | None = None,
     max_loss_lb_per_week: float | None = None,
     heat_c: float | None = None,
+    skip_breakfast_weekdays: bool | None = None,
 ) -> dict:
     """Build a forward fueling plan: per-day calorie + macro targets and a
     per-workout fuel card for the next `days` days, from the stored fueling
@@ -2097,6 +2195,9 @@ def generate_fueling_plan(
     min_kcal_val = mk_raw if (mk_raw and mk_raw > 0) else None
     fl_raw = front_load if front_load is not None else goal.get("front_load")
     front_load_val = max(0.0, min(0.9, fl_raw)) if fl_raw else 0.0
+    sb_raw = skip_breakfast_weekdays if skip_breakfast_weekdays is not None \
+        else goal.get("skip_breakfast_weekdays")
+    skip_breakfast_val = bool(sb_raw)
     home_lat = goal.get("home_lat")
     home_lon = goal.get("home_lon")
 
@@ -2375,6 +2476,13 @@ def generate_fueling_plan(
                                         "; " + card["note"] if card.get("note") else "")
             fuel_cards.append(card)
 
+        # Carbs to eat around the session(s), per the fuel cards — used to make
+        # the 'Pre / peri-workout' meal match the fuel timeline.
+        peri_carbs = sum(c["pre_carbs_g"] + c["during_carbs_g_total"] for c in fuel_cards)
+        # Weekday breakfast-skip (time-restricted eating) if the athlete set it.
+        is_weekday = date.fromisoformat(d_iso).weekday() < 5
+        skip_bf = bool(skip_breakfast_val and is_weekday)
+
         row = {
             "date": d_iso, "weekday": p["weekday"],
             "sessions": sessions,
@@ -2391,7 +2499,10 @@ def generate_fueling_plan(
             "energy_availability_kcal_per_kg_ffm": energy_availability,
             "needs_fuel": bool(fuel_cards),
             "fuel": fuel_cards,
-            "meals": _meal_split(target_kcal, protein_g, carbs_g, fat_g, bool(fuel_cards)),
+            "skip_breakfast": skip_bf,
+            "meals": _meal_split(target_kcal, protein_g, carbs_g, fat_g,
+                                 bool(fuel_cards), skip_breakfast=skip_bf,
+                                 peri_carbs_g=peri_carbs if fuel_cards else None),
         }
         day_rows.append(row)
         for k in ("target_kcal", "protein_g", "carbs_g", "fat_g", "target_deficit_kcal"):
@@ -2456,6 +2567,7 @@ def generate_fueling_plan(
             "ea_min_kcal_per_kg_ffm": ea_min_val,
             "min_kcal": min_kcal_val,
             "front_load": front_load_val or None,
+            "skip_breakfast_weekdays": skip_breakfast_val or None,
             "energy_base_source": base_source,
         },
         "projection": projection,

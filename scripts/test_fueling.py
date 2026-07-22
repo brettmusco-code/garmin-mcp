@@ -247,6 +247,30 @@ def main():
     check("'Endurance 1.5h ride' -> 1.5h", g._duration_from_title("Endurance 1.5h ride") == 1.5)
     check("no-duration title -> None", g._duration_from_title("Short Run Off the Bike") is None)
 
+    print("structured-workout step duration:")
+    _wo = {"workoutSegments": [{"workoutSteps": [
+        {"type": "ExecutableStepDTO", "endCondition": {"conditionTypeKey": "time"},
+         "endConditionValue": 900},
+        {"type": "RepeatGroupDTO", "numberOfIterations": 6, "workoutSteps": [
+            {"type": "ExecutableStepDTO", "endCondition": {"conditionTypeKey": "time"},
+             "endConditionValue": 1500},
+            {"type": "ExecutableStepDTO", "endCondition": {"conditionTypeKey": "time"},
+             "endConditionValue": 300}]},
+        {"type": "ExecutableStepDTO", "endCondition": {"conditionTypeKey": "time"},
+         "endConditionValue": 900}]}]}
+    check("repeat-group steps sum to 3.5h (12600s)", g._workout_duration_secs(_wo) == 12600)
+    check("distance-only steps -> None (no time to sum)",
+          g._workout_duration_secs({"workoutSegments": [{"workoutSteps": [
+              {"endCondition": {"conditionTypeKey": "distance"},
+               "endConditionValue": 5000}]}]}) is None)
+    _saved_gw = g.get_workout_by_id
+    g.get_workout_by_id = lambda wid, **k: _wo   # type: ignore[assignment]
+    hrs_sd, src_sd = g._planned_hours(
+        {"workoutId": 123, "title": "Aerobic Ride with Sweet Spot Surges"}, "tempo")
+    g.get_workout_by_id = _saved_gw              # type: ignore[assignment]
+    check("_planned_hours reads 3.5h from workout steps, not the 1h default", hrs_sd == 3.5)
+    check("_planned_hours source = workout_detail", src_sd == "workout_detail")
+
     print("energy-availability guard:")
     check("every day has an EA value",
           all(d.get("energy_availability_kcal_per_kg_ffm") is not None for d in plan["days"]))
@@ -380,6 +404,30 @@ def main():
     tot_p = sum(m["protein_g"] for m in d0["meals"])
     check("meals present", len(d0["meals"]) >= 4)
     check("meal protein sums ~ day protein", abs(tot_p - d0["protein_g"]) <= 3)
+    d4m = plan["days"][4]  # long-ride day, carries a fuel card
+    check("meal carbs sum ~ day carbs", abs(sum(m["carbs_g"] for m in d4m["meals"]) - d4m["carbs_g"]) <= 3)
+    peri = next((m for m in d4m["meals"] if m["meal"].startswith("Pre / peri")), None)
+    fuel_peri = sum(c["pre_carbs_g"] + c["during_carbs_g_total"] for c in d4m["fuel"])
+    check("peri-workout meal present on a fueled day", peri is not None)
+    check("peri-workout meal carbs match the fuel cards",
+          peri["carbs_g"] == min(fuel_peri, d4m["carbs_g"]))
+    check("meal kcal sums ~ day target",
+          all(abs(sum(m["kcal"] for m in d["meals"]) - d["target_kcal"]) <= 30
+              for d in plan["days"]))
+
+    print("weekday breakfast-skip (time-restricted eating):")
+    plan_sb = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7,
+                                      skip_breakfast_weekdays=True)
+    check("config echoes skip_breakfast_weekdays",
+          plan_sb["config"]["skip_breakfast_weekdays"] is True)
+    check("weekdays drop breakfast, weekends keep it",
+          all((not any(m["meal"] == "Breakfast" for m in d["meals"]))
+              == (date.fromisoformat(d["date"]).weekday() < 5)
+              for d in plan_sb["days"]))
+    check("skip-breakfast day still sums carbs to the day total",
+          all(abs(sum(m["carbs_g"] for m in d["meals"]) - d["carbs_g"]) <= 3 for d in plan_sb["days"]))
+    check("off by default: every day keeps breakfast",
+          all(any(m["meal"] == "Breakfast" for m in d["meals"]) for d in plan["days"]))
 
     print("heat-aware hydration (outdoor sessions):")
     hot = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7, heat_c=33)

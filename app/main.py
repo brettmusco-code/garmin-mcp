@@ -508,6 +508,7 @@ TOOLS = [
                 "use_adaptive_tdee": {"type": "boolean", "description": "use measured maintenance (intake vs weight change) instead of BMR x1.3 once data is sufficient"},
                 "home_lat": {"type": "number", "description": "home latitude, for heat-aware hydration on outdoor sessions"},
                 "home_lon": {"type": "number", "description": "home longitude"},
+                "skip_breakfast_weekdays": {"type": "boolean", "description": "time-restricted eating: drop the breakfast meal on weekdays (Mon-Fri) and shift its calories to the later eating window; weekends keep breakfast"},
                 "notes": {"type": "string"},
             },
             "required": ["goal_type"],
@@ -554,6 +555,7 @@ TOOLS = [
                 "max_loss_lb_per_week": {"type": "number", "description": "override the loss-rate cap in lb/week"},
                 "use_adaptive_tdee": {"type": "boolean", "description": "override use of measured maintenance instead of the BMR formula"},
                 "heat_c": {"type": "number", "description": "override forecast: assume this day's high (deg C) for heat-aware hydration on outdoor sessions"},
+                "skip_breakfast_weekdays": {"type": "boolean", "description": "override the goal's weekday breakfast-skip: drop the weekday breakfast meal and shift its calories later"},
             },
         },
     },
@@ -784,6 +786,7 @@ def _call_tool(name: str, args: dict) -> Any:
             use_adaptive_tdee=args.get("use_adaptive_tdee"),
             home_lat=args.get("home_lat"),
             home_lon=args.get("home_lon"),
+            skip_breakfast_weekdays=args.get("skip_breakfast_weekdays"),
             notes=args.get("notes"),
         )
     if name == "get_fueling_goal":
@@ -809,6 +812,7 @@ def _call_tool(name: str, args: dict) -> Any:
             use_adaptive_tdee=args.get("use_adaptive_tdee"),
             max_loss_lb_per_week=args.get("max_loss_lb_per_week"),
             heat_c=args.get("heat_c"),
+            skip_breakfast_weekdays=args.get("skip_breakfast_weekdays"),
         )
     if name == "get_race_fueling":
         sport = args.get("sport")
