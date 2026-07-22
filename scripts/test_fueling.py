@@ -318,6 +318,52 @@ def main():
     g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
                        sex="male", height_cm=178, age=40)
 
+    print("max_loss_lb_per_week + trajectory projection:")
+    g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
+                       sex="male", height_cm=178, age=40)
+    plan_ml = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7,
+                                      max_loss_lb_per_week=0.5)
+    check("loss-rate cap -> ~250 kcal/day cap", abs(plan_ml["daily_kcal_adjustment"]) <= 251)
+    check("config echoes max_loss_lb_per_week", plan_ml["config"]["max_loss_lb_per_week"] == 0.5)
+    check("projection has weekly points", len(plan_ml["projection"]["points"]) >= 2)
+    check("projection reaches target with a finish date",
+          plan_ml["projection"]["projected_finish_date"] is not None)
+    check("projection reports max sustainable weekly loss",
+          plan_ml["projection"]["max_weekly_loss_kg"] > 0)
+
+    print("swim fueling rule (no pre/during):")
+    _save_sched = g.get_scheduled_workouts
+    g.get_scheduled_workouts = lambda s, e, **k: [
+        {"date": s, "title": "Long Swim Set", "sportTypeKey": "swimming",
+         "duration": 2 * 3600, "itemType": "workout"}]
+    psw = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=1)
+    g.get_scheduled_workouts = _save_sched
+    swim_card = psw["days"][0]["fuel"][0]
+    check("swim gets a fuel card (>=90 min)", psw["days"][0]["needs_fuel"])
+    check("swim: no pre-fuel", swim_card["pre_carbs_g"] == 0)
+    check("swim: no during-fuel", swim_card["during_carbs_g_total"] == 0)
+    check("swim: post-fuel intact", swim_card["post_carbs_g"] > 0)
+
+    print("adaptive TDEE:")
+    _save_nt, _save_air = g.nutrition_trend, g.get_activities_in_range
+    g.nutrition_trend = lambda weeks=4: {
+        "weeks": [{"avg_daily_kcal_intake": 2500, "days_logged": 6} for _ in range(6)],
+        "weight_trajectory": {"delta_kg": -1.0, "readings_count": 10}}
+    g.get_activities_in_range = lambda s, e, *a, **k: [{"calories": 700}] * 30
+    at = g.get_adaptive_tdee(weeks=6)
+    check("maintenance = intake - weight-change energy (~2683)",
+          abs(at["total_maintenance_kcal"] - 2683) <= 3)
+    check("non-exercise base strips mean exercise burn",
+          at["non_exercise_base_kcal"] == at["total_maintenance_kcal"] - at["mean_daily_exercise_kcal"])
+    check("confidence high with good logging", at["confidence"] == "high")
+    g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
+                       sex="male", height_cm=178, age=40, use_adaptive_tdee=True)
+    plan_at = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7)
+    check("plan adopts measured base", plan_at["energy_base"]["source"] == "adaptive_tdee")
+    g.nutrition_trend, g.get_activities_in_range = _save_nt, _save_air
+    g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
+                       sex="male", height_cm=178, age=40)
+
     print("rebalance from actuals:")
     def _fake_pva(days_back=7):
         return {"rows": [

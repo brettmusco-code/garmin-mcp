@@ -504,6 +504,8 @@ TOOLS = [
                 "bmr_floor_mult": {"type": "number", "description": "daily-target floor as BMR multiple; default 1.2, 0 drops the floor"},
                 "periodize_deficit": {"type": "boolean", "description": "bank the deficit on rest/easy days (default true for lose goals)"},
                 "front_load": {"type": "number", "description": "0..0.9: steeper deficit early, tapering as weight nears target. 0 = flat linear pace"},
+                "max_loss_lb_per_week": {"type": "number", "description": "cap the loss rate in lb/week (friendlier than max_deficit_kcal; 1 lb ~ 3500 kcal)"},
+                "use_adaptive_tdee": {"type": "boolean", "description": "use measured maintenance (intake vs weight change) instead of BMR x1.3 once data is sufficient"},
                 "notes": {"type": "string"},
             },
             "required": ["goal_type"],
@@ -547,6 +549,26 @@ TOOLS = [
                 "min_kcal": {"type": "number", "description": "override the absolute daily calorie floor; 0 disables"},
                 "rebalance": {"type": ["boolean", "number"], "description": "self-correct from recent logged days: true = week-to-date, N = last N days. Spreads the accumulated intake error (vs expenditure-adjusted targets) across this window. Default false"},
                 "front_load": {"type": "number", "description": "override front-loading 0..0.9 (default from goal): steeper deficit early, tapering as weight nears target"},
+                "max_loss_lb_per_week": {"type": "number", "description": "override the loss-rate cap in lb/week"},
+                "use_adaptive_tdee": {"type": "boolean", "description": "override use of measured maintenance instead of the BMR formula"},
+            },
+        },
+    },
+    {
+        "name": "get_adaptive_tdee",
+        "description": (
+            "Estimate the athlete's TRUE maintenance from logged intake vs "
+            "actual weight change over recent weeks (more accurate than BMR x "
+            "1.3 once there's data). Returns total maintenance, the "
+            "non-exercise base, mean daily exercise burn, the formula base for "
+            "comparison, and a confidence rating. generate_fueling_plan uses "
+            "this as its energy base when use_adaptive_tdee is on and "
+            "confidence is sufficient."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "weeks": {"type": "number", "description": "window in weeks, 2-12. Default 6."},
             },
         },
     },
@@ -734,6 +756,8 @@ def _call_tool(name: str, args: dict) -> Any:
             bmr_floor_mult=args.get("bmr_floor_mult"),
             periodize_deficit=args.get("periodize_deficit"),
             front_load=args.get("front_load"),
+            max_loss_lb_per_week=args.get("max_loss_lb_per_week"),
+            use_adaptive_tdee=args.get("use_adaptive_tdee"),
             notes=args.get("notes"),
         )
     if name == "get_fueling_goal":
@@ -756,7 +780,11 @@ def _call_tool(name: str, args: dict) -> Any:
             min_kcal=args.get("min_kcal"),
             rebalance=args.get("rebalance", False),
             front_load=args.get("front_load"),
+            use_adaptive_tdee=args.get("use_adaptive_tdee"),
+            max_loss_lb_per_week=args.get("max_loss_lb_per_week"),
         )
+    if name == "get_adaptive_tdee":
+        return garmin.get_adaptive_tdee(weeks=int(args.get("weeks", 6)))
     if name == "push_nutrition_targets_to_garmin":
         td = args.get("target_date")
         if td and not DATE_RE.match(td):
