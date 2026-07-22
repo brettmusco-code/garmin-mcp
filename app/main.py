@@ -17,8 +17,15 @@ from contextlib import asynccontextmanager
 from typing import Any
 from urllib.parse import urlencode
 
+import pathlib
+
 from fastapi import FastAPI, Form, Header, HTTPException, Request
-from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    PlainTextResponse,
+    RedirectResponse,
+)
 
 from . import cache, garmin, tokens
 
@@ -942,6 +949,70 @@ def health() -> PlainTextResponse:
     # from spinning down.
     mode = "readonly" if garmin.READONLY_MODE else "live"
     return PlainTextResponse(f"garmin-mcp ok ({mode})")
+
+
+# --- Mobile-friendly dashboard ----------------------------------------------
+# The Claude Artifact URL (claude.ai/code/artifact/...) is a universal link, so
+# on a phone it hands off to the Claude app instead of rendering in the browser.
+# This route serves the same self-contained dashboard as a plain web page that
+# opens natively anywhere, rebuilding it from the live plan on each load.
+_DASH_TEMPLATE = pathlib.Path(__file__).resolve().parent.parent / "web" / "fuel-dashboard.html"
+_DASH_PLAN_RE = re.compile(r"const PLAN = \{.*?\n\};", re.DOTALL)
+_DASH_TTL = 120.0  # seconds; keeps repeated loads off the cache/R2 hot path
+_dash_cache: dict[str, Any] = {"html": None, "ts": 0.0}
+
+
+@app.api_route("/dashboard", methods=["GET", "HEAD"])
+def dashboard(request: Request) -> HTMLResponse:
+    """Fueling dashboard as a plain, mobile-friendly web page. Reads the live
+    plan from cache on each load (2-min micro-cache). If DASHBOARD_TOKEN is set
+    in the environment, a matching ?k=<token> is required; otherwise it's open
+    (obscure but unauthenticated — set the token to lock it down)."""
+    import time as _time
+
+    gate = os.environ.get("DASHBOARD_TOKEN")
+    if gate:
+        supplied = request.query_params.get("k") or ""
+        if not secrets.compare_digest(supplied, gate):
+            raise HTTPException(status_code=404, detail="not found")
+
+    now = _time.time()
+    cached = _dash_cache["html"]
+    if cached and now - _dash_cache["ts"] < _DASH_TTL:
+        return HTMLResponse(cached)
+
+    try:
+        plan = garmin.generate_fueling_plan(days=7, rebalance=True)
+    except Exception as ex:  # noqa: BLE001
+        return HTMLResponse(
+            f"<h1>Fueling dashboard</h1><p>Could not build the plan: "
+            f"{type(ex).__name__}: {ex}</p>",
+            status_code=500,
+        )
+    if plan.get("no_goal_available"):
+        return HTMLResponse(
+            "<h1>Fueling dashboard</h1><p>No fueling goal is set yet — run "
+            "<code>/fuel</code> in Claude to create one.</p>"
+        )
+    if plan.get("error"):
+        return HTMLResponse(
+            f"<h1>Fueling dashboard</h1><p>{plan['error']}</p>"
+        )
+
+    try:
+        html = _DASH_PLAN_RE.sub(
+            lambda _m: "const PLAN = " + json.dumps(plan) + ";",
+            _DASH_TEMPLATE.read_text(),
+            count=1,
+        )
+    except Exception as ex:  # noqa: BLE001
+        return HTMLResponse(
+            f"<h1>Fueling dashboard</h1><p>Template error: "
+            f"{type(ex).__name__}: {ex}</p>",
+            status_code=500,
+        )
+    _dash_cache.update(html=html, ts=now)
+    return HTMLResponse(html)
 
 
 @app.get("/cache/list")
