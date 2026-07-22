@@ -289,6 +289,35 @@ def main():
     check("snapshot persisted with nutrition_plan", bool(snap and snap.get("nutrition_plan")))
     check("nutrition_plan keyed by ISO date", TODAY.isoformat() in snap["nutrition_plan"])
 
+    print("front-loading (steeper early, tapers to target):")
+    # goal: lose 74.1 -> 70.0, start captured at 74.1 (== current) so frac ~ 1
+    fl_goal_date = (TODAY + timedelta(weeks=10)).isoformat()
+    g.set_fueling_goal(goal_type="lose", target_weight_kg=70.0, target_date=fl_goal_date,
+                       sex="male", height_cm=178, age=40, start_weight_kg=74.1,
+                       max_deficit_kcal=0)
+    flat = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7, front_load=0)
+    front = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7, front_load=0.5)
+    check("config echoes front_load", front["config"]["front_load"] == 0.5)
+    check("at start weight, front-loaded deficit is steeper",
+          abs(front["daily_kcal_adjustment"]) > abs(flat["daily_kcal_adjustment"]))
+    check("front-load ~1.5x at frac=1",
+          abs(abs(front["daily_kcal_adjustment"]) - 1.5 * abs(flat["daily_kcal_adjustment"])) <= 2)
+    check("front-load note present", any("Front-loaded" in n for n in front["notes"]))
+    # near target (current ~ target) the front-load should ease below linear
+    g.get_athlete_baseline = lambda *a, **k: {"weight_kg": 70.3, "staleness_days": {"weight": 2}}
+    g.get_body_composition = lambda startdate=None, enddate=None, **k: {"dateWeightList": [
+        {"date": (TODAY - timedelta(days=1)).isoformat(), "weight": 70300,
+         "bodyFat": 14.0, "muscleMass": 34000}]}
+    near = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7, front_load=0.5)
+    flat_near = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7, front_load=0)
+    check("near target, front-loaded deficit eases below linear",
+          abs(near["daily_kcal_adjustment"]) < abs(flat_near["daily_kcal_adjustment"]))
+    # restore stubs + default goal
+    g.get_athlete_baseline = _fake_baseline
+    g.get_body_composition = _fake_body_comp
+    g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
+                       sex="male", height_cm=178, age=40)
+
     print("rebalance from actuals:")
     def _fake_pva(days_back=7):
         return {"rows": [

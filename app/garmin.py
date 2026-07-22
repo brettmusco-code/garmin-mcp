@@ -1259,6 +1259,7 @@ def set_fueling_goal(
     min_kcal: float | None = None,
     bmr_floor_mult: float | None = None,
     periodize_deficit: bool | None = None,
+    front_load: float | None = None,
     notes: str | None = None,
 ) -> dict:
     """Persist the athlete's fueling goal to R2 (single active goal, keyed
@@ -1286,6 +1287,11 @@ def set_fueling_goal(
       periodize_deficit: shift the weekly deficit toward rest/easy days so
         hard sessions stay near maintenance. Default true for lose goals;
         pass false for a flat daily deficit.
+      front_load: 0..0.9 — steeper deficit early, tapering as weight nears
+        target (fat loss slows as you lean out). At the start weight the
+        deficit runs (1 + front_load)x the linear pace; at the midpoint,
+        the linear pace; near target, (1 - front_load)x. Recomputed from
+        each weigh-in, so it self-tapers. 0/unset = flat linear pace.
 
     goal_type: 'lose' | 'gain' | 'maintain'. For 'lose'/'gain' provide
     target_weight_kg and target_date so a daily deficit/surplus can be computed.
@@ -1329,6 +1335,7 @@ def set_fueling_goal(
         "min_kcal": round(float(min_kcal)) if min_kcal is not None else None,
         "bmr_floor_mult": round(float(bmr_floor_mult), 2) if bmr_floor_mult is not None else None,
         "periodize_deficit": bool(periodize_deficit) if periodize_deficit is not None else None,
+        "front_load": round(float(front_load), 2) if front_load is not None else None,
         "notes": notes,
         "set_date": date.today().isoformat(),
     }
@@ -1604,6 +1611,7 @@ def generate_fueling_plan(
     ea_min: float | None = None,
     min_kcal: float | None = None,
     rebalance: bool | int = False,
+    front_load: float | None = None,
 ) -> dict:
     """Build a forward fueling plan: per-day calorie + macro targets and a
     per-workout fuel card for the next `days` days, from the stored fueling
@@ -1678,6 +1686,8 @@ def generate_fueling_plan(
     ea_min_val = em_raw if (em_raw and em_raw > 0) else None
     mk_raw = min_kcal if min_kcal is not None else goal.get("min_kcal")
     min_kcal_val = mk_raw if (mk_raw and mk_raw > 0) else None
+    fl_raw = front_load if front_load is not None else goal.get("front_load")
+    front_load_val = max(0.0, min(0.9, fl_raw)) if fl_raw else 0.0
 
     goal_adj = 0
     if gt == "lose":
@@ -1686,6 +1696,19 @@ def generate_fueling_plan(
             raw = (kg_to_lose * 7700 / wr) / 7
         else:
             raw = 400  # moderate default cut when no target/timeline
+        # Front-load: steeper while far from target, easing as weight nears
+        # goal. Recomputed from current weight each run, so it self-tapers.
+        start_w = goal.get("start_weight_kg")
+        if front_load_val and start_w and tgt and start_w > tgt:
+            fl_frac = max(0.0, min(1.0, (weight_kg - tgt) / (start_w - tgt)))
+            fl_mult = max(0.2, 1 + front_load_val * (2 * fl_frac - 1))
+            raw *= fl_mult
+            notes.append(
+                f"Front-loaded ({round(front_load_val * 100)}%): with "
+                f"{round(fl_frac * 100)}% of the weight still to go, the deficit "
+                f"target runs {round((fl_mult - 1) * 100):+}% vs the linear pace, "
+                "easing as you approach goal (floors still cap it)."
+            )
         goal_adj = -round(raw) if uncapped else -min(round(raw), deficit_cap)
         if uncapped and raw > 500:
             floor_txt = (f"a floor of BMR x{floor_mult} still applies"
@@ -1977,6 +2000,7 @@ def generate_fueling_plan(
             "periodize_deficit": periodize_applied,
             "ea_min_kcal_per_kg_ffm": ea_min_val,
             "min_kcal": min_kcal_val,
+            "front_load": front_load_val or None,
         },
         "days": day_rows,
         "totals": totals,

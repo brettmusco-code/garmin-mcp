@@ -503,6 +503,7 @@ TOOLS = [
                 "min_kcal": {"type": "number", "description": "absolute daily calorie floor. Unset = none"},
                 "bmr_floor_mult": {"type": "number", "description": "daily-target floor as BMR multiple; default 1.2, 0 drops the floor"},
                 "periodize_deficit": {"type": "boolean", "description": "bank the deficit on rest/easy days (default true for lose goals)"},
+                "front_load": {"type": "number", "description": "0..0.9: steeper deficit early, tapering as weight nears target. 0 = flat linear pace"},
                 "notes": {"type": "string"},
             },
             "required": ["goal_type"],
@@ -545,6 +546,7 @@ TOOLS = [
                 "ea_min": {"type": "number", "description": "override the enforced EA minimum (kcal/kg FFM); 0 disables"},
                 "min_kcal": {"type": "number", "description": "override the absolute daily calorie floor; 0 disables"},
                 "rebalance": {"type": ["boolean", "number"], "description": "self-correct from recent logged days: true = week-to-date, N = last N days. Spreads the accumulated intake error (vs expenditure-adjusted targets) across this window. Default false"},
+                "front_load": {"type": "number", "description": "override front-loading 0..0.9 (default from goal): steeper deficit early, tapering as weight nears target"},
             },
         },
     },
@@ -731,6 +733,7 @@ def _call_tool(name: str, args: dict) -> Any:
             min_kcal=args.get("min_kcal"),
             bmr_floor_mult=args.get("bmr_floor_mult"),
             periodize_deficit=args.get("periodize_deficit"),
+            front_load=args.get("front_load"),
             notes=args.get("notes"),
         )
     if name == "get_fueling_goal":
@@ -752,6 +755,7 @@ def _call_tool(name: str, args: dict) -> Any:
             ea_min=args.get("ea_min"),
             min_kcal=args.get("min_kcal"),
             rebalance=args.get("rebalance", False),
+            front_load=args.get("front_load"),
         )
     if name == "push_nutrition_targets_to_garmin":
         td = args.get("target_date")
