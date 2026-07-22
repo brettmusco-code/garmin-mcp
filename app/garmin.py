@@ -1606,6 +1606,104 @@ def _bmr(weight_kg, sex, height_cm, age):
     return None
 
 
+def _today_actuals() -> dict | None:
+    """Logged intake + the actual foods eaten, with measured expenditure —
+    today if it's logged, else the most recent logged day in the last week
+    (so the readout is useful before today's data is pre-warmed). Powers the
+    dashboard's 'today so far' card."""
+    today = date.today()
+    today_iso = today.isoformat()
+    try:
+        ds = get_daily_summaries((today - timedelta(days=6)).isoformat(),
+                                 today_iso, ["nutrition_food_log", "stats_and_body"])
+    except Exception:  # noqa: BLE001
+        return None
+    fl_all = ds.get("nutrition_food_log") or {}
+    sb_all = ds.get("stats_and_body") or {}
+    # Prefer today; else the most recent day that actually has foods logged.
+    chosen = today_iso
+    for d_iso in sorted(fl_all, reverse=True):
+        v = fl_all[d_iso]
+        if isinstance(v, dict) and "error" not in v and (v.get("loggedFoodsWithServingSizes")):
+            chosen = d_iso
+            break
+    fl = fl_all.get(chosen)
+    sb = sb_all.get(chosen)
+    content, raw_foods, goals = {}, [], {}
+    if isinstance(fl, dict) and "error" not in fl:
+        content = fl.get("dailyNutritionContent") or {}
+        raw_foods = fl.get("loggedFoodsWithServingSizes") or []
+        goals = fl.get("dailyNutritionGoals") or {}
+    foods = []
+    for it in raw_foods[:60]:
+        md = it.get("foodMetaData") or {}
+        name = " ".join(x for x in [md.get("brandName"), md.get("foodName")] if x) or "food"
+        nc = it.get("nutritionContents") or []
+        first = nc[0] if (nc and isinstance(nc[0], dict)) else {}
+        kcal = first.get("calories")
+        foods.append({"name": name, "kcal": round(kcal) if kcal else None,
+                      "protein_g": first.get("protein"), "carbs_g": first.get("carbs"),
+                      "fat_g": first.get("fat")})
+    expenditure = None
+    if isinstance(sb, dict) and "error" not in sb:
+        expenditure = sb.get("totalKilocalories") or (
+            (sb.get("bmrKilocalories") or 0) + (sb.get("activeKilocalories") or 0)) or None
+    return {
+        "date": chosen,
+        "is_today": chosen == today_iso,
+        "consumed_kcal": content.get("calories"),
+        "protein_g": content.get("protein"),
+        "carbs_g": content.get("carbs"),
+        "fat_g": content.get("fat"),
+        "foods_logged": len(raw_foods),
+        "foods": foods,
+        "expenditure_kcal": round(expenditure) if expenditure else None,
+        "garmin_goal_kcal": goals.get("adjustedCalories") or goals.get("calories"),
+    }
+
+
+def _recent_days(n: int = 2) -> list[dict]:
+    """The last n days' actual consumed calories vs the planned target (from
+    the saved weekly snapshot) and measured expenditure — for a quick
+    'am I on plan' readout."""
+    today = date.today()
+    try:
+        ds = get_daily_summaries((today - timedelta(days=n)).isoformat(),
+                                 (today - timedelta(days=1)).isoformat(),
+                                 ["nutrition_food_log", "stats_and_body"])
+    except Exception:  # noqa: BLE001
+        return []
+    fl = ds.get("nutrition_food_log") or {}
+    sb = ds.get("stats_and_body") or {}
+    plan: dict = {}
+    try:
+        for snap in reversed(get_weekly_snapshots(weeks_back=2)):
+            plan.update(snap.get("nutrition_plan") or {})
+    except Exception:  # noqa: BLE001
+        pass
+    out = []
+    for i in range(n, 0, -1):
+        d = (today - timedelta(days=i)).isoformat()
+        v = fl.get(d)
+        s = sb.get(d)
+        consumed, foods = None, 0
+        if isinstance(v, dict) and "error" not in v:
+            consumed = (v.get("dailyNutritionContent") or {}).get("calories")
+            foods = len(v.get("loggedFoodsWithServingSizes") or [])
+        exp = None
+        if isinstance(s, dict) and "error" not in s:
+            exp = s.get("totalKilocalories") or (
+                (s.get("bmrKilocalories") or 0) + (s.get("activeKilocalories") or 0)) or None
+        out.append({
+            "date": d,
+            "consumed_kcal": round(consumed) if consumed else None,
+            "foods_logged": foods,
+            "plan_target_kcal": (plan.get(d) or {}).get("target_kcal"),
+            "expenditure_kcal": round(exp) if exp else None,
+        })
+    return out
+
+
 def _is_outdoor_session(sport: str, title: str) -> bool:
     """Best-effort: is this planned session likely outdoors (so heat matters)?
     Pools and indoor-trainer/treadmill cues are indoor; other runs/rides are
@@ -2016,24 +2114,7 @@ def generate_fueling_plan(
             fl_frac = max(0.0, min(1.0, (weight_kg - tgt) / (start_w - tgt)))
             fl_mult = max(0.2, 1 + front_load_val * (2 * fl_frac - 1))
             raw *= fl_mult
-            notes.append(
-                f"Front-loaded ({round(front_load_val * 100)}%): with "
-                f"{round(fl_frac * 100)}% of the weight still to go, the deficit "
-                f"target runs {round((fl_mult - 1) * 100):+}% vs the linear pace, "
-                "easing as you approach goal (floors still cap it)."
-            )
         goal_adj = -round(raw) if uncapped else -min(round(raw), deficit_cap)
-        if uncapped and raw > 500:
-            floor_txt = (f"a floor of BMR x{floor_mult} still applies"
-                         if floor_mult > 0 else
-                         "no target floor is active — daily targets may fall below BMR")
-            notes.append(f"Deficit UNCAPPED at {round(raw)} kcal/day to reach {tgt}kg "
-                         f"by {goal.get('target_date')} — very aggressive; {floor_txt}. "
-                         "Watch recovery and EA.")
-        elif not uncapped and kg_to_lose and wr and raw > deficit_cap:
-            notes.append(f"Reaching {tgt}kg by {goal.get('target_date')} needs a "
-                         f"{round(raw)} kcal/day deficit; capped at {round(deficit_cap)} "
-                         "— extend the timeline to stay safe.")
     elif gt == "gain":
         goal_adj = 400  # midpoint of +300-500, carb-led
 
@@ -2313,18 +2394,6 @@ def generate_fueling_plan(
             "notes": "fuel pre/during/post" if fuel_cards else "",
         }
 
-    if last_scheduled_date and last_scheduled_date < end.isoformat():
-        notes.append(f"Garmin calendar has workouts through {last_scheduled_date}; "
-                     "later days assume rest/easy — re-run when the plan extends.")
-
-    if periodize_applied and residual < -50:
-        notes.append(f"Periodized deficit could not absorb {abs(residual)} kcal of the "
-                     "weekly target (floors / hard-day limits reached) — actual pace "
-                     "runs slower than the goal; see the projected finish date.")
-    below_bmr = [d["date"] for d in day_rows if d["target_kcal"] < bmr]
-    if below_bmr:
-        notes.append(f"Daily target falls below BMR on {', '.join(below_bmr)} — this is "
-                     "what the goal pace demands, but it is not sustainable.")
     macro_over = [d["date"] for d in day_rows
                   if d["protein_g"] * 4 + d["carbs_g"] * 4 + d["fat_g"] * 9
                   > d["target_kcal"] * 1.15]
@@ -2380,6 +2449,8 @@ def generate_fueling_plan(
             "energy_base_source": base_source,
         },
         "projection": projection,
+        "today_actuals": _today_actuals(),
+        "recent_days": _recent_days(2),
         "days": day_rows,
         "totals": totals,
         "notes": notes,

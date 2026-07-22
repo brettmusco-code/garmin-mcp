@@ -113,6 +113,23 @@
   .eapill.warn{color:var(--warn);background:color-mix(in srgb,var(--warn) 15%,transparent);}
   .eapill.crit{color:var(--crit);background:color-mix(in srgb,var(--crit) 15%,transparent);}
 
+  .foods{margin-top:14px;display:flex;flex-direction:column;gap:0;max-height:230px;overflow:auto;}
+  .foods .f{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;
+    border-bottom:1px solid var(--line);padding:5px 0;}
+  .foods .f:last-child{border-bottom:0;}
+  .foods .fn{color:var(--ink);} .foods .fk{font-family:var(--mono);color:var(--ink-dim);white-space:nowrap;}
+  .foods .empty{color:var(--ink-faint);font-size:12.5px;padding:6px 0;}
+  tbody tr.clickable{cursor:pointer;}
+  tbody tr.clickable:hover{background:color-mix(in srgb,var(--carbs) 7%,transparent);}
+  tbody tr.sel{background:color-mix(in srgb,var(--carbs) 14%,transparent);box-shadow:inset 3px 0 0 var(--carbs);}
+  .detail-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;flex-wrap:wrap;margin-bottom:14px;}
+  .detail-head .t{font-size:15px;font-weight:600;} .detail-head .t small{color:var(--ink-dim);font-weight:400;margin-left:8px;}
+  .detail-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px;} @media(max-width:640px){.detail-grid{grid-template-columns:1fr;}}
+  .detail-grid h3{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);margin:0 0 8px;}
+  .mealrow{display:grid;grid-template-columns:1fr auto;gap:10px;font-size:12.5px;padding:6px 0;border-bottom:1px solid var(--line);}
+  .mealrow:last-child{border-bottom:0;} .mealrow .mm{font-family:var(--mono);color:var(--ink-dim);}
+  .recent table{min-width:0;}
+
   .progress{display:grid;grid-template-columns:1fr;gap:14px;}
   .track{position:relative;height:12px;border-radius:8px;background:var(--panel-2);margin:26px 0 8px;}
   .track .fill{position:absolute;top:0;bottom:0;left:0;border-radius:8px;
@@ -172,16 +189,18 @@
       <div class="today-session" id="todaySession"></div>
     </div>
 
-    <div class="card">
-      <h2>Energy availability</h2>
-      <div class="sub" id="eaSub">Intake minus exercise, per kg fat-free mass.</div>
-      <div class="ea-list" id="eaList"></div>
+    <div class="card" id="actualsCard">
+      <div class="eyebrow" id="actEyebrow">TODAY SO FAR</div>
+      <div class="kcal-big"><span class="v" id="actKcal">—</span><span class="u">kcal eaten</span></div>
+      <div class="adj" id="actMeta"></div>
+      <div class="macros" id="actMacros"></div>
+      <div class="foods" id="actFoods"></div>
     </div>
   </div>
 
   <div class="card">
     <h2>Week ahead</h2>
-    <div class="sub" id="weekSub">Daily targets, macros, and which sessions need a fuel plan.</div>
+    <div class="sub">Tap any day for its full fueling detail below.</div>
     <div class="weekwrap">
       <table>
         <thead><tr>
@@ -193,6 +212,11 @@
     </div>
   </div>
 
+  <section class="block" id="detailBlock">
+    <div class="lead"><h2>Day detail</h2><span>macros · meals · per-workout fuel</span></div>
+    <div class="card" id="detail"></div>
+  </section>
+
   <section class="block">
     <div class="lead"><h2>Weight &rarr; target</h2><span id="paceNote"></span></div>
     <div class="card progress">
@@ -200,14 +224,14 @@
     </div>
   </section>
 
+  <section class="block" id="recentBlock">
+    <div class="lead"><h2>Last 2 days</h2><span>actual intake vs plan</span></div>
+    <div class="card recent"><div id="recent"></div></div>
+  </section>
+
   <section class="block" id="projBlock">
     <div class="lead"><h2>Projected trajectory</h2><span id="projNote"></span></div>
     <div class="card"><canvas id="projChart" height="220" style="width:100%;display:block"></canvas></div>
-  </section>
-
-  <section class="block" id="fuelBlock">
-    <div class="lead"><h2>Per-workout fuel</h2><span>pre &middot; during &middot; post</span></div>
-    <div class="card tl" id="tl"></div>
   </section>
 
   <section class="block" id="flagBlock">
@@ -363,6 +387,34 @@ const PLAN = {
     "projected_weeks": 14.0,
     "beats_target_date": false
   },
+  "today_actuals": {
+    "date": "2026-07-22",
+    "is_today": true,
+    "consumed_kcal": null,
+    "protein_g": null,
+    "carbs_g": null,
+    "fat_g": null,
+    "foods_logged": 0,
+    "foods": [],
+    "expenditure_kcal": null,
+    "garmin_goal_kcal": null
+  },
+  "recent_days": [
+    {
+      "date": "2026-07-20",
+      "consumed_kcal": null,
+      "foods_logged": 0,
+      "plan_target_kcal": null,
+      "expenditure_kcal": null
+    },
+    {
+      "date": "2026-07-21",
+      "consumed_kcal": null,
+      "foods_logged": 0,
+      "plan_target_kcal": null,
+      "expenditure_kcal": null
+    }
+  ],
   "days": [
     {
       "date": "2026-07-27",
@@ -841,11 +893,78 @@ function macroRow(lab, key, grams, kcalTot){
     <div class="g">${grams}g <small>${nf(kc)}</small></div></div>`;
 }
 
+function renderActuals(){
+  const a = PLAN.today_actuals;
+  if(!a){ $('actKcal').textContent='—'; $('actMeta').textContent='No Garmin food-log data yet.';
+          $('actMacros').innerHTML=''; $('actFoods').innerHTML=''; return; }
+  $('actEyebrow').textContent = (a.is_today ? 'TODAY SO FAR · ' : 'LAST LOGGED · ') + dmd(a.date);
+  $('actKcal').textContent = a.consumed_kcal ? nf(a.consumed_kcal) : '0';
+  const bits = [`<b>${a.foods_logged||0}</b> foods logged`];
+  if(a.expenditure_kcal) bits.push(`burned <b>${nf(a.expenditure_kcal)}</b>`);
+  if(a.consumed_kcal!=null && a.expenditure_kcal)
+    bits.push(`net <b>${(a.consumed_kcal-a.expenditure_kcal>0?'+':'')+nf(a.consumed_kcal-a.expenditure_kcal)}</b>`);
+  $('actMeta').innerHTML = bits.join(' · ');
+  const kc = a.consumed_kcal||0;
+  $('actMacros').innerHTML = (a.protein_g!=null && kc) ?
+    (macroRow('Protein','protein',Math.round(a.protein_g),kc)+
+     macroRow('Carbs','carbs',Math.round(a.carbs_g),kc)+
+     macroRow('Fat','fat',Math.round(a.fat_g),kc)) : '';
+  const foods = a.foods||[];
+  $('actFoods').innerHTML = foods.length
+    ? foods.map(f=>`<div class="f"><span class="fn">${f.name}</span><span class="fk">${f.kcal!=null?nf(f.kcal)+' kcal':''}</span></div>`).join('')
+    : `<div class="empty">Nothing logged yet today — log meals to unlock adaptive targets and rebalancing.</div>`;
+}
+
+function selectDay(idx){
+  document.querySelectorAll('#weekBody tr').forEach(r=>r.classList.toggle('sel', +r.dataset.idx===idx));
+  renderDay(PLAN.days[idx]);
+}
+
+function renderRecent(){
+  const r = PLAN.recent_days||[];
+  if(!r.length){ $('recentBlock').style.display='none'; return; }
+  $('recent').innerHTML = `<div class="weekwrap"><table><thead><tr>
+    <th>Day</th><th class="r">Eaten</th><th class="r">Plan</th><th class="r">Burned</th><th class="r">vs plan</th><th class="r">Foods</th>
+    </tr></thead><tbody>` + r.map(d=>{
+      const eaten=d.consumed_kcal, pl=d.plan_target_kcal, delta=(eaten!=null&&pl!=null)?eaten-pl:null;
+      const dc = delta==null?'var(--ink-faint)':(delta>0?'var(--warn)':'var(--good)');
+      return `<tr><td class="day-cell"><b>${dow(d.date)}</b><small>${dmd(d.date)}</small></td>
+        <td class="r mono">${eaten!=null?nf(eaten):'—'}</td>
+        <td class="r mono">${pl!=null?nf(pl):'—'}</td>
+        <td class="r mono">${d.expenditure_kcal!=null?nf(d.expenditure_kcal):'—'}</td>
+        <td class="r mono" style="color:${dc}">${delta==null?'—':(delta>0?'+':'')+nf(delta)}</td>
+        <td class="r mono ${d.foods_logged?'':'warn'}" style="${d.foods_logged?'':'color:var(--crit)'}">${d.foods_logged||0}</td></tr>`;
+    }).join('') + `</tbody></table></div>`;
+}
+
+function renderDay(d){
+  const rest = d.primary_intensity==='rest';
+  const sess = rest ? 'Rest day' : d.sessions.map(s=>`${s.title} (${s.hours}h)`).join(' + ');
+  const kc = d.target_kcal;
+  const macros = macroRow('Protein','protein',d.protein_g,kc)+macroRow('Carbs','carbs',d.carbs_g,kc)+macroRow('Fat','fat',d.fat_g,kc);
+  const meals = (d.meals||[]).map(m=>`<div class="mealrow"><span>${m.meal}</span><span class="mm">${nf(m.kcal)} · ${m.protein_g}/${m.carbs_g}/${m.fat_g}</span></div>`).join('');
+  const fuel = (d.fuel||[]).map(f=>`
+    <div class="row"><div class="h"><div class="t">${f.session}<small>${f.hours}h · ${f.intensity}</small></div>
+      <div class="k">${f.caffeine_mg?('caffeine '+f.caffeine_mg+'mg'):''}</div></div>
+      <div class="phases">
+        <div class="phase"><div class="p">Pre · 60–90m</div><div class="d"><b>${f.pre_carbs_g}g</b> carbs</div><div class="w">${f.pre_carbs_g?'easy-digest, low fat/fiber':'—'}</div></div>
+        <div class="phase"><div class="p">During · ${f.hours}h</div><div class="d"><b>${f.during_carbs_g_per_hr}g</b>/hr → <b>${f.during_carbs_g_total}g</b></div><div class="w">${f.fluid_ml_per_hr}ml · ${f.sodium_mg_per_hr}mg Na/hr${f.note?' · '+f.note:''}</div></div>
+        <div class="phase"><div class="p">Post · &lt;60m</div><div class="d"><b>${f.post_protein_g}g</b> protein + <b>${f.post_carbs_g}g</b> carbs</div><div class="w">start the refuel window</div></div>
+      </div></div>`).join('');
+  $('detail').innerHTML = `
+    <div class="detail-head"><div class="t">${dow(d.date)} ${dmd(d.date)}<small>${sess}</small></div>
+      <div class="chip ${eaPill(d.energy_availability_kcal_per_kg_ffm)}"><span class="dot"></span>EA ${d.energy_availability_kcal_per_kg_ffm}</div></div>
+    <div class="detail-grid">
+      <div><h3>Targets · ${nf(d.target_kcal)} kcal</h3><div class="macros">${macros}</div></div>
+      <div><h3>Meals</h3>${meals}</div>
+    </div>
+    ${fuel ? `<div class="tl" style="margin-top:16px"><h3 style="font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);margin:0 0 10px">Per-workout fuel</h3>${fuel}</div>`
+           : `<div style="margin-top:14px;color:var(--ink-faint);font-size:12.5px">No session fuel needed (sessions under 90 min, or swim — post-swim refuel only).</div>`}`;
+}
+
 function render(){
   const g = PLAN.goal, gp = PLAN.goal_progress||{}, b = PLAN.body||{}, w = PLAN.window;
   $('range').textContent = `${dmd(w.start)} – ${dmd(w.end)}`;
-  $('eaSub').textContent = `Intake minus exercise, per kg fat-free mass. Under ${EAF} = under-fueling risk.`
-    + (EAF_DISABLED ? ' Warning floor disabled — colors show the physiological reference.' : '');
 
   const gt = g.goal_type;
   const goalTxt = gt==='maintain'
@@ -862,37 +981,32 @@ function render(){
   $('meta').innerHTML = meta.join('');
 
   const days = PLAN.days;
-  let today = days.find(d=>d.date>=todayISO) || days[0];
-  const isReal = today.date===todayISO;
-  $('todayEyebrow').textContent = (isReal?'TODAY · ':'') + dow(today.date).toUpperCase()+' '+dmd(today.date);
-  $('todayKcal').textContent = nf(today.target_kcal);
-  const sess = today.sessions.map(s=>s.title).join(' + ');
-  $('todayAdj').innerHTML = `${gt==='lose'?'Deficit':gt==='gain'?'Surplus':'Maintenance'} day · est burn <b>${nf(today.est_burn_kcal)}</b> · carbs <b>${today.carb_g_per_kg}g/kg</b>`;
-  const kc0 = today.target_kcal;
+  // Lead card = the first planned day (plan starts tomorrow).
+  const first = days[0];
+  $('todayEyebrow').textContent = (first.date===todayISO?'TODAY · ':'PLAN · ')
+    + dow(first.date).toUpperCase()+' '+dmd(first.date);
+  $('todayKcal').textContent = nf(first.target_kcal);
+  const sess = first.sessions.map(s=>s.title).join(' + ');
+  $('todayAdj').innerHTML = `${gt==='lose'?'Deficit':gt==='gain'?'Surplus':'Maintenance'} day · est burn <b>${nf(first.est_burn_kcal)}</b> · carbs <b>${first.carb_g_per_kg}g/kg</b>`;
+  const kc0 = first.target_kcal;
   $('todayMacros').innerHTML =
-    macroRow('Protein','protein',today.protein_g,kc0)+
-    macroRow('Carbs','carbs',today.carbs_g,kc0)+
-    macroRow('Fat','fat',today.fat_g,kc0);
-  const ea0 = today.energy_availability_kcal_per_kg_ffm;
-  $('todaySession').innerHTML = today.needs_fuel
-    ? `<div class="s">${sess}<small>fuel plan below ↓</small></div><div class="chip ${eaPill(ea0)}"><span class="dot"></span>EA ${ea0}</div>`
-    : `<div class="s ${today.primary_intensity==='rest'?'rest':''}">${today.primary_intensity==='rest'?'Rest day':sess}<small>no session fuel needed</small></div><div class="chip ${eaPill(ea0)}"><span class="dot"></span>EA ${ea0}</div>`;
+    macroRow('Protein','protein',first.protein_g,kc0)+
+    macroRow('Carbs','carbs',first.carbs_g,kc0)+
+    macroRow('Fat','fat',first.fat_g,kc0);
+  const ea0 = first.energy_availability_kcal_per_kg_ffm;
+  $('todaySession').innerHTML =
+    `<div class="s ${first.primary_intensity==='rest'?'rest':''}">${first.primary_intensity==='rest'?'Rest day':sess}<small>${first.needs_fuel?'tap the row for its fuel plan':'no session fuel needed'}</small></div><div class="chip ${eaPill(ea0)}"><span class="dot"></span>EA ${ea0}</div>`;
 
-  $('eaList').innerHTML = days.map(d=>{
-    const e = d.energy_availability_kcal_per_kg_ffm;
-    const pct = e==null?0:Math.max(5,Math.min(100, e/50*100));
-    return `<div class="ea-row"><span class="d">${dow(d.date)}</span>
-      <div class="ea-track"><span style="width:${pct}%;background:${eaColor(e)}"></span></div>
-      <span class="val" style="color:${eaColor(e)}">${e??'—'}</span></div>`;
-  }).join('');
+  renderActuals();
+  renderRecent();
 
-  $('weekBody').innerHTML = days.map(d=>{
+  $('weekBody').innerHTML = days.map((d,idx)=>{
     const kc = d.target_kcal;
     const seg=(gv,key)=>`<i style="width:${kc?Math.round(gv*(key==='fat'?9:4)/kc*100):0}%;background:${M[key]}"></i>`;
     const rest = d.primary_intensity==='rest';
     const sessTxt = rest? 'rest' : d.sessions.map(s=>s.title).join(' + ');
     const e = d.energy_availability_kcal_per_kg_ffm;
-    return `<tr class="${d.date===todayISO?'is-today':''}">
+    return `<tr class="clickable ${d.date===todayISO?'is-today':''}" data-idx="${idx}" onclick="selectDay(${idx})">
       <td class="day-cell"><b>${dow(d.date)}</b><small>${dmd(d.date)}</small></td>
       <td class="sess ${rest?'rest':''}">${sessTxt}</td>
       <td class="r mono">${d.est_burn_kcal?nf(d.est_burn_kcal):'—'}</td>
@@ -923,19 +1037,7 @@ function render(){
       : '';
   } else { document.querySelector('#wtrack').closest('.block').style.display='none'; }
 
-  const fuelDays = days.filter(d=>d.needs_fuel);
-  $('tl').innerHTML = fuelDays.map(d=> d.fuel.map(f=>`
-    <div class="row">
-      <div class="h"><div class="t">${dow(d.date)} · ${f.session}
-        <small>${f.hours}h · ${f.intensity}</small></div>
-        <div class="k">${f.caffeine_mg?('caffeine '+f.caffeine_mg+'mg'):''}</div></div>
-      <div class="phases">
-        <div class="phase"><div class="p">Pre · 60–90m</div><div class="d"><b>${f.pre_carbs_g}g</b> carbs</div><div class="w">easy-digest, low fat/fiber</div></div>
-        <div class="phase"><div class="p">During · ${f.hours}h</div><div class="d"><b>${f.during_carbs_g_per_hr}g</b>/hr → <b>${f.during_carbs_g_total}g</b></div><div class="w">${f.fluid_ml_per_hr}ml · ${f.sodium_mg_per_hr}mg Na/hr${f.note?' · '+f.note:''}</div></div>
-        <div class="phase"><div class="p">Post · &lt;60m</div><div class="d"><b>${f.post_protein_g}g</b> protein + <b>${f.post_carbs_g}g</b> carbs</div><div class="w">start the refuel window</div></div>
-      </div>
-    </div>`).join('')).join('');
-  if(!fuelDays.length) $('fuelBlock').style.display='none';
+  selectDay(0);
 
   const notes = PLAN.notes||[];
   if(notes.length){ $('flags').innerHTML = notes.map(n=>`<div class="flag"><span class="ic">!</span><span>${n}</span></div>`).join(''); }
@@ -963,7 +1065,7 @@ function drawProjection(){
   const ctx = cv.getContext('2d'); ctx.scale(dpr,dpr);
   const ink = cssVar('--ink'), dim = cssVar('--ink-faint'), line = cssVar('--line');
   const carbs = cssVar('--carbs'), good = cssVar('--good');
-  const padL=44, padR=12, padT=14, padB=24;
+  const padL=44, padR=14, padT=16, padB=30;
   const xs = pts.map(p=>new Date(p.date+'T00:00:00').getTime());
   const ys = pts.map(p=>p.weight_kg);
   const tgt = g.target_weight_kg;
@@ -976,18 +1078,28 @@ function drawProjection(){
   ctx.font='10px ui-monospace,monospace'; ctx.textAlign='right'; ctx.textBaseline='middle';
   for(let k=0;k<=3;k++){ const w=yMin+(yMax-yMin)*k/3; const y=Y(w);
     ctx.globalAlpha=.5; ctx.beginPath(); ctx.moveTo(padL,y); ctx.lineTo(W-padR,y); ctx.stroke(); ctx.globalAlpha=1;
-    ctx.fillText(w.toFixed(1), padL-6, y); }
+    ctx.fillText(w.toFixed(1)+'kg', padL-6, y); }
+
+  // x-axis date labels
+  ctx.fillStyle=dim; ctx.textAlign='center'; ctx.textBaseline='top';
+  const step = Math.max(1, Math.ceil(pts.length/5));
+  const seen = new Set();
+  for(let i=0;i<pts.length;i+=step){ seen.add(i); ctx.fillText(dmd(pts[i].date), X(xs[i]), H-padB+8); }
+  const li = pts.length-1;
+  if(!seen.has(li)) ctx.fillText(dmd(pts[li].date), X(xs[li]), H-padB+8);
+  ctx.textBaseline='middle';
 
   // target line
   ctx.strokeStyle=good; ctx.setLineDash([4,4]); ctx.beginPath();
   ctx.moveTo(padL,Y(tgt)); ctx.lineTo(W-padR,Y(tgt)); ctx.stroke(); ctx.setLineDash([]);
   ctx.textAlign='left'; ctx.fillStyle=good; ctx.fillText('target '+tgt+'kg', padL+2, Y(tgt)-7);
 
-  // target-date marker
+  // target-date marker (label at top so it clears the x-axis dates)
   if(proj.target_date){ const tx=X(new Date(proj.target_date+'T00:00:00').getTime());
-    if(tx>=padL && tx<=W-padR){ ctx.strokeStyle=dim; ctx.globalAlpha=.6; ctx.beginPath();
-      ctx.moveTo(tx,padT); ctx.lineTo(tx,H-padB); ctx.stroke(); ctx.globalAlpha=1;
-      ctx.fillStyle=dim; ctx.textAlign='center'; ctx.fillText(dmd(proj.target_date), tx, H-8); } }
+    if(tx>=padL && tx<=W-padR){ ctx.strokeStyle=dim; ctx.globalAlpha=.55; ctx.setLineDash([3,3]);
+      ctx.beginPath(); ctx.moveTo(tx,padT); ctx.lineTo(tx,H-padB); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha=1;
+      ctx.fillStyle=dim; ctx.textAlign='center'; ctx.textBaseline='top';
+      ctx.fillText('goal '+dmd(proj.target_date), tx, padT+1); ctx.textBaseline='middle'; } }
 
   // projected curve
   ctx.strokeStyle=carbs; ctx.lineWidth=2.5; ctx.beginPath();

@@ -189,8 +189,8 @@ def main():
     check("rest day clamps at the floor", day2["target_kcal"] == round(bmr * 1.2))
     check("hard day never cut deeper than flat",
           abs(day0["kcal_adjustment"]) <= abs(plan["daily_kcal_adjustment"]) + 1)
-    check("shortfall note fires when floors bind",
-          any("could not absorb" in n for n in plan["notes"]))
+    check("projection reports a finish date when floors bind",
+          plan["projection"].get("projected_finish_date") is not None)
     plan_flat = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7,
                                         periodize_deficit=False)
     check("flat override: every day same adjustment",
@@ -302,7 +302,6 @@ def main():
           abs(front["daily_kcal_adjustment"]) > abs(flat["daily_kcal_adjustment"]))
     check("front-load ~1.5x at frac=1",
           abs(abs(front["daily_kcal_adjustment"]) - 1.5 * abs(flat["daily_kcal_adjustment"])) <= 2)
-    check("front-load note present", any("Front-loaded" in n for n in front["notes"]))
     # near target (current ~ target) the front-load should ease below linear
     g.get_athlete_baseline = lambda *a, **k: {"weight_kg": 70.3, "staleness_days": {"weight": 2}}
     g.get_body_composition = lambda startdate=None, enddate=None, **k: {"dateWeightList": [
@@ -312,6 +311,7 @@ def main():
     flat_near = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7, front_load=0)
     check("near target, front-loaded deficit eases below linear",
           abs(near["daily_kcal_adjustment"]) < abs(flat_near["daily_kcal_adjustment"]))
+    check("front-load reflected in config", front["config"]["front_load"] == 0.5)
     # restore stubs + default goal
     g.get_athlete_baseline = _fake_baseline
     g.get_body_composition = _fake_body_comp

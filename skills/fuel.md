@@ -20,6 +20,8 @@ Related tools: **`get_adaptive_tdee`** (measured maintenance from intake vs weig
 
 ### Flow
 
+0. **Default to starting tomorrow** — pass `start_date` = tomorrow so the plan is forward-looking (today's eating is mostly done). Today's intake shows in `today_actuals` instead.
+
 1. **`get_fueling_goal`** — pull the stored goal + live progress.
    - **If `goal` is null:** onboard first. Ask for: goal_type (lose / gain / maintain), and for lose/gain the `target_weight_kg` + `target_date`. Also ask sex / `height_cm` / age once (Garmin doesn't expose them — without them BMR falls back to weight × 22). Then call **`set_fueling_goal`** with those and continue.
    - **If `progress.review_flags` is non-empty** (goal >4 weeks old, target date passed, target already hit, weight not logged >14 days): surface the flag and ask me to confirm or update the goal before planning. Don't silently plan against a stale goal.
@@ -29,7 +31,8 @@ Related tools: **`get_adaptive_tdee`** (measured maintenance from intake vs weig
    - `body` (weight, `body_fat_pct`, `lean_mass_kg`, `muscle_mass_kg`, `staleness_days` — from Renpho→Garmin), `fat_free_mass_kg`
    - `bmr` (`value`, `source`), `daily_kcal_adjustment`, `protein_g_per_kg` (base)
    - `days[]` — per day: `sessions[]` (each with `kcal_per_hour` + `burn_source`), `primary_intensity`, `est_burn_kcal`, `target_kcal`, **`target_deficit_kcal`** (expenditure − target; >0 = deficit), `protein_g` / `carbs_g` / `fat_g`, **`protein_g_per_kg`** (that day's periodized value), `carb_g_per_kg`, `energy_availability_kcal_per_kg_ffm`, `needs_fuel`, and `fuel[]` cards
-   - `config` — the resolved knobs: `deficit_cap_kcal` (null = uncapped), `ea_floor_kcal_per_kg_ffm` (warning), `ea_min_kcal_per_kg_ffm` (**enforced** EA floor: each day's target ≥ ea_min × FFM + that day's burn, so the floor scales with training), `min_kcal` (absolute daily floor), `fuel_min_minutes`, `bmr_floor_mult` (null = floor dropped), `periodize_deficit`
+   - `config` — the resolved knobs: `deficit_cap_kcal` (null = uncapped), `max_loss_lb_per_week`, `ea_floor_kcal_per_kg_ffm` (warning), `ea_min_kcal_per_kg_ffm` (**enforced** EA floor: each day's target ≥ ea_min × FFM + that day's burn, so the floor scales with training), `min_kcal` (absolute daily floor), `fuel_min_minutes`, `bmr_floor_mult` (null = floor dropped), `periodize_deficit`, `front_load`
+   - `today_actuals` — today's logged intake + the actual foods eaten (falls back to the most recent logged day, with `is_today`); `recent_days` — the last 2 days' consumed vs planned vs burned. Surface both, and if logging is sparse, say so — it's the main thing blocking adaptive TDEE. Each day also carries a `meals[]` split.
    - **Deficit periodization** (default for lose goals): the weekly deficit is banked on rest/easy days while tempo/threshold/VO2/long days never take a deeper cut than the flat per-day amount — each day reports its own `kcal_adjustment`. `periodize_deficit=false` restores a flat daily deficit. When floors bind and part of the weekly deficit can't be absorbed, a shortfall note fires — surface it.
    - `totals` (incl. `target_deficit_kcal`), `notes[]` (low-EA / RED-S warning fires below the configured floor)
    - Guard flags: `no_goal_available`, `error` (e.g. `no_weight`).

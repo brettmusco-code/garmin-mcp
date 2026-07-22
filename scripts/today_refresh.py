@@ -238,7 +238,19 @@ def run_workout_check() -> int:
         return 0  # non-fatal: skip post-sync refresh this run
 
     if not activity_synced:
-        print("[2/3] Post-sync metrics — skipped (no new activity)")
+        # No new activity, but food logged through the day still needs to flow
+        # through — refresh nutrition every run and regenerate the plan so the
+        # dashboard reflects intraday logging within the hour.
+        print("[2/3] Post-sync metrics — nutrition only (no new activity)")
+        try:
+            garmin.get_daily_summaries(
+                startdate=today_iso, enddate=today_iso,
+                metrics=["nutrition_food_log", "nutrition_meals", "stats_and_body"],
+                force_refresh=True,
+            )
+        except Exception as ex:  # noqa: BLE001
+            print(f"  nutrition refresh error: {str(ex)[:120]}", file=sys.stderr)
+        _refresh_fueling_plan()
         print("[3/3] Activity details — skipped (no new activity)")
         return 0
 
