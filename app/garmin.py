@@ -2976,6 +2976,7 @@ def generate_fueling_plan(
                                  else "measured maintenance + net exercise"},
         "adaptive_tdee": adaptive,
         "weight_trend": trend_cal,
+        "weight_history": [{"date": d, "weight_kg": w} for d, w in _weight_series(35)],
         "fat_free_mass_kg": ffm_kg,
         "body_fat_pct": body.get("body_fat_pct"),
         "daily_kcal_adjustment": goal_adj,

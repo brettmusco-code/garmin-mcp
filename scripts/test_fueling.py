@@ -306,6 +306,9 @@ def main():
           abs(plan["fat_free_mass_kg"] - round(74.1 * (1 - 0.14), 1)) <= 0.2)
     check("Katch BMR = 370 + 21.6*FFM",
           plan["bmr"]["value"] == round(370 + 21.6 * plan["fat_free_mass_kg"]))
+    check("weight_history carries the logged weigh-in for the chart",
+          plan.get("weight_history") == [{"date": (TODAY - timedelta(days=1)).isoformat(),
+                                          "weight_kg": 74.1}])
     bmr = plan["bmr"]["value"]
     floor = round(bmr * 1.2)
     check("7 day rows", len(plan["days"]) == 7)
