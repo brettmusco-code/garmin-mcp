@@ -1748,9 +1748,38 @@ def _today_actuals() -> dict | None:
                       "protein_g": first.get("protein"), "carbs_g": first.get("carbs"),
                       "fat_g": first.get("fat")})
     expenditure = None
+    bmr_kcal = active_kcal = None
     if isinstance(sb, dict) and "error" not in sb:
+        bmr_kcal = sb.get("bmrKilocalories")
+        active_kcal = sb.get("activeKilocalories")
         expenditure = sb.get("totalKilocalories") or (
-            (sb.get("bmrKilocalories") or 0) + (sb.get("activeKilocalories") or 0)) or None
+            (bmr_kcal or 0) + (active_kcal or 0)) or None
+    # Split the day's measured burn into workout vs everyday (BMR + non-exercise
+    # activity), and surface each completed workout so unplanned ones are visible.
+    workout_kcal = None
+    workouts: list[dict] = []
+    try:
+        for a in (get_activities_in_range(chosen, chosen) or []):
+            if not isinstance(a, dict):
+                continue
+            if ((a.get("startTimeLocal") or a.get("startTimeGMT") or "")[:10]) != chosen:
+                continue
+            dur_s = a.get("duration") or a.get("elapsedDuration") or 0
+            cal = a.get("calories")
+            if not cal or dur_s < 300:
+                continue
+            workouts.append({
+                "name": a.get("activityName")
+                        or ((a.get("activityType") or {}).get("typeKey") or "workout"),
+                "kcal": round(cal), "hours": round(dur_s / 3600.0, 2),
+            })
+        if workouts:
+            workout_kcal = sum(w["kcal"] for w in workouts)
+    except Exception:  # noqa: BLE001
+        pass
+    non_workout_kcal = None
+    if expenditure is not None:
+        non_workout_kcal = max(0, round(expenditure) - (workout_kcal or 0))
     return {
         "date": chosen,
         "is_today": chosen == today_iso,
@@ -1761,6 +1790,12 @@ def _today_actuals() -> dict | None:
         "foods_logged": len(raw_foods),
         "foods": foods,
         "expenditure_kcal": round(expenditure) if expenditure else None,
+        "bmr_kcal": round(bmr_kcal) if bmr_kcal else None,
+        # Everyday burn = BMR + non-exercise activity (steps/NEAT), i.e. total
+        # measured expenditure minus what workouts accounted for.
+        "non_workout_kcal": non_workout_kcal,
+        "workout_kcal": workout_kcal,
+        "workouts": workouts,
         "garmin_goal_kcal": goals.get("adjustedCalories") or goals.get("calories"),
     }
 
@@ -2498,6 +2533,7 @@ def generate_fueling_plan(
                 "title": title or sport, "sport": sport, "intensity": intensity,
                 "hours": hours, "hours_source": hrs_src, "burn_kcal": burn,
                 "kcal_per_hour": base_hr, "burn_source": burn_source, "done": False,
+                "unplanned": False,
             })
 
         # Today: swap the estimate for the actual burn on sessions already done,
@@ -2520,7 +2556,7 @@ def generate_fueling_plan(
                     "sport": m["sport"], "intensity": _classify_intensity(m["name"]),
                     "hours": m["hours"], "hours_source": "actual", "burn_kcal": m["kcal"],
                     "kcal_per_hour": round(m["kcal"] / m["hours"]) if m["hours"] else 0,
-                    "burn_source": "actual_today", "done": True,
+                    "burn_source": "actual_today", "done": True, "unplanned": True,
                 })
 
         if not sessions:
