@@ -516,10 +516,36 @@ TOOLS = [
                 "home_lat": {"type": "number", "description": "home latitude, for heat-aware hydration on outdoor sessions"},
                 "home_lon": {"type": "number", "description": "home longitude"},
                 "skip_breakfast_weekdays": {"type": "boolean", "description": "time-restricted eating: drop the breakfast meal on weekdays (Mon-Fri) and shift its calories to the later eating window; weekends keep breakfast"},
+                "current_weight_kg": {"type": "number", "description": "manual current-weight override — wins over Garmin's synced weight everywhere (progress, BMR, EA, projection) when Garmin's reading is stale or wrong. Clear by omitting it next time you set the goal."},
+                "units": {"type": "string", "enum": ["metric", "imperial"], "description": "display units for the dashboard/plan output; weights are still stored in kg internally"},
                 "notes": {"type": "string"},
             },
             "required": ["goal_type"],
         },
+    },
+    {
+        "name": "skip_scheduled_session",
+        "description": (
+            "Exclude a scheduled session from generate_fueling_plan — for when "
+            "the Garmin calendar still lists something you're not actually "
+            "doing (skipped, swapped, rescheduled) and you don't want it "
+            "inflating that day's calorie or carb targets. Persisted to R2; "
+            "entries auto-expire once their date is in the past."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "date": {"type": "string", "description": "YYYY-MM-DD, the scheduled day to affect"},
+                "sport": {"type": "string", "description": "optional sport filter (e.g. 'swimming', 'cycling'), case-insensitive"},
+                "title_contains": {"type": "string", "description": "optional case-insensitive substring of the session title. Omit both sport and title_contains to skip every session scheduled that day; if both are given, a session must match both to be skipped."},
+            },
+            "required": ["date"],
+        },
+    },
+    {
+        "name": "get_skipped_sessions",
+        "description": "List the currently active (not-yet-past) skipped-session entries set via skip_scheduled_session.",
+        "inputSchema": {"type": "object", "properties": {}},
     },
     {
         "name": "get_fueling_goal",
@@ -794,10 +820,23 @@ def _call_tool(name: str, args: dict) -> Any:
             home_lat=args.get("home_lat"),
             home_lon=args.get("home_lon"),
             skip_breakfast_weekdays=args.get("skip_breakfast_weekdays"),
+            current_weight_kg=args.get("current_weight_kg"),
+            units=args.get("units"),
             notes=args.get("notes"),
         )
     if name == "get_fueling_goal":
         return garmin.get_fueling_goal()
+    if name == "skip_scheduled_session":
+        d = args.get("date")
+        if not d or not DATE_RE.match(d):
+            raise ValueError("`date` must be YYYY-MM-DD")
+        return garmin.skip_scheduled_session(
+            date=d,
+            sport=args.get("sport"),
+            title_contains=args.get("title_contains"),
+        )
+    if name == "get_skipped_sessions":
+        return {"skips": garmin.get_skipped_sessions()}
     if name == "generate_fueling_plan":
         sd = args.get("start_date")
         if sd and not DATE_RE.match(sd):

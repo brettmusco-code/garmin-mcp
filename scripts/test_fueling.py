@@ -394,6 +394,21 @@ def main():
     check("future day's whole burn is projected",
           d4["projected_burn_kcal"] == d4["est_burn_kcal"])
 
+    print("generate_fueling_plan's today session also converts to Active Calories:")
+    def _fake_gds_active_for_plan(startdate, enddate, metrics=None, **k):
+        return {"stats_and_body": {TODAY.isoformat(): {"restingCaloriesFromActivity": 100}}}
+    _save_air4, _save_gds3 = g.get_activities_in_range, g.get_daily_summaries
+    g.get_daily_summaries = _fake_gds_active_for_plan
+    g.get_activities_in_range = lambda sd, ed, *a, **k: _fake_activities(sd, ed) + [
+        {"activityType": {"typeKey": "cycling"}, "activityName": "Bike Threshold 4x8min",
+         "duration": int(1.3 * 3600), "calories": 950,
+         "startTimeLocal": TODAY.isoformat() + " 07:00:00"}]
+    plan_active = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=1)
+    g.get_activities_in_range, g.get_daily_summaries = _save_air4, _save_gds3
+    check("today's session burn is Active Calories (950-100=850), not the gross 950 "
+          "— matches _today_actuals so the day view and 'today so far' card agree",
+          plan_active["days"][0]["sessions"][0]["burn_kcal"] == 850)
+
     print("macro reconciliation:")
     for d in plan["days"]:
         kcal = d["protein_g"] * 4 + d["carbs_g"] * 4 + d["fat_g"] * 9
@@ -713,6 +728,27 @@ def main():
     g.get_body_composition = _bc
     check("bmr fallback source", plan3["bmr"]["source"] == "weight_x22_fallback")
     check("maintain -> no deficit", plan3["daily_kcal_adjustment"] == 0)
+
+    print("skip_scheduled_session excludes a session from the plan:")
+    g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
+                       sex="male", height_cm=178, age=40)
+    before = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=1)
+    check("baseline: today's Bike Threshold is scheduled",
+          any(s["sport"] == "cycling" for s in before["days"][0]["sessions"]))
+    skip_res = g.skip_scheduled_session(date=TODAY.isoformat(), sport="cycling")
+    check("skip_scheduled_session reports saved", skip_res.get("saved") is True)
+    check("get_skipped_sessions lists the active skip", len(g.get_skipped_sessions()) == 1)
+    after = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=1)
+    check("skipped sport no longer appears in today's sessions",
+          not any(s["sport"] == "cycling" for s in after["days"][0]["sessions"]))
+    check("day falls back to rest once its only session is skipped",
+          after["days"][0]["primary_intensity"] == "rest")
+    check("a note records the skip",
+          any("skipped" in n.lower() for n in after["notes"]))
+    # A skip dated in the past must not persist (auto-pruned on next read).
+    g.skip_scheduled_session(date=(TODAY - timedelta(days=1)).isoformat(), sport="running")
+    check("past-dated skips are pruned, not accumulated",
+          all(s["date"] >= TODAY.isoformat() for s in g.get_skipped_sessions()))
 
     print("no goal -> no_goal_available:")
     _STORE.pop(_key("fueling_goal", ["current"]), None)
