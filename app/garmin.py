@@ -1278,6 +1278,8 @@ def set_fueling_goal(
     home_lat: float | None = None,
     home_lon: float | None = None,
     skip_breakfast_weekdays: bool | None = None,
+    current_weight_kg: float | None = None,
+    units: str | None = None,
     notes: str | None = None,
 ) -> dict:
     """Persist the athlete's fueling goal to R2 (single active goal, keyed
@@ -1320,6 +1322,9 @@ def set_fueling_goal(
     sex_n = (sex or "").strip().lower() or None
     if sex_n and sex_n not in ("male", "female"):
         raise ValueError("sex must be 'male' or 'female'")
+    units_n = (units or "").strip().lower() or None
+    if units_n and units_n not in ("metric", "imperial"):
+        raise ValueError("units must be 'metric' or 'imperial'")
     if target_date:
         try:
             datetime.strptime(target_date[:10], "%Y-%m-%d")
@@ -1359,6 +1364,12 @@ def set_fueling_goal(
         "home_lat": round(float(home_lat), 4) if home_lat is not None else None,
         "home_lon": round(float(home_lon), 4) if home_lon is not None else None,
         "skip_breakfast_weekdays": bool(skip_breakfast_weekdays) if skip_breakfast_weekdays is not None else None,
+        # Manual current-weight override — used when Garmin's synced weight is
+        # stale or wrong. Wins over the Garmin reading everywhere (progress,
+        # BMR, EA, projection) until cleared. Stamped with the date it was set.
+        "current_weight_kg": round(float(current_weight_kg), 1) if current_weight_kg else None,
+        "current_weight_as_of": date.today().isoformat() if current_weight_kg else None,
+        "units": units_n,
         "notes": notes,
         "set_date": date.today().isoformat(),
     }
@@ -1419,6 +1430,11 @@ def get_fueling_goal() -> dict:
             weight_staleness = (base.get("staleness_days") or {}).get("weight")
     except Exception:  # noqa: BLE001
         pass
+    # A manual current-weight override on the goal wins over Garmin's reading.
+    manual_weight = goal.get("current_weight_kg")
+    if manual_weight:
+        current_weight = manual_weight
+        weight_staleness = None
 
     progress: dict[str, Any] = {
         "current_weight_kg": current_weight,
@@ -2246,13 +2262,23 @@ def generate_fueling_plan(
         }
 
     body = _latest_body_stats()
-    weight_kg = body.get("weight_kg") or goal.get("start_weight_kg")
+    # A manual current-weight override on the goal wins over Garmin's synced
+    # reading (used when Garmin is stale/wrong).
+    manual_weight = goal.get("current_weight_kg")
+    weight_kg = manual_weight or body.get("weight_kg") or goal.get("start_weight_kg")
     if weight_kg is None:
         try:
             base = get_athlete_baseline()
             weight_kg = base.get("weight_kg") if isinstance(base, dict) else None
         except Exception:  # noqa: BLE001
             pass
+    if manual_weight:
+        notes.append(
+            f"Using your manual weight {manual_weight}kg "
+            f"({round(manual_weight * 2.20462, 1)} lb) set "
+            f"{goal.get('current_weight_as_of') or 'manually'} — clear it via "
+            "set_fueling_goal once Garmin syncs a current weigh-in."
+        )
     if not weight_kg:
         return {
             "error": "no_weight",
@@ -2558,35 +2584,9 @@ def generate_fueling_plan(
     else:
         day_adjs = [goal_adj] * days
 
-    # Readiness-aware easing: if today's recovery is poor, pull today's deficit
-    # toward maintenance so a hard cut doesn't compound fatigue.
-    try:
-        ds = get_daily_summaries(
-            startdate=(date.today() - timedelta(days=1)).isoformat(),
-            enddate=date.today().isoformat(), metrics=["training_readiness"],
-        )
-        tr = ds.get("training_readiness", {})
-        score = None
-        for d_iso in sorted(tr, reverse=True):
-            payload = tr[d_iso]
-            if isinstance(payload, list) and payload:
-                payload = payload[0]
-            if isinstance(payload, dict) and "error" not in payload:
-                score = payload.get("score") or payload.get("readinessScore")
-                if score:
-                    break
-        if score is not None:
-            ease = 0.6 if score < 35 else (0.35 if score < 50 else 0.0)
-            today_iso = date.today().isoformat()
-            for i, p in enumerate(prelim):
-                if p["date"] == today_iso and day_adjs[i] < 0 and ease:
-                    day_adjs[i] = round(day_adjs[i] * (1 - ease))
-                    notes.append(f"Readiness {score}/100 is low — eased today's "
-                                 f"deficit {round(ease * 100)}% toward maintenance "
-                                 "to protect recovery.")
-                    break
-    except Exception:  # noqa: BLE001
-        pass
+    # (Readiness-aware easing removed by request — the plan no longer softens
+    # the deficit on low-recovery days. The daily target is driven only by the
+    # goal, the deficit policy, and the day's training.)
 
     # Pass 2: targets, macros, EA, fuel cards.
     day_rows = []
@@ -2766,6 +2766,7 @@ def generate_fueling_plan(
 
     result = {
         "window": {"start": start.isoformat(), "end": end.isoformat(), "days": days},
+        "units": goal.get("units") or "metric",
         "goal": goal,
         "goal_progress": goal_info.get("progress"),
         "body": body,
