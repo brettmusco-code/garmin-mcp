@@ -6,9 +6,10 @@
                       day; everything else is handled by the nightly run.
 
   workout           — check for a new activity every hour and, if one
-                      synced, refresh the post-sync metrics and activity
-                      details. 1 API call normally; ~10 when a workout
-                      appears.
+                      synced, force-refresh the post-sync metrics (incl.
+                      stats_and_body's calorie totals) and activity details.
+                      ~2 API calls normally (nutrition + stats_and_body);
+                      ~11 when a workout appears.
 
 Two separate GitHub Actions workflows call this script on different cron
 schedules, passing the appropriate mode via the env var.
@@ -34,12 +35,18 @@ MODE = os.environ.get("TODAY_REFRESH_MODE", "live").lower()
 # Changes continuously — always worth a 6-hour refresh.
 LIVE_METRICS = ["steps", "stress", "body_battery_events", "stats_and_body"]
 
-# Only meaningful after an activity syncs or food is logged.
+# Only meaningful after an activity syncs or food is logged. stats_and_body
+# carries the day's aggregate calorie totals (bmrKilocalories/
+# activeKilocalories/totalKilocalories) — the "everyday" + all-day burn the
+# fueling plan needs, not just the individual workout's own calorie figure.
+# It has to be here (and force-refreshed) so those totals update the moment
+# a workout syncs, not just on the next 6-hour live tick.
 POST_SYNC_METRICS = [
     "training_readiness",
     "training_status",
     "nutrition_food_log",
     "nutrition_meals",
+    "stats_and_body",
 ]
 
 
@@ -254,13 +261,17 @@ def run_workout_check() -> int:
         print("[3/3] Activity details — skipped (no new activity)")
         return 0
 
-    # [2/3] Post-sync metrics — only reached when a new activity appeared.
+    # [2/3] Post-sync metrics — only reached when a new activity appeared, so
+    # force_refresh=True is bounded to real events (not every hourly tick):
+    # this is exactly the moment stale cached values (esp. stats_and_body's
+    # calorie totals, which predate the workout that just synced) need to be
+    # replaced, not silently reused for up to a day.
     print(f"[2/3] Post-sync metrics ({len(POST_SYNC_METRICS)}): "
           f"{', '.join(POST_SYNC_METRICS)}")
     try:
         result = garmin.get_daily_summaries(
             startdate=today_iso, enddate=today_iso,
-            metrics=POST_SYNC_METRICS, force_refresh=False,
+            metrics=POST_SYNC_METRICS, force_refresh=True,
         )
         def _payload(m):
             return result.get(m, {}).get(today_iso)
