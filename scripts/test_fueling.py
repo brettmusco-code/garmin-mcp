@@ -445,15 +445,16 @@ def main():
           len({d["kcal_adjustment"] for d in plan_flat["days"]}) == 1)
     check("flat override echoed", plan_flat["config"]["periodize_deficit"] is False)
 
-    print("deficit allocation uses training load, not just the category label:")
+    print("deficit allocation uses training load (TSS), not just the category label:")
     # Two "easy" days plus a rest day, floors permissive enough that weight
-    # alone decides the split. A day with a big two-session volume (load
-    # 2.17, e.g. 30min + 1h40min easy) should bank noticeably less of the
-    # weekly deficit than a token single easy session (load 0.33), even
-    # though a category-only system would have weighted them identically —
-    # and rest (load 0) should still absorb the most.
+    # alone decides the split. Loads are TSS (hours x IF^2 x 100). A day with a
+    # big two-session volume just below the protection threshold (~55 TSS, e.g.
+    # ~1.3h easy) should bank noticeably less of the weekly deficit than a token
+    # single easy session (~14 TSS, ~20min) — even though a category-only
+    # system would have weighted them identically — and rest (load 0) should
+    # still absorb the most.
     adjs, resid = g._allocate_deficit(
-        [3000.0, 3000.0, 3000.0], ["easy", "easy", "rest"], [2.17, 0.33, 0.0],
+        [3000.0, 3000.0, 3000.0], ["easy", "easy", "rest"], [55.0, 14.0, 0.0],
         -1500.0, [500.0, 500.0, 500.0])
     check("big-volume easy day banks less deficit than a token easy day",
           adjs[0] > adjs[1])
@@ -462,17 +463,98 @@ def main():
     check("weekly deficit fully absorbed across the window",
           resid == 0 and abs(sum(adjs) - (-1500 * 3)) <= 2)  # rounding
     # A big-volume easy day should get the same "never cut deeper than flat"
-    # protection as a categorically hard day, once its load crosses the
-    # threshold — not just a smaller weight. Two tight-floored rest days
-    # max out fast and try to dump their unmet share onto the easy day;
-    # without load-based protection that would push it past the flat cut.
+    # protection as a categorically hard day, once its TSS crosses the
+    # threshold (LOAD_PROTECT_TSS=75) — not just a smaller weight. ~2.9h easy
+    # is ~124 TSS, well past it. Two tight-floored rest days max out fast and
+    # try to dump their unmet share onto the easy day; without load-based
+    # protection that would push it past the flat cut.
     adjs2, resid2 = g._allocate_deficit(
-        [3000.0, 500.0, 500.0], ["easy", "rest", "rest"], [3.0, 0.0, 0.0],
+        [3000.0, 500.0, 500.0], ["easy", "rest", "rest"], [124.0, 0.0, 0.0],
         -1200.0, [0.0, 400.0, 400.0])
     check("a high-load 'easy' day is protected like a hard day (clamped at -1200, no deeper)",
           adjs2[0] == -1200)
     check("the unabsorbed residual is reported, not silently forced onto the protected day",
           resid2 == -2200)
+
+    print("TSS load proxy (intensity counts non-linearly):")
+    check("1h at threshold ~ 90 TSS", abs(g._session_tss("threshold", 1.0) - 90.25) < 0.5)
+    check("2.17h easy clears the 75-TSS protection threshold",
+          g._session_tss("easy", 2.17) >= 75)
+    check("20min of the same easy work does NOT (volume matters)",
+          g._session_tss("easy", 0.33) < 75)
+    check("a threshold hour outranks a longer easy hour (intensity matters)",
+          g._session_tss("threshold", 1.0) > g._session_tss("easy", 1.3))
+    check("rest is zero load", g._session_tss("rest", 2.0) == 0.0)
+
+    print("mean daily exercise over trailing 30 days (phantom-day input):")
+    _md_kcal, _md_hours = g._mean_daily_exercise(
+        [{"duration": 3600, "calories": 700, "activityType": {"typeKey": "cycling"},
+          "startTimeLocal": (TODAY - timedelta(days=i)).isoformat() + " 07:00:00"}
+         for i in range(1, 10)],  # 9 rides @700kcal/1h in the window
+        rmr_per_hr=70.0, as_of=TODAY, window_days=30)
+    check("spreads net burn across the whole window, not just training days",
+          abs(_md_kcal - 9 * (700 - 70) / 30.0) < 1)
+    check("also returns mean daily hours", abs(_md_hours - 9 / 30.0) < 0.01)
+    check("no history -> zero", g._mean_daily_exercise([], 70.0, TODAY) == (0.0, 0.0))
+    check("activities outside the window are excluded",
+          g._mean_daily_exercise(
+              [{"duration": 3600, "calories": 700, "activityType": {"typeKey": "cycling"},
+                "startTimeLocal": (TODAY - timedelta(days=45)).isoformat() + " 07:00:00"}],
+              70.0, TODAY, window_days=30) == (0.0, 0.0))
+
+    print("phantom-day fill: runs of >=2 unscheduled days assume typical training:")
+    # One scheduled day, then a long open stretch. The open run should be
+    # filled with an assumed typical training day (not banked as rest), and
+    # protected from a deeper-than-flat cut like the training days they'll
+    # likely become. Give history real dates so the 30-day mean is non-zero.
+    _save_sched_ph, _save_air_ph = g.get_scheduled_workouts, g.get_activities_in_range
+    g.get_scheduled_workouts = lambda s, e, **k: [
+        {"date": s, "title": "Bike Threshold 4x8min", "sportTypeKey": "cycling",
+         "duration": 75 * 60, "itemType": "workout"}]  # only day 0 scheduled
+    g.get_activities_in_range = lambda sd, ed, *a, **k: [
+        {"activityType": {"typeKey": "cycling"}, "activityName": "ride",
+         "duration": 3600, "calories": 700,
+         "startTimeLocal": (TODAY - timedelta(days=i)).isoformat() + " 07:00:00"}
+        for i in range(1, 20)]
+    g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
+                       sex="male", height_cm=178, age=40)
+    plan_ph = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7)
+    g.get_scheduled_workouts, g.get_activities_in_range = _save_sched_ph, _save_air_ph
+    _assumed = [d for d in plan_ph["days"]
+                if any(s.get("assumed") for s in d["sessions"])]
+    check("open days in a >=2 run are filled with an assumed session", len(_assumed) >= 2)
+    check("day 0 (scheduled) is NOT a phantom day",
+          not any(s.get("assumed") for s in plan_ph["days"][0]["sessions"]))
+    check("assumed session is not counted as rest",
+          all(d["primary_intensity"] != "rest" for d in _assumed))
+    check("assumed session carries a positive burn",
+          all(d["est_burn_kcal"] > 0 for d in _assumed))
+    check("assumed burn is flagged as such for the dashboard",
+          all(d["sessions"][0]["burn_source"] == "assumed_30d_avg" for d in _assumed))
+    check("a note explains the phantom-day fill",
+          any("scheduled yet" in n for n in plan_ph["notes"]))
+    check("phantom days no longer take the deepest cut (protected like training)",
+          all(abs(d["kcal_adjustment"]) <= abs(plan_ph["daily_kcal_adjustment"]) + 1
+              for d in _assumed))
+    # An isolated single open day (flanked by scheduled days) stays true rest.
+    g.get_scheduled_workouts = lambda s, e, **k: [
+        {"date": s, "title": "Bike Threshold", "sportTypeKey": "cycling",
+         "duration": 75 * 60, "itemType": "workout"},
+        {"date": (date.fromisoformat(s) + timedelta(days=2)).isoformat(),
+         "title": "Recovery spin", "sportTypeKey": "cycling",
+         "duration": 45 * 60, "itemType": "workout"}]  # day 0 and day 2, day 1 open
+    g.get_activities_in_range = lambda sd, ed, *a, **k: [
+        {"activityType": {"typeKey": "cycling"}, "activityName": "ride",
+         "duration": 3600, "calories": 700,
+         "startTimeLocal": (TODAY - timedelta(days=i)).isoformat() + " 07:00:00"}
+        for i in range(1, 20)]
+    plan_iso = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=3)
+    g.get_scheduled_workouts, g.get_activities_in_range = _save_sched_ph, _save_air_ph
+    check("an isolated single open day stays true rest (no phantom fill)",
+          plan_iso["days"][1]["primary_intensity"] == "rest"
+          and not any(s.get("assumed") for s in plan_iso["days"][1]["sessions"]))
+    g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
+                       sex="male", height_cm=178, age=40)
 
     print("floors dropped (bmr_floor_mult=0, ea_floor=0):")
     plan_nf = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7,
