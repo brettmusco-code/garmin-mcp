@@ -436,6 +436,35 @@ def main():
           len({d["kcal_adjustment"] for d in plan_flat["days"]}) == 1)
     check("flat override echoed", plan_flat["config"]["periodize_deficit"] is False)
 
+    print("deficit allocation uses training load, not just the category label:")
+    # Two "easy" days plus a rest day, floors permissive enough that weight
+    # alone decides the split. A day with a big two-session volume (load
+    # 2.17, e.g. 30min + 1h40min easy) should bank noticeably less of the
+    # weekly deficit than a token single easy session (load 0.33), even
+    # though a category-only system would have weighted them identically —
+    # and rest (load 0) should still absorb the most.
+    adjs, resid = g._allocate_deficit(
+        [3000.0, 3000.0, 3000.0], ["easy", "easy", "rest"], [2.17, 0.33, 0.0],
+        -1500.0, [500.0, 500.0, 500.0])
+    check("big-volume easy day banks less deficit than a token easy day",
+          adjs[0] > adjs[1])
+    check("rest still banks more deficit than either easy day",
+          adjs[2] < adjs[1])
+    check("weekly deficit fully absorbed across the window",
+          resid == 0 and abs(sum(adjs) - (-1500 * 3)) <= 2)  # rounding
+    # A big-volume easy day should get the same "never cut deeper than flat"
+    # protection as a categorically hard day, once its load crosses the
+    # threshold — not just a smaller weight. Two tight-floored rest days
+    # max out fast and try to dump their unmet share onto the easy day;
+    # without load-based protection that would push it past the flat cut.
+    adjs2, resid2 = g._allocate_deficit(
+        [3000.0, 500.0, 500.0], ["easy", "rest", "rest"], [3.0, 0.0, 0.0],
+        -1200.0, [0.0, 400.0, 400.0])
+    check("a high-load 'easy' day is protected like a hard day (clamped at -1200, no deeper)",
+          adjs2[0] == -1200)
+    check("the unabsorbed residual is reported, not silently forced onto the protected day",
+          resid2 == -2200)
+
     print("floors dropped (bmr_floor_mult=0, ea_floor=0):")
     plan_nf = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7,
                                       bmr_floor_mult=0, ea_floor=0)
