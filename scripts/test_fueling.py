@@ -144,6 +144,25 @@ def main():
     g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
                        sex="male", height_cm=178, age=40)
 
+    print("manual weight override + display units:")
+    g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
+                       sex="male", height_cm=178, age=40,
+                       current_weight_kg=77.0, units="imperial")
+    gov = g.get_fueling_goal()
+    check("override wins over Garmin weight in progress",
+          gov["progress"]["current_weight_kg"] == 77.0)
+    check("units stored on goal", gov["goal"]["units"] == "imperial")
+    pov = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=3)
+    check("plan carries units for the dashboard", pov.get("units") == "imperial")
+    check("plan uses the manual weight", pov["bmr"]["weight_kg"] == 77.0)
+    check("manual-weight note surfaced",
+          any("manual weight" in n.lower() for n in pov["notes"]))
+    check("no readiness-easing note (removed)",
+          not any("readiness" in n.lower() for n in pov["notes"]))
+    # restore a plain goal for the rest of the suite
+    g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
+                       sex="male", height_cm=178, age=40)
+
     print("get_fueling_goal:")
     gi = g.get_fueling_goal()
     check("goal returned", gi["goal"]["goal_type"] == "lose")
