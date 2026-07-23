@@ -960,6 +960,21 @@ _DASH_TEMPLATE = pathlib.Path(__file__).resolve().parent.parent / "web" / "fuel-
 _DASH_PLAN_RE = re.compile(r"const PLAN = \{.*?\n\};", re.DOTALL)
 _DASH_TTL = 120.0  # seconds; keeps repeated loads off the cache/R2 hot path
 _dash_cache: dict[str, Any] = {"html": None, "ts": 0.0}
+# web/fuel-dashboard.html is a bare fragment by design (no <!doctype>/<head>) —
+# it's meant to be injected into the Claude Artifact wrapper, which supplies
+# its own <head> with a viewport meta tag. This route serves it directly with
+# no such wrapper, so without one here, mobile browsers render it at a
+# desktop width (~980px) and shrink-to-fit — the whole page reads as tiny.
+_DASH_DOC_HEAD = (
+    '<!doctype html><html><head><meta charset="utf-8">'
+    '<meta name="viewport" content="width=device-width, initial-scale=1">'
+    "<title>Fueling Plan</title></head><body>"
+)
+_DASH_DOC_TAIL = "</body></html>"
+
+
+def _dash_wrap(body_html: str) -> str:
+    return _DASH_DOC_HEAD + body_html + _DASH_DOC_TAIL
 
 
 @app.api_route("/dashboard", methods=["GET", "HEAD"])
@@ -985,34 +1000,33 @@ def dashboard(request: Request) -> HTMLResponse:
         plan = garmin.generate_fueling_plan(days=7, rebalance=True)
     except Exception as ex:  # noqa: BLE001
         return HTMLResponse(
-            f"<h1>Fueling dashboard</h1><p>Could not build the plan: "
-            f"{type(ex).__name__}: {ex}</p>",
+            _dash_wrap(f"<h1>Fueling dashboard</h1><p>Could not build the plan: "
+                       f"{type(ex).__name__}: {ex}</p>"),
             status_code=500,
         )
     if plan.get("no_goal_available"):
-        return HTMLResponse(
+        return HTMLResponse(_dash_wrap(
             "<h1>Fueling dashboard</h1><p>No fueling goal is set yet — run "
             "<code>/fuel</code> in Claude to create one.</p>"
-        )
+        ))
     if plan.get("error"):
-        return HTMLResponse(
-            f"<h1>Fueling dashboard</h1><p>{plan['error']}</p>"
-        )
+        return HTMLResponse(_dash_wrap(f"<h1>Fueling dashboard</h1><p>{plan['error']}</p>"))
 
     try:
-        html = _DASH_PLAN_RE.sub(
+        fragment = _DASH_PLAN_RE.sub(
             lambda _m: "const PLAN = " + json.dumps(plan) + ";",
             _DASH_TEMPLATE.read_text(),
             count=1,
         )
     except Exception as ex:  # noqa: BLE001
         return HTMLResponse(
-            f"<h1>Fueling dashboard</h1><p>Template error: "
-            f"{type(ex).__name__}: {ex}</p>",
+            _dash_wrap(f"<h1>Fueling dashboard</h1><p>Template error: "
+                       f"{type(ex).__name__}: {ex}</p>"),
             status_code=500,
         )
-    _dash_cache.update(html=html, ts=now)
-    return HTMLResponse(html)
+    page = _dash_wrap(fragment)
+    _dash_cache.update(html=page, ts=now)
+    return HTMLResponse(page)
 
 
 @app.get("/cache/list")
