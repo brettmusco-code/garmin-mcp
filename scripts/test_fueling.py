@@ -316,8 +316,8 @@ def main():
     check("deficit capped at <=500", plan["daily_kcal_adjustment"] >= -500)
     check("energy base = RMR x NEAT (below old x1.3)",
           plan["energy_base"]["value"] == round(bmr * 1.15))
-    check("net exercise is below gross on a training day",
-          plan["days"][4]["net_exercise_kcal"] < plan["days"][4]["est_burn_kcal"])
+    check("net exercise now equals total burn (both are Active Calories only)",
+          plan["days"][4]["net_exercise_kcal"] == plan["days"][4]["est_burn_kcal"])
     check("TEF applied on the formula path (protein-weighted, >0)",
           plan["days"][0]["tef_kcal"] > 0)
     check("real deficit preserved: expenditure - target == pre-TEF deficit",
@@ -355,6 +355,15 @@ def main():
     check("threshold carbs = 7.5 g/kg", day0["carb_g_per_kg"] == 7.5)
     check("long ride carbs (7 g/kg) > recovery day carbs", day4["carbs_g"] > day1["carbs_g"])
     check("long ride burn > recovery burn", day4["est_burn_kcal"] > day1["est_burn_kcal"])
+
+    print("scheduled (not-yet-done) session estimates are netted to Active Calories:")
+    rmr_per_hr_expected = bmr / 24.0
+    s0 = day0["sessions"][0]
+    gross_est0 = s0["kcal_per_hour"] * g._INTENSITY_MULT.get(s0["intensity"], 1.0) * s0["hours"]
+    check("scheduled burn = gross calibrated estimate minus resting-during-exercise proxy",
+          abs(s0["burn_kcal"] - round(gross_est0 - rmr_per_hr_expected * s0["hours"])) <= 1)
+    check("scheduled burn is strictly less than the naive gross estimate",
+          s0["burn_kcal"] < round(gross_est0))
 
     print("actual burn swaps the estimate on today's completed workouts:")
     _save_air2 = g.get_activities_in_range
@@ -581,12 +590,23 @@ def main():
           plan_cl["days"][2]["carbs_g"] > plan["days"][2]["carbs_g"])
 
     print("configurable EA floor:")
-    check("default plan raises the low-EA note",
-          any("Low energy availability" in n for n in plan["notes"]))
+    # The modest default goal (2.1kg/6wk) no longer dips any day below the
+    # EA=30 threshold now that EA is computed from workout Active Calories
+    # only (not gross burn) — that's the fix working as intended, so use a
+    # genuinely aggressive cut to exercise the low-EA note itself.
+    tight_ea = (TODAY + timedelta(weeks=2)).isoformat()
+    g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=tight_ea,
+                       sex="male", height_cm=178, age=40)
+    plan_tight_ea = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7)
+    check("aggressive-cut plan raises the low-EA note",
+          any("Low energy availability" in n for n in plan_tight_ea["notes"]))
     plan_ea = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7, ea_floor=20)
     check("config echoes ea_floor=20", plan_ea["config"]["ea_floor_kcal_per_kg_ffm"] == 20)
     check("lower EA floor suppresses the note",
           not any("Low energy availability" in n for n in plan_ea["notes"]))
+    # restore the default lose goal for remaining checks
+    g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
+                       sex="male", height_cm=178, age=40)
 
     print("uncapped deficit (removed cap):")
     tight = (TODAY + timedelta(weeks=3)).isoformat()
