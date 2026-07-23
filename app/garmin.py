@@ -2641,6 +2641,7 @@ def generate_fueling_plan(
 
     skipped_sessions = _load_skipped_sessions()
     skipped_titles: list[str] = []
+    fuel_trim_dates: list[str] = []
 
     # Pass 1: resolve each day's sessions, burn, and carb ratio.
     prelim: list[dict] = []
@@ -2860,6 +2861,26 @@ def generate_fueling_plan(
         fuel_carbs = sum(c["pre_carbs_g"] + c["during_carbs_g_total"] + c["post_carbs_g"]
                          for c in fuel_cards)
         fuel_protein = sum(c["post_protein_g"] for c in fuel_cards)
+        # If the day's whole carb budget (already possibly cut to fit a low
+        # target_kcal — common when deficit periodization pushes a deep cut
+        # onto an "easy" day that still has real training) is smaller than
+        # what the fuel windows prescribe, the meal-line carve-out below
+        # clamps to what's actually available. Without this, the per-workout
+        # timeline kept showing the un-trimmed, unaffordable grams while the
+        # 'Workout fuel' meal line silently showed less — the two disagreed.
+        # Scale every card's carbs down to the same affordable total so both
+        # views always match.
+        if fuel_cards and fuel_carbs > carbs_g >= 0:
+            ratio = carbs_g / fuel_carbs  # safe: fuel_carbs > carbs_g >= 0 implies fuel_carbs > 0
+            for c in fuel_cards:
+                c["pre_carbs_g"] = round(c["pre_carbs_g"] * ratio)
+                c["during_carbs_g_total"] = round(c["during_carbs_g_total"] * ratio)
+                c["during_carbs_g_per_hr"] = (
+                    round(c["during_carbs_g_total"] / c["hours"]) if c["hours"] else 0)
+                c["post_carbs_g"] = round(c["post_carbs_g"] * ratio)
+            fuel_carbs = sum(c["pre_carbs_g"] + c["during_carbs_g_total"] + c["post_carbs_g"]
+                             for c in fuel_cards)
+            fuel_trim_dates.append(d_iso)
         # Weekday breakfast-skip (time-restricted eating) if the athlete set it.
         is_weekday = date.fromisoformat(d_iso).weekday() < 5
         skip_bf = bool(skip_breakfast_val and is_weekday)
@@ -2904,6 +2925,14 @@ def generate_fueling_plan(
 
     if skipped_titles:
         notes.append("Skipped (per skip_scheduled_session): " + "; ".join(skipped_titles) + ".")
+
+    if fuel_trim_dates:
+        notes.append(
+            f"On {', '.join(fuel_trim_dates)} the per-workout fuel windows were scaled "
+            "down to fit the day's carb budget (so the fuel timeline and the 'Workout "
+            "fuel' meal line agree) — you won't hit ideal during-workout carb rates on "
+            "those sessions. Ease the deficit on training days to fix it."
+        )
 
     trimmed = [d["date"] for d in day_rows if d.get("carbs_trimmed")]
     if trimmed:
