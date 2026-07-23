@@ -65,6 +65,10 @@
     .meta{justify-content:flex-start;}
     .kcal-big .v{font-size:44px;}
     .card{padding:16px;}
+    .dc-nums{gap:5px 14px;}
+    .dc-num .v{font-size:14.5px;}
+    .daycard{padding:12px 2px;}
+    .burnbreak{line-height:1.6;}
   }
   .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
     box-shadow:var(--shadow);padding:22px;}
@@ -103,6 +107,7 @@
     cursor:pointer;-webkit-tap-highlight-color:transparent;}
   .daycard:last-child{border-bottom:0;}
   .daycard:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:6px;}
+  .daycard.nolink{cursor:default;}
   .daycard.is-today{background:color-mix(in srgb,var(--accent) 6%,transparent);}
   .daycard.sel{background:color-mix(in srgb,var(--carbs) 12%,transparent);box-shadow:inset 3px 0 0 var(--carbs);}
   .dc-top{display:flex;justify-content:space-between;align-items:baseline;gap:10px;}
@@ -1012,11 +1017,15 @@ function renderActuals(){
   if(a.expenditure_kcal) bits.push(`burned <b>${nf(a.expenditure_kcal)}</b>`);
   if(a.consumed_kcal!=null && a.expenditure_kcal)
     bits.push(`net <b>${(a.consumed_kcal-a.expenditure_kcal>0?'+':'')+nf(a.consumed_kcal-a.expenditure_kcal)}</b>`);
-  // Break the measured burn into everyday (BMR + daily activity) vs workouts.
+  // Break the measured burn into BMR / everyday (NEAT, above BMR, excluding
+  // workouts) / workouts, so the three figures visibly sum to the total.
   let burnLine = '';
-  if(a.non_workout_kcal!=null){
-    burnLine = `everyday <b>${nf(a.non_workout_kcal)}</b>`
-      + (a.workout_kcal ? ` · workouts <b>${nf(a.workout_kcal)}</b>` : ' · no workout burn yet');
+  if(a.non_workout_kcal!=null || a.bmr_kcal!=null){
+    const parts = [];
+    if(a.bmr_kcal!=null) parts.push(`BMR <b>${nf(a.bmr_kcal)}</b>`);
+    if(a.non_workout_kcal!=null) parts.push(`everyday <b>${nf(a.non_workout_kcal)}</b>`);
+    parts.push(a.workout_kcal ? `workouts <b>${nf(a.workout_kcal)}</b>` : 'no workout burn yet');
+    burnLine = parts.join(' · ');
   }
   $('actMeta').innerHTML = bits.join(' · ')
     + (burnLine ? `<div class="burnbreak">${burnLine}</div>` : '');
@@ -1039,18 +1048,26 @@ function selectDay(idx){
 function renderRecent(){
   const r = PLAN.recent_days||[];
   if(!r.length){ $('recentBlock').style.display='none'; return; }
-  $('recent').innerHTML = `<div class="weekwrap"><table><thead><tr>
-    <th>Day</th><th class="r">Eaten</th><th class="r">Plan</th><th class="r">Burned</th><th class="r">vs plan</th><th class="r">Foods</th>
-    </tr></thead><tbody>` + r.map(d=>{
-      const eaten=d.consumed_kcal, pl=d.plan_target_kcal, delta=(eaten!=null&&pl!=null)?eaten-pl:null;
-      const dc = delta==null?'var(--ink-faint)':(delta>0?'var(--warn)':'var(--good)');
-      return `<tr><td class="day-cell"><b>${dow(d.date)}</b><small>${dmd(d.date)}</small></td>
-        <td class="r mono">${eaten!=null?nf(eaten):'—'}</td>
-        <td class="r mono">${pl!=null?nf(pl):'—'}</td>
-        <td class="r mono">${d.expenditure_kcal!=null?nf(d.expenditure_kcal):'—'}</td>
-        <td class="r mono" style="color:${dc}">${delta==null?'—':(delta>0?'+':'')+nf(delta)}</td>
-        <td class="r mono ${d.foods_logged?'':'warn'}" style="${d.foods_logged?'':'color:var(--crit)'}">${d.foods_logged||0}</td></tr>`;
-    }).join('') + `</tbody></table></div>`;
+  $('recent').innerHTML = `<div class="daylist">` + r.map(d=>{
+    const eaten=d.consumed_kcal, pl=d.plan_target_kcal, vsPlan=(eaten!=null&&pl!=null)?eaten-pl:null;
+    const vsColor = vsPlan==null?'var(--ink-faint)':(vsPlan>0?'var(--warn)':'var(--good)');
+    const def = d.deficit_kcal;
+    const defTxt = def==null ? '—' : (def>0 ? nf(def) : (def<0 ? '+'+nf(-def) : '0'));
+    const defColor = def==null?'var(--ink-faint)':(def>0?'var(--good)':(def<0?'var(--warn)':'var(--ink-dim)'));
+    const noLog = !d.foods_logged;
+    return `<div class="daycard nolink">
+      <div class="dc-top">
+        <div class="dc-day">${dow(d.date)}<small>${dmd(d.date)}</small></div>
+        <div class="dc-tags"><span class="mono" style="font-size:11.5px;color:${noLog?'var(--crit)':'var(--ink-faint)'}">${d.foods_logged||0} food${d.foods_logged===1?'':'s'} logged</span></div>
+      </div>
+      <div class="dc-nums">
+        <div class="dc-num"><span class="lab">Eaten</span><span class="v">${eaten!=null?nf(eaten):'—'}</span></div>
+        <div class="dc-num"><span class="lab">Burned</span><span class="v">${d.expenditure_kcal!=null?nf(d.expenditure_kcal):'—'}</span></div>
+        <div class="dc-num"><span class="lab">Deficit</span><span class="v" style="color:${defColor}">${defTxt}</span></div>
+        ${pl!=null ? `<div class="dc-num"><span class="lab">vs plan</span><span class="v" style="color:${vsColor}">${vsPlan==null?'—':(vsPlan>0?'+':'')+nf(vsPlan)}</span></div>` : ''}
+      </div>
+    </div>`;
+  }).join('') + `</div>`;
 }
 
 function renderDay(d){
