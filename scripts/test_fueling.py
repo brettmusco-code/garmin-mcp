@@ -231,13 +231,40 @@ def main():
     ta3 = g._today_actuals()
     g.get_daily_summaries = _save_gds
     g.get_activities_in_range = _save_air3
-    check("workout_kcal stays gross/total (300), matching Garmin's own figure",
+    check("no restingCaloriesFromActivity -> workout_kcal falls back to gross (300)",
           ta3["workout_kcal"] == 300)
     check("non_workout_kcal = active - workout (500-300=200), BMR excluded",
           ta3["non_workout_kcal"] == 200)
     check("expenditure_kcal is still the full bmr+active total (2200)",
           ta3["expenditure_kcal"] == 2200)
     check("bmr_kcal exposed separately (1700)", ta3["bmr_kcal"] == 1700)
+
+    print("_today_actuals: workout burn is Active Calories, not gross total:")
+    def _fake_gds_resting_from_activity(startdate, enddate, metrics=None, **k):
+        # Mirrors a real Garmin activity page: Total 285 / Resting 47 / Active
+        # 238 for a single Strength session. restingCaloriesFromActivity (47)
+        # is the day-level aggregate of that resting-equivalent component.
+        return {
+            "nutrition_food_log": {},
+            "stats_and_body": {
+                today_iso: {"bmrKilocalories": 751, "activeKilocalories": 287,
+                            "totalKilocalories": 1038, "restingCaloriesFromActivity": 47},
+            },
+        }
+    g.get_daily_summaries = _fake_gds_resting_from_activity
+    g.get_activities_in_range = lambda sd, ed, *a, **k: [
+        {"activityType": {"typeKey": "strength_training"}, "activityName": "Strength",
+         "duration": 2000, "calories": 285,
+         "startTimeLocal": today_iso + " 07:00:00"}]
+    ta4 = g._today_actuals()
+    g.get_daily_summaries = _save_gds
+    g.get_activities_in_range = _save_air3
+    check("workout_kcal is Active Calories (285-47=238), not the gross 285",
+          ta4["workout_kcal"] == 238)
+    check("the single listed workout's own kcal is also active-only (238)",
+          ta4["workouts"][0]["kcal"] == 238)
+    check("non_workout_kcal nets cleanly (287 day-active - 238 workout-active = 49)",
+          ta4["non_workout_kcal"] == 49)
 
     print("_recent_days carries a real measured deficit per past day:")
     r2_iso, r1_iso = (TODAY - timedelta(days=2)).isoformat(), (TODAY - timedelta(days=1)).isoformat()
