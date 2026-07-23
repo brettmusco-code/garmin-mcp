@@ -1080,7 +1080,7 @@ function renderDay(d){
     ? `<b>Total burn</b> <span class="mono"><b>${nf(burned)}</b> burned <small>·</small> <b>+${nf(projd)}</b> projected <small>=</small> <b>${nf(d.est_burn_kcal)}</b></span>`
     : burned>0
       ? `<b>Total burn <small>actual</small></b><span class="mono"><b>${nf(d.est_burn_kcal)}</b> kcal</span>`
-      : `<b>Total burn <small>gross · est</small></b><span class="mono"><b>${nf(d.est_burn_kcal)}</b> kcal</span>`;
+      : `<b>Total burn <small>active · est</small></b><span class="mono"><b>${nf(d.est_burn_kcal)}</b> kcal</span>`;
   const sessList = rest ? '' :
     `<div class="sesslist">` + d.sessions.map(s=>{
       const done = s.burn_source==='actual_today';

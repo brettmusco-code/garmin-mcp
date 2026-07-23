@@ -2395,9 +2395,12 @@ def generate_fueling_plan(
     skills/weekly.md + skills/project-instructions.md.
 
     Session burn is calibrated from the athlete's own 90-day history (median
-    kcal/hr per sport), falling back to a generic table. Every live fetch
-    degrades gracefully so the read-only web service can serve this from the
-    nightly pre-warmed cache.
+    kcal/hr per sport), falling back to a generic table, then converted to
+    Active Calories (net of the resting metabolism the athlete would have
+    burned anyway) — "burned"/"projected" totals and the energy-availability
+    calc should reflect exercise only, not a resting-calorie baseline for the
+    workout's duration. Every live fetch degrades gracefully so the read-only
+    web service can serve this from the nightly pre-warmed cache.
 
     If `save=True`, merges the per-day plan into the weekly snapshot (under
     nutrition_plan) so nutrition_plan_vs_actual / /morning can track adherence;
@@ -2656,6 +2659,15 @@ def generate_fueling_plan(
     skipped_titles: list[str] = []
     fuel_trim_dates: list[str] = []
 
+    # Estimated-session burn is calibrated from the athlete's own history of
+    # gross per-activity calories, so it needs the same gross-to-Active
+    # conversion as a logged workout. We don't have Garmin's precise
+    # per-activity resting split for a session that hasn't happened yet, so
+    # BMR/24 x hours is the best available proxy for "resting calories over
+    # that duration" (same idea _to_active_calories applies to real
+    # activities, just estimated instead of measured).
+    rmr_per_hr = (bmr or 0) / 24.0
+
     # Pass 1: resolve each day's sessions, burn, and carb ratio.
     prelim: list[dict] = []
     for i in range(days):
@@ -2672,7 +2684,8 @@ def generate_fueling_plan(
                 continue
             hours, hrs_src = _planned_hours(it, intensity)
             base_hr, burn_source = _kcal_per_hour_for(sport, hours, hist_samples)
-            burn = round(base_hr * _INTENSITY_MULT.get(intensity, 1.0) * hours)
+            gross_est = base_hr * _INTENSITY_MULT.get(intensity, 1.0) * hours
+            burn = max(0, round(gross_est - rmr_per_hr * hours))  # Active Calories estimate
             sessions.append({
                 "title": title or sport, "sport": sport, "intensity": intensity,
                 "hours": hours, "hours_source": hrs_src, "burn_kcal": burn,
@@ -2689,7 +2702,7 @@ def generate_fueling_plan(
                 if not m:
                     continue
                 remaining.remove(m)
-                s["burn_kcal"] = m["kcal"]                 # actual gross (matches Garmin)
+                s["burn_kcal"] = m["kcal"]                 # already Active Calories (see actual_today conversion above)
                 s["hours"] = m["hours"] or s["hours"]
                 s["kcal_per_hour"] = round(m["kcal"] / m["hours"]) if m["hours"] else s["kcal_per_hour"]
                 s["burn_source"] = "actual_today"
@@ -2708,20 +2721,21 @@ def generate_fueling_plan(
                          "hours": 0.0, "hours_source": "none", "burn_kcal": 0,
                          "burn_source": "none", "done": False}]
 
-        total_burn = sum(s["burn_kcal"] for s in sessions)   # gross (matches Garmin)
-        # Split gross burn into what's already been logged today (completed
-        # sessions) vs what's still projected from sessions not yet done. On
-        # past/future days everything is "projected" (nothing is marked done),
-        # so burned_kcal is 0 and projected_burn_kcal == total_burn.
+        # Every session's burn_kcal is already Active Calories (net of resting)
+        # — actual/unplanned sessions come net via _to_active_calories above,
+        # scheduled estimates are netted against rmr_per_hr x hours above — so
+        # "burned"/"projected"/EA all reflect workout Active Calories only,
+        # never a resting-calorie baseline for the workout's duration.
+        total_burn = sum(s["burn_kcal"] for s in sessions)
+        # Split into what's already been logged today (completed sessions) vs
+        # what's still projected from sessions not yet done. On past/future
+        # days everything is "projected" (nothing is marked done), so
+        # burned_kcal is 0 and projected_burn_kcal == total_burn.
         burned_kcal = sum(s["burn_kcal"] for s in sessions if s.get("done"))
         projected_burn_kcal = total_burn - burned_kcal
-        # Net exercise energy = gross minus the resting metabolism the athlete
-        # would have burned during those same hours (already counted in the 24h
-        # NEAT base). Only the net portion adds to daily expenditure — this is
-        # what stops the base+gross double-count.
-        rmr_per_hr = (bmr or 0) / 24.0
-        net_burn = sum(max(0, round(s["burn_kcal"] - rmr_per_hr * s["hours"]))
-                       for s in sessions)
+        # Net exercise energy on top of the NEAT base is just the same active
+        # total — no further subtraction needed since burn_kcal is net already.
+        net_burn = total_burn
         # Periodize carbs off the hardest session of the day
         primary = max(sessions, key=lambda s: (_INTENSITY_ORDER.get(s["intensity"], 2),
                                                s["hours"]))
