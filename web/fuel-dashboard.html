@@ -1086,7 +1086,8 @@ function renderDay(d){
       const done = s.burn_source==='actual_today';
       const unpl = s.unplanned ? ` <small class="unpl">＋ unplanned</small>` : '';
       const tag = done ? ` <small class="done">✓ actual</small>`
-                       : (s.done===false ? ` <small class="est">est</small>` : '');
+                       : (s.assumed ? ` <small class="est">assumed · 30d avg</small>`
+                       : (s.done===false ? ` <small class="est">est</small>` : ''));
       return `<div class="sr"><span>${s.title} <small>· ${s.hours}h · ${s.intensity}</small>${unpl}${tag}</span><span class="mono">${nf(s.burn_kcal)} kcal</span></div>`;}).join('')
     + `<div class="sr tot">${totLabel}</div></div>`;
   const kc = d.target_kcal;

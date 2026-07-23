@@ -1212,39 +1212,61 @@ _INTENSITY_ORDER = {
     "rest": 0, "recovery": 1, "easy": 2, "endurance": 3,
     "long": 4, "tempo": 5, "threshold": 6, "vo2": 7,
 }
+# Intensity factor (fraction of threshold effort) per intensity label. Turns a
+# session's duration into a TSS-style training-load score:
+#     TSS = hours x IF^2 x 100     (one hour at threshold == 100)
+# The square is the point: intensity counts non-linearly, so a hard hour drives
+# far more load than an easy one — which is what should decide how much of the
+# weekly deficit a day can safely absorb. A flat duration x label multiplier
+# (the old proxy) treated two easy hours the same as ~50 min of threshold and
+# so mislabeled a genuinely demanding aerobic day as "easy."
+_INTENSITY_FACTOR = {
+    "rest": 0.0, "recovery": 0.55, "easy": 0.65, "endurance": 0.70,
+    "long": 0.70, "tempo": 0.85, "threshold": 0.95, "vo2": 1.05,
+}
+
+
+def _session_tss(intensity: str, hours: float) -> float:
+    """Lightweight TSS proxy for one session: hours x IF^2 x 100."""
+    if_ = _INTENSITY_FACTOR.get(intensity, 0.65)
+    return max(0.0, hours) * if_ * if_ * 100.0
 
 
 def _allocate_deficit(bases: list[float], intensities: list[str], loads: list[float],
                       flat_adj: float, floors: list[float]) -> tuple[list[int], int]:
     """Spread the weekly deficit (flat_adj x days, negative) across days,
     weighted toward rest/easy days — but scaled by each day's actual
-    training LOAD (duration x intensity multiplier, a lightweight TSS-style
-    proxy), not just its single hardest session's category label. Two hours
-    of "easy" work banks much less of the weekly cut than twenty minutes of
-    it, even though a category label alone can't tell them apart.
+    training LOAD, a lightweight TSS proxy (hours x IF^2 x 100, one hour at
+    threshold == 100), not just its single hardest session's category label.
+    TSS counts intensity non-linearly, so two easy hours (~85 TSS) read as a
+    real training day while twenty minutes of the same easy work (~14 TSS)
+    reads as near-rest — a duration-only proxy conflated them.
 
     Constraints: every day's target stays >= its floor (floors[i], >= 0 —
     typically max(BMR-multiple, EA-min x FFM + that day's burn)). A
     categorically hard session (tempo/threshold/vo2/long) OR a day whose
-    cumulative load crosses LOAD_PROTECT_THRESHOLD never takes a deeper cut
-    than the flat per-day amount — periodization can only make those days
-    easier, never harder. Water-fills clamped days' residual onto the rest.
+    cumulative TSS crosses LOAD_PROTECT_TSS never takes a deeper cut than the
+    flat per-day amount — periodization can only make those days easier,
+    never harder. Water-fills clamped days' residual onto the rest.
     Returns (per-day adjustments, unabsorbed weekly residual <= 0)."""
     n = len(bases)
     budget = flat_adj * n
     hard = {"tempo", "threshold", "vo2", "long"}
-    LOAD_PROTECT_THRESHOLD = 2.5  # ~a 2.5h endurance day (or equivalent cumulative volume)
+    # ~1.75h of easy aerobic work, or ~50min at threshold: above this a day
+    # carries enough training load to be protected from a deeper-than-flat
+    # cut, even when its hardest single session is only labelled "easy".
+    LOAD_PROTECT_TSS = 75.0
 
     def _weight(i: int) -> float:
         base = _DEFICIT_WEIGHTS.get(intensities[i], 1.0)
         # High same-day training load pulls the weight down — bank less of
         # the cut there — even when the hardest single session that day is
-        # only "easy".
-        return max(0.25, base - 0.18 * loads[i])
+        # only "easy". 0.004/TSS ~ a 0.37 pull at Sunday's ~92 TSS.
+        return max(0.25, base - 0.004 * loads[i])
 
     def _min_adj(i: int) -> float:
         lo = floors[i] - bases[i]           # keep target >= its floor
-        if intensities[i] in hard or loads[i] >= LOAD_PROTECT_THRESHOLD:
+        if intensities[i] in hard or loads[i] >= LOAD_PROTECT_TSS:
             lo = max(lo, flat_adj)          # never deeper than the flat cut
         return min(lo, 0.0)
 
@@ -1701,6 +1723,45 @@ def _history_samples(history: list[dict]) -> dict[str, list[tuple[float, float]]
         if 150 <= kcal_hr <= 1600:  # sanity bounds
             samples.setdefault(bucket, []).append((hours, kcal_hr))
     return samples
+
+
+def _mean_daily_exercise(history: list[dict], rmr_per_hr: float,
+                         as_of: date, window_days: int = 30) -> tuple[float, float]:
+    """Mean *daily* net-exercise burn (Active Calories) and mean daily training
+    hours over the trailing `window_days`, each spread across every day in the
+    window — training days and off days alike. Every activity's gross calories
+    are netted against the resting-during-exercise proxy (rmr_per_hr x hours),
+    the same conversion a scheduled-session estimate gets, then totals are
+    divided by the full window so the result is a realistic *typical day*, not
+    a typical training day. Used to fill runs of unscheduled days that will
+    almost certainly pick up a workout later, so they aren't banked as
+    deep-deficit rest.
+
+    Returns (mean_daily_kcal, mean_daily_hours); (0.0, 0.0) with no usable
+    history."""
+    if window_days <= 0:
+        return 0.0, 0.0
+    lo = as_of - timedelta(days=window_days)
+    total_net = 0.0
+    total_hours = 0.0
+    for a in history or []:
+        if not isinstance(a, dict):
+            continue
+        d_str = (a.get("startTimeLocal") or a.get("startTimeGMT") or "")[:10]
+        try:
+            a_date = date.fromisoformat(d_str)
+        except (ValueError, TypeError):
+            continue
+        if not (lo < a_date <= as_of):
+            continue
+        dur_s = a.get("duration") or a.get("elapsedDuration") or a.get("movingDuration")
+        cal = a.get("calories")
+        if not dur_s or not cal or dur_s < 600:  # skip <10min / no-calorie
+            continue
+        hours = dur_s / 3600.0
+        total_net += max(0.0, cal - rmr_per_hr * hours)
+        total_hours += hours
+    return total_net / window_days, total_hours / window_days
 
 
 def _kcal_per_hour_for(sport: str, hours: float,
@@ -2668,11 +2729,19 @@ def generate_fueling_plan(
     # activities, just estimated instead of measured).
     rmr_per_hr = (bmr or 0) / 24.0
 
+    # Typical-day exercise (net Active Calories + hours) over the last 30 days,
+    # for filling runs of unscheduled days that will almost certainly pick up a
+    # workout later (see the phantom-day pass below).
+    phantom_kcal, phantom_hours = _mean_daily_exercise(
+        history, rmr_per_hr, start, window_days=30)
+
     # Pass 1: resolve each day's sessions, burn, and carb ratio.
     prelim: list[dict] = []
+    unscheduled_idx: list[int] = []   # days with no scheduled/actual session at all
     for i in range(days):
         d = start + timedelta(days=i)
         d_iso = d.isoformat()
+        had_scheduled = bool(scheduled_by_date.get(d_iso))
         sessions = []
         for it in scheduled_by_date.get(d_iso, []):
             title = (it.get("title") or it.get("workoutName")
@@ -2720,6 +2789,13 @@ def generate_fueling_plan(
             sessions = [{"title": "rest", "sport": "rest", "intensity": "rest",
                          "hours": 0.0, "hours_source": "none", "burn_kcal": 0,
                          "burn_source": "none", "done": False}]
+            # An empty day with nothing scheduled and nothing logged is a
+            # candidate for the phantom-day fill below (a scheduled rest day
+            # that happens to have no calendar entry is indistinguishable here,
+            # but the "run of >=2 consecutive" rule keeps isolated true-rest
+            # days untouched).
+            if not had_scheduled:
+                unscheduled_idx.append(i)
 
         # Every session's burn_kcal is already Active Calories (net of resting)
         # — actual/unplanned sessions come net via _to_active_calories above,
@@ -2744,13 +2820,13 @@ def generate_fueling_plan(
             carb_ratio = max(carb_ratio, 7.0)
         if carb_load:
             carb_ratio = 9.0
-        # Training-load proxy for deficit periodization: duration x intensity
-        # multiplier, summed across the day's sessions (rest excluded). Using
-        # only the day's single hardest session's category ("easy") to decide
-        # how much deficit a day can absorb ignores volume entirely — two
-        # hours of easy work is not the same as twenty minutes of it. This is
-        # a lightweight TSS-style proxy built from data already computed above.
-        day_load = sum(s["hours"] * _INTENSITY_MULT.get(s["intensity"], 1.0)
+        # Training-load score for deficit periodization: TSS (hours x IF^2 x
+        # 100), summed across the day's sessions (rest excluded). Using only
+        # the day's single hardest session's category ("easy") to decide how
+        # much deficit a day can absorb ignores both volume and the non-linear
+        # cost of intensity — 2h of easy work and 20min of it are not the same
+        # day, and neither is a 2h aerobic day and a 2h threshold day.
+        day_load = sum(_session_tss(s["intensity"], s["hours"])
                        for s in sessions if s["intensity"] != "rest")
         prelim.append({
             "date": d_iso, "weekday": d.strftime("%a"), "sessions": sessions,
@@ -2760,6 +2836,54 @@ def generate_fueling_plan(
             "carb_ratio": carb_ratio,
             "base_target": neat_base + net_burn,
         })
+
+    # Phantom-day fill: a *run of 2 or more* consecutive unscheduled days is
+    # almost never a genuine multi-day rest block — it's a stretch the calendar
+    # just hasn't been filled in yet (workouts get synced from TrainingPeaks a
+    # few days out). Left as true rest, deficit periodization banks its deepest
+    # cuts there, so the day a session finally lands it's badly under-fuelled.
+    # Assume each such day will carry a *typical* day's training (mean net
+    # Active Calories + hours over the last 30 days) so it's planned — and
+    # protected — like the training day it will most likely become. Isolated
+    # single unscheduled days are left as true rest.
+    phantom_dates: list[str] = []
+    if phantom_kcal > 0 and phantom_hours > 0 and len(unscheduled_idx) >= 2:
+        idx_set = set(unscheduled_idx)
+        run: list[int] = []
+
+        def _flush_run(r: list[int]) -> None:
+            if len(r) < 2:
+                return
+            for j in r:
+                p = prelim[j]
+                sess = {
+                    "title": "Assumed training (not yet scheduled)",
+                    "sport": "training", "intensity": "easy",
+                    "hours": round(phantom_hours, 2), "hours_source": "assumed",
+                    "burn_kcal": round(phantom_kcal),
+                    "kcal_per_hour": (round(phantom_kcal / phantom_hours)
+                                      if phantom_hours else 0),
+                    "burn_source": "assumed_30d_avg", "done": False,
+                    "unplanned": False, "assumed": True,
+                }
+                p["sessions"] = [sess]
+                p["total_burn"] = sess["burn_kcal"]
+                p["net_burn"] = sess["burn_kcal"]
+                p["burned_kcal"] = 0
+                p["projected_burn_kcal"] = sess["burn_kcal"]
+                p["primary"] = sess
+                p["carb_ratio"] = _CARB_G_PER_KG.get("easy", 4.0)
+                p["day_load"] = _session_tss("easy", phantom_hours)
+                p["base_target"] = neat_base + sess["burn_kcal"]
+                phantom_dates.append(p["date"])
+
+        for i in range(days):
+            if i in idx_set:
+                run.append(i)
+            else:
+                _flush_run(run)
+                run = []
+        _flush_run(run)
 
     # Per-day floors: BMR multiple (if active), enforced EA minimum (scales
     # with each day's burn), and the absolute min_kcal — whichever is highest.
@@ -2961,6 +3085,16 @@ def generate_fueling_plan(
 
     if skipped_titles:
         notes.append("Skipped (per skip_scheduled_session): " + "; ".join(skipped_titles) + ".")
+
+    if phantom_dates:
+        notes.append(
+            f"On {', '.join(phantom_dates)} nothing is scheduled yet, but they fall in a "
+            f"run of {len(phantom_dates)}+ consecutive open days — so each is planned as a "
+            f"typical training day (~{round(phantom_kcal)} kcal / {round(phantom_hours, 1)}h, "
+            "your 30-day average) rather than banking a deep-deficit rest day that a "
+            "later-synced workout would leave under-fuelled. Actual sessions replace these "
+            "as they appear on the calendar."
+        )
 
     if fuel_trim_dates:
         notes.append(
