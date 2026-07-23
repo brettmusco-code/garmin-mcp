@@ -1214,24 +1214,37 @@ _INTENSITY_ORDER = {
 }
 
 
-def _allocate_deficit(bases: list[float], intensities: list[str],
+def _allocate_deficit(bases: list[float], intensities: list[str], loads: list[float],
                       flat_adj: float, floors: list[float]) -> tuple[list[int], int]:
     """Spread the weekly deficit (flat_adj x days, negative) across days,
-    weighted toward rest/easy days.
+    weighted toward rest/easy days — but scaled by each day's actual
+    training LOAD (duration x intensity multiplier, a lightweight TSS-style
+    proxy), not just its single hardest session's category label. Two hours
+    of "easy" work banks much less of the weekly cut than twenty minutes of
+    it, even though a category label alone can't tell them apart.
 
     Constraints: every day's target stays >= its floor (floors[i], >= 0 —
-    typically max(BMR-multiple, EA-min x FFM + that day's burn)), and hard
-    days (tempo/threshold/vo2/long) never take a deeper cut than the flat
-    per-day amount — periodization can only make hard days easier, never
-    harder. Water-fills clamped days' residual onto the rest. Returns
-    (per-day adjustments, unabsorbed weekly residual <= 0)."""
+    typically max(BMR-multiple, EA-min x FFM + that day's burn)). A
+    categorically hard session (tempo/threshold/vo2/long) OR a day whose
+    cumulative load crosses LOAD_PROTECT_THRESHOLD never takes a deeper cut
+    than the flat per-day amount — periodization can only make those days
+    easier, never harder. Water-fills clamped days' residual onto the rest.
+    Returns (per-day adjustments, unabsorbed weekly residual <= 0)."""
     n = len(bases)
     budget = flat_adj * n
     hard = {"tempo", "threshold", "vo2", "long"}
+    LOAD_PROTECT_THRESHOLD = 2.5  # ~a 2.5h endurance day (or equivalent cumulative volume)
+
+    def _weight(i: int) -> float:
+        base = _DEFICIT_WEIGHTS.get(intensities[i], 1.0)
+        # High same-day training load pulls the weight down — bank less of
+        # the cut there — even when the hardest single session that day is
+        # only "easy".
+        return max(0.25, base - 0.18 * loads[i])
 
     def _min_adj(i: int) -> float:
         lo = floors[i] - bases[i]           # keep target >= its floor
-        if intensities[i] in hard:
+        if intensities[i] in hard or loads[i] >= LOAD_PROTECT_THRESHOLD:
             lo = max(lo, flat_adj)          # never deeper than the flat cut
         return min(lo, 0.0)
 
@@ -1241,12 +1254,12 @@ def _allocate_deficit(bases: list[float], intensities: list[str],
     for _ in range(n + 2):
         if remaining >= -1 or not active:
             break
-        sw = sum(_DEFICIT_WEIGHTS.get(intensities[i], 1.0) for i in active)
+        sw = sum(_weight(i) for i in active)
         if sw <= 0:
             break
         rem0 = remaining
         for i in list(active):
-            share = rem0 * _DEFICIT_WEIGHTS.get(intensities[i], 1.0) / sw
+            share = rem0 * _weight(i) / sw
             lo = _min_adj(i)
             if adjs[i] + share <= lo:
                 adjs[i] = lo
@@ -2717,9 +2730,17 @@ def generate_fueling_plan(
             carb_ratio = max(carb_ratio, 7.0)
         if carb_load:
             carb_ratio = 9.0
+        # Training-load proxy for deficit periodization: duration x intensity
+        # multiplier, summed across the day's sessions (rest excluded). Using
+        # only the day's single hardest session's category ("easy") to decide
+        # how much deficit a day can absorb ignores volume entirely — two
+        # hours of easy work is not the same as twenty minutes of it. This is
+        # a lightweight TSS-style proxy built from data already computed above.
+        day_load = sum(s["hours"] * _INTENSITY_MULT.get(s["intensity"], 1.0)
+                       for s in sessions if s["intensity"] != "rest")
         prelim.append({
             "date": d_iso, "weekday": d.strftime("%a"), "sessions": sessions,
-            "total_burn": total_burn, "net_burn": net_burn,
+            "total_burn": total_burn, "net_burn": net_burn, "day_load": day_load,
             "burned_kcal": burned_kcal, "projected_burn_kcal": projected_burn_kcal,
             "primary": primary,
             "carb_ratio": carb_ratio,
@@ -2746,6 +2767,7 @@ def generate_fueling_plan(
         day_adjs, residual = _allocate_deficit(
             [p["base_target"] for p in prelim],
             [p["primary"]["intensity"] for p in prelim],
+            [p["day_load"] for p in prelim],
             goal_adj, floors,
         )
     else:
