@@ -192,6 +192,27 @@ def main():
     check("no fallback: yesterday's logged foods are not surfaced as today's",
           ta["foods_logged"] == 0)
 
+    print("_today_actuals prefers bmr+active over Garmin's totalKilocalories:")
+    today_iso = TODAY.isoformat()
+    def _fake_gds_inflated_total(startdate, enddate, metrics=None, **k):
+        # Garmin's totalKilocalories bakes in the FULL day's BMR estimate from
+        # hour zero, so mid-day it overstates what's actually been burned —
+        # only activeKilocalories genuinely accumulates in real time. Here
+        # bmr(1700) + active(400) = 2100 is the true "so far" figure, while
+        # Garmin's own total (2600) is the inflated full-day-BMR projection.
+        return {
+            "nutrition_food_log": {},
+            "stats_and_body": {
+                today_iso: {"bmrKilocalories": 1700, "activeKilocalories": 400,
+                            "totalKilocalories": 2600},
+            },
+        }
+    g.get_daily_summaries = _fake_gds_inflated_total
+    ta2 = g._today_actuals()
+    g.get_daily_summaries = _save_gds
+    check("expenditure uses bmr+active (2100), not Garmin's inflated total (2600)",
+          ta2["expenditure_kcal"] == 2100)
+
     print("get_fueling_goal:")
     gi = g.get_fueling_goal()
     check("goal returned", gi["goal"]["goal_type"] == "lose")
