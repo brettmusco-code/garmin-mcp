@@ -231,14 +231,25 @@ def main():
     g.get_activities_in_range = lambda sd, ed, *a, **k: _fake_activities(sd, ed) + [
         {"activityType": {"typeKey": "cycling"}, "activityName": "Bike Threshold 4x8min",
          "duration": int(1.3 * 3600), "calories": 950,
-         "startTimeLocal": TODAY.isoformat() + " 07:00:00"}]
+         "startTimeLocal": TODAY.isoformat() + " 07:00:00"},
+        # An off-plan walk today: no walking session is scheduled, so it should
+        # fold in as an *unplanned* completed workout.
+        {"activityType": {"typeKey": "walking"}, "activityName": "Evening Walk",
+         "duration": int(0.75 * 3600), "calories": 180,
+         "startTimeLocal": TODAY.isoformat() + " 18:00:00"}]
     plan_act = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7)
     g.get_activities_in_range = _save_air2
     s_today = plan_act["days"][0]["sessions"][0]
     check("today's completed session tagged actual_today", s_today["burn_source"] == "actual_today")
     check("today's completed session marked done", s_today.get("done") is True)
+    check("scheduled session is not flagged unplanned", s_today.get("unplanned") is False)
     check("burn = actual 950, not the estimate", s_today["burn_kcal"] == 950)
-    check("est burn total picks up the actual", plan_act["days"][0]["est_burn_kcal"] == 950)
+    _unpl = [s for s in plan_act["days"][0]["sessions"] if s.get("unplanned")]
+    check("off-plan walk folded in as an unplanned workout", len(_unpl) == 1)
+    check("unplanned workout carries its actual burn (180)",
+          _unpl and _unpl[0]["burn_kcal"] == 180)
+    check("est burn total picks up actual planned + unplanned",
+          plan_act["days"][0]["est_burn_kcal"] == 950 + 180)
     check("future day still uses an estimate",
           plan_act["days"][4]["sessions"][0]["burn_source"] != "actual_today")
 
@@ -246,7 +257,8 @@ def main():
     d0 = plan_act["days"][0]
     check("today exposes burned_kcal", "burned_kcal" in d0)
     check("today exposes projected_burn_kcal", "projected_burn_kcal" in d0)
-    check("completed session counts as burned (950)", d0["burned_kcal"] == 950)
+    check("completed workouts count as burned (bike 950 + walk 180)",
+          d0["burned_kcal"] == 950 + 180)
     check("no remaining session -> projected is 0", d0["projected_burn_kcal"] == 0)
     check("burned + projected == total burn",
           d0["burned_kcal"] + d0["projected_burn_kcal"] == d0["est_burn_kcal"])

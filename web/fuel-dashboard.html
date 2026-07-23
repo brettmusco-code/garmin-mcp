@@ -134,6 +134,9 @@
   .sesslist .sr{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-bottom:1px solid var(--line);}
   .sesslist .sr small{color:var(--ink-faint);}
   .sesslist .sr small.done{color:var(--good);font-weight:600;}
+  .sesslist .sr small.unpl{color:var(--protein);font-weight:600;}
+  .burnbreak{margin-top:5px;font-size:11.5px;color:var(--ink-faint);}
+  .burnbreak b{color:var(--ink-dim);font-family:var(--mono);}
   .sesslist .sr small.est{color:var(--ink-faint);opacity:.75;}
   .sesslist .sr.tot{border-bottom:0;border-top:1px solid var(--line);margin-top:2px;}
   .energy{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 9px;font-size:12px;
@@ -971,7 +974,14 @@ function renderActuals(){
   if(a.expenditure_kcal) bits.push(`burned <b>${nf(a.expenditure_kcal)}</b>`);
   if(a.consumed_kcal!=null && a.expenditure_kcal)
     bits.push(`net <b>${(a.consumed_kcal-a.expenditure_kcal>0?'+':'')+nf(a.consumed_kcal-a.expenditure_kcal)}</b>`);
-  $('actMeta').innerHTML = bits.join(' · ');
+  // Break the measured burn into everyday (BMR + daily activity) vs workouts.
+  let burnLine = '';
+  if(a.non_workout_kcal!=null){
+    burnLine = `everyday <b>${nf(a.non_workout_kcal)}</b>`
+      + (a.workout_kcal ? ` · workouts <b>${nf(a.workout_kcal)}</b>` : ' · no workout burn yet');
+  }
+  $('actMeta').innerHTML = bits.join(' · ')
+    + (burnLine ? `<div class="burnbreak">${burnLine}</div>` : '');
   const kc = a.consumed_kcal||0;
   $('actMacros').innerHTML = (a.protein_g!=null && kc) ?
     (macroRow('Protein','protein',Math.round(a.protein_g),kc)+
@@ -1019,9 +1029,10 @@ function renderDay(d){
   const sessList = rest ? '' :
     `<div class="sesslist">` + d.sessions.map(s=>{
       const done = s.burn_source==='actual_today';
+      const unpl = s.unplanned ? ` <small class="unpl">＋ unplanned</small>` : '';
       const tag = done ? ` <small class="done">✓ actual</small>`
                        : (s.done===false ? ` <small class="est">est</small>` : '');
-      return `<div class="sr"><span>${s.title} <small>· ${s.hours}h · ${s.intensity}</small>${tag}</span><span class="mono">${nf(s.burn_kcal)} kcal</span></div>`;}).join('')
+      return `<div class="sr"><span>${s.title} <small>· ${s.hours}h · ${s.intensity}</small>${unpl}${tag}</span><span class="mono">${nf(s.burn_kcal)} kcal</span></div>`;}).join('')
     + `<div class="sr tot">${totLabel}</div></div>`;
   const kc = d.target_kcal;
   const macros = macroRow('Protein','protein',d.protein_g,kc)+macroRow('Carbs','carbs',d.carbs_g,kc)+macroRow('Fat','fat',d.fat_g,kc);
