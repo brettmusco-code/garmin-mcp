@@ -163,6 +163,35 @@ def main():
     g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
                        sex="male", height_cm=178, age=40)
 
+    print("_today_actuals never falls back to an older logged day:")
+    yesterday_iso = (TODAY - timedelta(days=1)).isoformat()
+    def _fake_gds_stale_only(startdate, enddate, metrics=None, **k):
+        # Old behavior looked back up to 6 days and would have picked up
+        # yesterday's logged foods under a "today" label. The fixed version
+        # only ever asks about `today`, so this data must never surface.
+        return {
+            "nutrition_food_log": {
+                yesterday_iso: {
+                    "dailyNutritionContent": {"calories": 3000},
+                    "loggedFoodsWithServingSizes": [{
+                        "foodMetaData": {"foodName": "stale food"},
+                        "nutritionContents": [{"calories": 3000}],
+                    }],
+                    "dailyNutritionGoals": {},
+                },
+            },
+            "stats_and_body": {},
+        }
+    _save_gds = g.get_daily_summaries
+    g.get_daily_summaries = _fake_gds_stale_only
+    ta = g._today_actuals()
+    g.get_daily_summaries = _save_gds
+    check("today_actuals reports today's date, not an older logged day",
+          ta["date"] == TODAY.isoformat())
+    check("today_actuals.is_today is always True", ta["is_today"] is True)
+    check("no fallback: yesterday's logged foods are not surfaced as today's",
+          ta["foods_logged"] == 0)
+
     print("get_fueling_goal:")
     gi = g.get_fueling_goal()
     check("goal returned", gi["goal"]["goal_type"] == "lose")
@@ -173,6 +202,8 @@ def main():
     print("generate_fueling_plan (Katch-McArdle BMR from body-fat):")
     plan = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7)
     check("no error", "error" not in plan and not plan.get("no_goal_available"))
+    check("plan carries a generated_at timestamp",
+          isinstance(plan.get("generated_at"), str) and len(plan["generated_at"]) > 0)
     check("bmr from Katch-McArdle when body-fat is known",
           plan["bmr"]["source"] == "katch_mcardle")
     check("FFM measured from body-fat (not the 80% fallback)",
