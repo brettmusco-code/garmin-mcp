@@ -1756,7 +1756,6 @@ def _today_actuals() -> dict | None:
         expenditure = ((bmr_kcal or 0) + (active_kcal or 0)) or sb.get("totalKilocalories")
     # Split the day's measured burn into workout vs everyday (BMR + non-exercise
     # activity), and surface each completed workout so unplanned ones are visible.
-    workout_kcal = None
     workouts: list[dict] = []
     try:
         for a in (get_activities_in_range(chosen, chosen) or []):
@@ -1773,17 +1772,33 @@ def _today_actuals() -> dict | None:
                         or ((a.get("activityType") or {}).get("typeKey") or "workout"),
                 "kcal": round(cal), "hours": round(dur_s / 3600.0, 2),
             })
-        if workouts:
-            workout_kcal = sum(w["kcal"] for w in workouts)
     except Exception:  # noqa: BLE001
         pass
-    # Non-workout ("everyday") burn = activeKilocalories minus workouts — i.e.
-    # movement above BMR that isn't a formal session (steps/NEAT only). BMR
-    # itself is excluded here (it's already broken out as bmr_kcal) so the
-    # three figures — bmr_kcal, non_workout_kcal, workout_kcal — partition
-    # the day's burn without double-counting. workout_kcal stays gross/total
-    # per activity (matches what Garmin shows for that workout), consistent
-    # with how session burn is treated everywhere else in this engine.
+    workout_kcal = sum(w["kcal"] for w in workouts) if workouts else None
+    # Garmin's per-workout "calories" is gross — it includes a resting-calorie
+    # equivalent for that workout's own duration (what Garmin's activity page
+    # itself splits out as "Resting Calories" vs "Active Calories"; e.g. a
+    # Strength session showing Total 285 / Resting 47 / Active 238). The
+    # day-level stats_and_body exposes that resting-equivalent, aggregated
+    # across all of today's workout time, as restingCaloriesFromActivity.
+    # Subtract it (prorated by duration across today's workouts) so both the
+    # per-workout figures and the aggregate are Active Calories, matching
+    # what Garmin itself shows for a workout — not the gross total.
+    resting_from_activity = None
+    if isinstance(sb, dict) and "error" not in sb:
+        resting_from_activity = sb.get("restingCaloriesFromActivity")
+    if workouts and resting_from_activity:
+        resting_from_activity = min(resting_from_activity, workout_kcal)  # defensive clamp
+        total_hours = sum(w["hours"] for w in workouts) or 1.0
+        for w in workouts:
+            share = resting_from_activity * (w["hours"] / total_hours)
+            w["kcal"] = max(0, round(w["kcal"] - share))
+        workout_kcal = sum(w["kcal"] for w in workouts)
+    # Non-workout ("everyday") burn = activeKilocalories minus (now
+    # active-only) workouts — movement above BMR that isn't a formal session
+    # (steps/NEAT only). BMR itself is excluded here (broken out separately
+    # as bmr_kcal) so bmr_kcal + non_workout_kcal + workout_kcal partition
+    # the day's burn without double-counting.
     non_workout_kcal = None
     if active_kcal is not None:
         non_workout_kcal = max(0, round(active_kcal) - (workout_kcal or 0))
