@@ -213,6 +213,54 @@ def main():
     check("expenditure uses bmr+active (2100), not Garmin's inflated total (2600)",
           ta2["expenditure_kcal"] == 2100)
 
+    print("_today_actuals: non-workout burn excludes BMR (NEAT only, above BMR):")
+    def _fake_gds_bmr_active(startdate, enddate, metrics=None, **k):
+        return {
+            "nutrition_food_log": {},
+            "stats_and_body": {
+                today_iso: {"bmrKilocalories": 1700, "activeKilocalories": 500,
+                            "totalKilocalories": 2200},
+            },
+        }
+    _save_air3 = g.get_activities_in_range
+    g.get_daily_summaries = _fake_gds_bmr_active
+    g.get_activities_in_range = lambda sd, ed, *a, **k: [
+        {"activityType": {"typeKey": "strength_training"}, "activityName": "Strength",
+         "duration": 2000, "calories": 300,
+         "startTimeLocal": today_iso + " 07:00:00"}]
+    ta3 = g._today_actuals()
+    g.get_daily_summaries = _save_gds
+    g.get_activities_in_range = _save_air3
+    check("workout_kcal stays gross/total (300), matching Garmin's own figure",
+          ta3["workout_kcal"] == 300)
+    check("non_workout_kcal = active - workout (500-300=200), BMR excluded",
+          ta3["non_workout_kcal"] == 200)
+    check("expenditure_kcal is still the full bmr+active total (2200)",
+          ta3["expenditure_kcal"] == 2200)
+    check("bmr_kcal exposed separately (1700)", ta3["bmr_kcal"] == 1700)
+
+    print("_recent_days carries a real measured deficit per past day:")
+    r2_iso, r1_iso = (TODAY - timedelta(days=2)).isoformat(), (TODAY - timedelta(days=1)).isoformat()
+    def _fake_gds_recent(startdate, enddate, metrics=None, **k):
+        def _food(cal):
+            return {"dailyNutritionContent": {"calories": cal},
+                    "loggedFoodsWithServingSizes": [{"foodMetaData": {"foodName": "x"},
+                                                      "nutritionContents": [{"calories": cal}]}],
+                    "dailyNutritionGoals": {}}
+        return {
+            "nutrition_food_log": {r2_iso: _food(1800), r1_iso: _food(2000)},
+            "stats_and_body": {
+                r2_iso: {"bmrKilocalories": 1700, "activeKilocalories": 400, "totalKilocalories": 2100},
+                r1_iso: {"bmrKilocalories": 1700, "activeKilocalories": 800, "totalKilocalories": 2500},
+            },
+        }
+    g.get_daily_summaries = _fake_gds_recent
+    rd = g._recent_days(n=2)
+    g.get_daily_summaries = _save_gds
+    check("recent_days covers both days in order", [d["date"] for d in rd] == [r2_iso, r1_iso])
+    check("day 1 deficit = 2100 - 1800 = 300", rd[0]["deficit_kcal"] == 300)
+    check("day 2 deficit = 2500 - 2000 = 500", rd[1]["deficit_kcal"] == 500)
+
     print("get_fueling_goal:")
     gi = g.get_fueling_goal()
     check("goal returned", gi["goal"]["goal_type"] == "lose")

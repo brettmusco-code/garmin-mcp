@@ -1777,9 +1777,16 @@ def _today_actuals() -> dict | None:
             workout_kcal = sum(w["kcal"] for w in workouts)
     except Exception:  # noqa: BLE001
         pass
+    # Non-workout ("everyday") burn = activeKilocalories minus workouts — i.e.
+    # movement above BMR that isn't a formal session (steps/NEAT only). BMR
+    # itself is excluded here (it's already broken out as bmr_kcal) so the
+    # three figures — bmr_kcal, non_workout_kcal, workout_kcal — partition
+    # the day's burn without double-counting. workout_kcal stays gross/total
+    # per activity (matches what Garmin shows for that workout), consistent
+    # with how session burn is treated everywhere else in this engine.
     non_workout_kcal = None
-    if expenditure is not None:
-        non_workout_kcal = max(0, round(expenditure) - (workout_kcal or 0))
+    if active_kcal is not None:
+        non_workout_kcal = max(0, round(active_kcal) - (workout_kcal or 0))
     return {
         "date": chosen,
         "is_today": chosen == today_iso,
@@ -1838,6 +1845,10 @@ def _recent_days(n: int = 2) -> list[dict]:
             "foods_logged": foods,
             "plan_target_kcal": (plan.get(d) or {}).get("target_kcal"),
             "expenditure_kcal": round(exp) if exp else None,
+            # Actual measured deficit that day (burned minus eaten) — distinct
+            # from "vs plan" (eaten vs the planned target), and available even
+            # on days with no saved plan.
+            "deficit_kcal": (round(exp - consumed) if (exp is not None and consumed is not None) else None),
         })
     return out
 
