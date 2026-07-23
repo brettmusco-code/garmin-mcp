@@ -1397,6 +1397,76 @@ def set_fueling_goal(
     return {"saved": True, "goal": goal}
 
 
+def skip_scheduled_session(
+    date: str,
+    sport: str | None = None,
+    title_contains: str | None = None,
+) -> dict:
+    """Exclude a scheduled session from generate_fueling_plan — for when the
+    Garmin calendar still lists something you're not actually doing (skipped,
+    swapped, rescheduled) and you don't want it inflating that day's calorie
+    or carb targets. Persisted to R2; entries auto-expire once their date is
+    in the past.
+
+    date: YYYY-MM-DD, the scheduled day to affect.
+    sport: optional sport filter (e.g. 'swimming', 'cycling') — case-insensitive.
+    title_contains: optional case-insensitive substring of the session title.
+
+    Omit both sport and title_contains to skip every session scheduled that
+    day. If both are given, a session must match both to be skipped.
+    """
+    try:
+        datetime.strptime(date[:10], "%Y-%m-%d")
+    except (ValueError, TypeError) as ex:
+        raise ValueError("date must be YYYY-MM-DD") from ex
+    entry = {
+        "date": date[:10],
+        "sport": (sport or "").strip().lower() or None,
+        "title_contains": (title_contains or "").strip().lower() or None,
+    }
+    skips = _load_skipped_sessions()
+    skips.append(entry)
+    cache.put("fueling_skips", {"key": "current"}, skips, key_parts=["current"])
+    return {"saved": True, "skips": skips}
+
+
+def get_skipped_sessions() -> list[dict]:
+    """The currently active (not-yet-past) skipped-session entries."""
+    return _load_skipped_sessions()
+
+
+def _load_skipped_sessions() -> list[dict]:
+    """Read the stored skip list, pruning entries whose date has passed (and
+    persisting the pruned list so it doesn't grow unbounded)."""
+    skips = cache.get(
+        "fueling_skips", {"key": "current"}, key_parts=["current"],
+        ttl_seconds=IMMUTABLE_TTL,
+    ) or []
+    if not isinstance(skips, list):
+        return []
+    today_iso = date.today().isoformat()
+    pruned = [s for s in skips if isinstance(s, dict) and (s.get("date") or "") >= today_iso]
+    if len(pruned) != len(skips):
+        cache.put("fueling_skips", {"key": "current"}, pruned, key_parts=["current"])
+    return pruned
+
+
+def _is_session_skipped(skips: list[dict], d_iso: str, sport: str, title: str) -> bool:
+    """True if a scheduled item on d_iso matches any stored skip entry — by
+    sport and/or a title substring, or unconditionally if neither is set."""
+    tl = (title or "").lower()
+    for s in skips:
+        if s.get("date") != d_iso:
+            continue
+        sp, tc = s.get("sport"), s.get("title_contains")
+        if sp and sp != sport:
+            continue
+        if tc and tc not in tl:
+            continue
+        return True
+    return False
+
+
 def _weeks_remaining(target_date: str | None) -> int | None:
     if not target_date:
         return None
@@ -1568,6 +1638,35 @@ def _median(vals: list[float]) -> float:
     s = sorted(vals)
     n = len(s)
     return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2.0
+
+
+def _to_active_calories(items: list[dict], resting_from_activity: float | None) -> int | None:
+    """Convert a list of {"kcal", "hours"} workout dicts from gross to Active
+    Calories, in place, and return the new summed total (or None if `items`
+    is empty).
+
+    Garmin's per-workout "calories" is gross — it includes a resting-calorie
+    equivalent for that workout's own duration (what Garmin's own activity
+    page splits out as "Resting Calories" vs "Active Calories": e.g. a
+    Strength session showing Total 285 / Resting 47 / Active 238). The
+    day-level stats_and_body exposes that resting-equivalent, aggregated
+    across all of the day's workout time, as restingCaloriesFromActivity.
+    Subtract it, prorated by duration across `items`, so both the individual
+    figures and their sum are Active Calories, matching what Garmin itself
+    shows for a workout. No-op (returns the gross sum) when
+    resting_from_activity isn't available.
+    """
+    if not items:
+        return None
+    gross_total = sum(w["kcal"] for w in items)
+    if not resting_from_activity:
+        return gross_total
+    resting_from_activity = min(resting_from_activity, gross_total)  # defensive clamp
+    total_hours = sum(w["hours"] for w in items) or 1.0
+    for w in items:
+        share = resting_from_activity * (w["hours"] / total_hours)
+        w["kcal"] = max(0, round(w["kcal"] - share))
+    return sum(w["kcal"] for w in items)
 
 
 def _history_samples(history: list[dict]) -> dict[str, list[tuple[float, float]]]:
@@ -1774,26 +1873,10 @@ def _today_actuals() -> dict | None:
             })
     except Exception:  # noqa: BLE001
         pass
-    workout_kcal = sum(w["kcal"] for w in workouts) if workouts else None
-    # Garmin's per-workout "calories" is gross — it includes a resting-calorie
-    # equivalent for that workout's own duration (what Garmin's activity page
-    # itself splits out as "Resting Calories" vs "Active Calories"; e.g. a
-    # Strength session showing Total 285 / Resting 47 / Active 238). The
-    # day-level stats_and_body exposes that resting-equivalent, aggregated
-    # across all of today's workout time, as restingCaloriesFromActivity.
-    # Subtract it (prorated by duration across today's workouts) so both the
-    # per-workout figures and the aggregate are Active Calories, matching
-    # what Garmin itself shows for a workout — not the gross total.
     resting_from_activity = None
     if isinstance(sb, dict) and "error" not in sb:
         resting_from_activity = sb.get("restingCaloriesFromActivity")
-    if workouts and resting_from_activity:
-        resting_from_activity = min(resting_from_activity, workout_kcal)  # defensive clamp
-        total_hours = sum(w["hours"] for w in workouts) or 1.0
-        for w in workouts:
-            share = resting_from_activity * (w["hours"] / total_hours)
-            w["kcal"] = max(0, round(w["kcal"] - share))
-        workout_kcal = sum(w["kcal"] for w in workouts)
+    workout_kcal = _to_active_calories(workouts, resting_from_activity)
     # Non-workout ("everyday") burn = activeKilocalories minus (now
     # active-only) workouts — movement above BMR that isn't a formal session
     # (steps/NEAT only). BMR itself is excluded here (broken out separately
@@ -2538,8 +2621,26 @@ def generate_fueling_plan(
                 "sport": _sport_bucket(a.get("activityName") or "", tk),
                 "hours": hrs, "kcal": round(cal), "name": a.get("activityName") or "",
             })
+        if actual_today:
+            # Convert gross per-activity calories to Active Calories (see
+            # _to_active_calories) so today's session list agrees with the
+            # "today so far" card instead of showing Garmin's gross total.
+            try:
+                sb_today = get_daily_summaries(
+                    startdate=today_iso, enddate=today_iso, metrics=["stats_and_body"],
+                ).get("stats_and_body", {}).get(today_iso)
+                resting_from_activity = (
+                    sb_today.get("restingCaloriesFromActivity")
+                    if isinstance(sb_today, dict) and "error" not in sb_today else None
+                )
+            except Exception:  # noqa: BLE001
+                resting_from_activity = None
+            _to_active_calories(actual_today, resting_from_activity)
 
     last_scheduled_date = max(scheduled_by_date) if scheduled_by_date else None
+
+    skipped_sessions = _load_skipped_sessions()
+    skipped_titles: list[str] = []
 
     # Pass 1: resolve each day's sessions, burn, and carb ratio.
     prelim: list[dict] = []
@@ -2552,6 +2653,9 @@ def generate_fueling_plan(
                      or it.get("workoutNameKey") or "")
             intensity = _classify_intensity(title)
             sport = _sport_bucket(title, it.get("sportTypeKey") or "")
+            if _is_session_skipped(skipped_sessions, d_iso, sport, title):
+                skipped_titles.append(f"{title or sport} on {d_iso}")
+                continue
             hours, hrs_src = _planned_hours(it, intensity)
             base_hr, burn_source = _kcal_per_hour_for(sport, hours, hist_samples)
             burn = round(base_hr * _INTENSITY_MULT.get(intensity, 1.0) * hours)
@@ -2797,6 +2901,9 @@ def generate_fueling_plan(
             "protein_g": protein_g, "carbs_g": carbs_g, "fat_g": fat_g,
             "notes": "fuel pre/during/post" if fuel_cards else "",
         }
+
+    if skipped_titles:
+        notes.append("Skipped (per skip_scheduled_session): " + "; ".join(skipped_titles) + ".")
 
     trimmed = [d["date"] for d in day_rows if d.get("carbs_trimmed")]
     if trimmed:
