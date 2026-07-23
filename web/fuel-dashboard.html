@@ -45,6 +45,10 @@
   .meta{display:flex;gap:14px;justify-content:flex-end;margin-top:6px;flex-wrap:wrap;}
   .meta span{font-size:12px;color:var(--ink-dim);}
   .meta span b{color:var(--ink);font-family:var(--mono);}
+  .updated{font-size:11px;color:var(--ink-faint);margin-top:5px;}
+  .updated b{font-family:var(--mono);color:var(--ink-dim);}
+  .updated.stale{color:var(--warn);}
+  .updated.stale b{color:var(--warn);}
 
   .chip{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;
     padding:3px 9px;border-radius:999px;border:1px solid var(--line);color:var(--ink-dim);}
@@ -55,6 +59,13 @@
 
   .grid-top{display:grid;grid-template-columns:1.15fr .85fr;gap:18px;margin-bottom:22px;}
   @media(max-width:760px){.grid-top{grid-template-columns:1fr;}}
+  @media(max-width:480px){
+    .wrap{padding:20px 14px 56px;}
+    .goalline{text-align:left;max-width:100%;}
+    .meta{justify-content:flex-start;}
+    .kcal-big .v{font-size:44px;}
+    .card{padding:16px;}
+  }
   .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
     box-shadow:var(--shadow);padding:22px;}
   .card h2{margin:0 0 2px;font-size:14.5px;font-weight:650;letter-spacing:-.01em;}
@@ -86,6 +97,28 @@
   .ea-track>span{position:absolute;left:0;top:0;bottom:0;border-radius:5px;}
   .ea-row .val{font-family:var(--mono);font-size:12.5px;}
 
+  .daylist{display:flex;flex-direction:column;}
+  .daycard{display:block;width:100%;text-align:left;background:none;border:0;
+    border-bottom:1px solid var(--line);padding:14px 4px;font:inherit;color:inherit;
+    cursor:pointer;-webkit-tap-highlight-color:transparent;}
+  .daycard:last-child{border-bottom:0;}
+  .daycard:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;border-radius:6px;}
+  .daycard.is-today{background:color-mix(in srgb,var(--accent) 6%,transparent);}
+  .daycard.sel{background:color-mix(in srgb,var(--carbs) 12%,transparent);box-shadow:inset 3px 0 0 var(--carbs);}
+  .dc-top{display:flex;justify-content:space-between;align-items:baseline;gap:10px;}
+  .dc-day{font-weight:650;font-size:13.5px;}
+  .dc-day small{color:var(--ink-faint);font-weight:400;margin-left:6px;font-family:var(--mono);font-size:11.5px;}
+  .dc-tags{display:flex;align-items:center;gap:8px;}
+  .dc-sess{color:var(--ink-dim);font-size:12.5px;margin-top:3px;}
+  .dc-sess.rest{color:var(--ink-faint);font-style:italic;}
+  .dc-nums{display:flex;align-items:baseline;flex-wrap:wrap;gap:6px 18px;margin-top:10px;}
+  .dc-num .lab{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);
+    display:block;margin-bottom:2px;}
+  .dc-num .v{font-family:var(--mono);font-size:16px;font-weight:600;color:var(--ink);}
+  .dc-num .v small{font-size:11px;font-weight:400;color:var(--ink-faint);margin-left:2px;}
+  .dc-macro{display:flex;align-items:center;gap:8px;margin-top:9px;}
+  .dc-macro .pcf{flex:0 0 auto;}
+  .dc-macro .mono{font-size:11px;color:var(--ink-dim);}
   .weekwrap{overflow-x:auto;}
   table{width:100%;border-collapse:collapse;font-size:13px;min-width:720px;}
   thead th{text-align:left;font-size:10px;letter-spacing:.14em;text-transform:uppercase;
@@ -194,6 +227,7 @@
     <div class="goalline">
       <div class="g" id="goal">—</div>
       <div class="meta" id="meta"></div>
+      <div class="updated" id="updated"></div>
     </div>
   </header>
 
@@ -218,15 +252,7 @@
   <div class="card">
     <h2>Week ahead</h2>
     <div class="sub">Tap any day for its full fueling detail below.</div>
-    <div class="weekwrap">
-      <table>
-        <thead><tr>
-          <th>Day</th><th>Session</th><th class="r">Burn</th><th class="r">Target</th><th class="r">Deficit</th>
-          <th>P / C / F</th><th class="r">Carb g/kg</th><th class="r">EA</th><th class="r">Fuel</th>
-        </tr></thead>
-        <tbody id="weekBody"></tbody>
-      </table>
-    </div>
+    <div class="daylist" id="weekBody"></div>
   </div>
 
   <section class="block" id="detailBlock">
@@ -948,6 +974,18 @@ const wd = (kg)=> kg==null ? '—' : `${(IMPERIAL?_lb(kg):kg).toFixed(1)}${WU}`;
 const todayISO = new Date().toISOString().slice(0,10);
 const dow = (iso)=>{const d=new Date(iso+'T00:00:00');return d.toLocaleDateString(undefined,{weekday:'short'});};
 const dmd = (iso)=>{const d=new Date(iso+'T00:00:00');return d.toLocaleDateString(undefined,{month:'short',day:'numeric'});};
+function renderUpdated(iso){
+  const el = $('updated');
+  if(!iso){ el.innerHTML=''; return; }
+  const t = new Date(iso);
+  if(isNaN(t.getTime())){ el.innerHTML=''; return; }
+  const mins = Math.max(0, Math.round((Date.now()-t.getTime())/60000));
+  const rel = mins<1 ? 'just now' : mins<60 ? `${mins}m ago` : `${Math.round(mins/60)}h ago`;
+  const timeStr = t.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});
+  const stale = mins>150; // hourly refresh cadence — flag if it's been well over that
+  el.classList.toggle('stale', stale);
+  el.innerHTML = `Updated <b>${timeStr}</b> <small>(${rel})</small>${stale?' — may be stale':''}`;
+}
 
 const EAF_RAW = PLAN.config ? PLAN.config.ea_floor_kcal_per_kg_ffm : 30;
 const EAF_DISABLED = !(EAF_RAW && EAF_RAW > 0);
@@ -994,7 +1032,7 @@ function renderActuals(){
 }
 
 function selectDay(idx){
-  document.querySelectorAll('#weekBody tr').forEach(r=>r.classList.toggle('sel', +r.dataset.idx===idx));
+  document.querySelectorAll('#weekBody .daycard').forEach(r=>r.classList.toggle('sel', +r.dataset.idx===idx));
   renderDay(PLAN.days[idx]);
 }
 
@@ -1046,11 +1084,10 @@ function renderDay(d){
         <div class="phase"><div class="p">During · ${f.hours}h</div><div class="d"><b>${f.during_carbs_g_per_hr}g</b>/hr → <b>${f.during_carbs_g_total}g</b></div><div class="w">${f.fluid_ml_per_hr}ml · ${f.sodium_mg_per_hr}mg Na/hr${f.note?' · '+f.note:''}</div></div>
         <div class="phase"><div class="p">Post · &lt;60m</div><div class="d"><b>${f.post_protein_g}g</b> protein + <b>${f.post_carbs_g}g</b> carbs</div><div class="w">start the refuel window</div></div>
       </div></div>`).join('');
-  const baseKc = d.expected_expenditure_kcal - (d.net_exercise_kcal||0) - (d.tef_kcal||0);
+  const baseKc = d.expected_expenditure_kcal - (d.net_exercise_kcal||0);
   const energy = `<div class="energy">
     <span>base <b>${nf(baseKc)}</b></span>
     ${d.net_exercise_kcal?`<span class="op">+</span><span>net exercise <b>${nf(d.net_exercise_kcal)}</b></span>`:''}
-    ${d.tef_kcal?`<span class="op">+</span><span>digestion <b>${nf(d.tef_kcal)}</b></span>`:''}
     <span class="op">=</span><span>burn <b>${nf(d.expected_expenditure_kcal)}</b></span>
     <span class="op">−</span><span>eat <b>${nf(d.target_kcal)}</b></span>
     <span class="def">${nf(d.target_deficit_kcal)} deficit</span></div>`;
@@ -1086,6 +1123,7 @@ function render(){
   if(PLAN.fat_free_mass_kg) meta.push(`<span>FFM <b>${wt(PLAN.fat_free_mass_kg)}</b></span>`);
   meta.push(`<span>Daily <b>${adj>0?'+':''}${nf(adj)}</b></span>`);
   $('meta').innerHTML = meta.join('');
+  renderUpdated(PLAN.generated_at);
 
   const days = PLAN.days;
   // Lead card = the first planned day (plan starts tomorrow).
@@ -1118,19 +1156,32 @@ function render(){
     const kc = d.target_kcal;
     const seg=(gv,key)=>`<i style="width:${kc?Math.round(gv*(key==='fat'?9:4)/kc*100):0}%;background:${M[key]}"></i>`;
     const rest = d.primary_intensity==='rest';
-    const sessTxt = rest? 'rest' : d.sessions.map(s=>s.title).join(' + ');
+    const sessTxt = rest? 'Rest day' : d.sessions.map(s=>s.title).join(' + ');
     const e = d.energy_availability_kcal_per_kg_ffm;
-    return `<tr class="clickable ${d.date===todayISO?'is-today':''}" data-idx="${idx}" tabindex="0" role="button" aria-label="${dow(d.date)} ${dmd(d.date)} — show fueling detail" onclick="selectDay(${idx})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();selectDay(${idx});}">
-      <td class="day-cell"><b>${dow(d.date)}</b><small>${dmd(d.date)}</small></td>
-      <td class="sess ${rest?'rest':''}">${sessTxt}</td>
-      <td class="r mono">${d.est_burn_kcal?nf(d.est_burn_kcal):'—'}</td>
-      <td class="r mono">${nf(d.target_kcal)}</td>
-      <td class="r mono" style="color:${d.target_deficit_kcal>0?'var(--good)':(d.target_deficit_kcal<0?'var(--warn)':'var(--ink-dim)')}">${d.target_deficit_kcal>0?nf(d.target_deficit_kcal):(d.target_deficit_kcal<0?'+'+nf(-d.target_deficit_kcal):'0')}</td>
-      <td><span class="pcf">${seg(d.protein_g,'protein')}${seg(d.carbs_g,'carbs')}${seg(d.fat_g,'fat')}</span>
-          <span class="mono" style="font-size:11px;color:var(--ink-dim)"> ${d.protein_g}/${d.carbs_g}/${d.fat_g}</span></td>
-      <td class="r mono">${d.carb_g_per_kg}</td>
-      <td class="r"><span class="eapill ${eaPill(e)}">${e??'—'}</span></td>
-      <td class="r"><span class="fuelmark${d.needs_fuel?' on':''}" title="${d.needs_fuel?'fuel plan':'no fuel needed'}"></span></td></tr>`;
+    const def = d.target_deficit_kcal;
+    const defTxt = def>0 ? nf(def) : (def<0 ? '+'+nf(-def) : '0');
+    const defColor = def>0?'var(--good)':(def<0?'var(--warn)':'var(--ink-dim)');
+    return `<div class="daycard ${d.date===todayISO?'is-today':''}" data-idx="${idx}" tabindex="0" role="button"
+        aria-label="${dow(d.date)} ${dmd(d.date)} — show fueling detail" onclick="selectDay(${idx})"
+        onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();selectDay(${idx});}">
+      <div class="dc-top">
+        <div class="dc-day">${dow(d.date)}<small>${dmd(d.date)}</small></div>
+        <div class="dc-tags">
+          <span class="eapill ${eaPill(e)}">EA ${e??'—'}</span>
+          <span class="fuelmark${d.needs_fuel?' on':''}" title="${d.needs_fuel?'fuel plan':'no fuel needed'}"></span>
+        </div>
+      </div>
+      <div class="dc-sess ${rest?'rest':''}">${sessTxt}</div>
+      <div class="dc-nums">
+        <div class="dc-num"><span class="lab">Burn</span><span class="v">${d.est_burn_kcal?nf(d.est_burn_kcal):'—'}</span></div>
+        <div class="dc-num"><span class="lab">Target</span><span class="v">${nf(d.target_kcal)}</span></div>
+        <div class="dc-num"><span class="lab">Deficit</span><span class="v" style="color:${defColor}">${defTxt}</span></div>
+      </div>
+      <div class="dc-macro">
+        <span class="pcf">${seg(d.protein_g,'protein')}${seg(d.carbs_g,'carbs')}${seg(d.fat_g,'fat')}</span>
+        <span class="mono">${d.protein_g}/${d.carbs_g}/${d.fat_g}g <small style="color:var(--ink-faint)">· ${d.carb_g_per_kg}g/kg carb</small></span>
+      </div>
+    </div>`;
   }).join('');
 
   const start=g.start_weight_kg, tgt=g.target_weight_kg, cur=gp.current_weight_kg??start;

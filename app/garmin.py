@@ -1710,26 +1710,21 @@ def _bmr(weight_kg, sex, height_cm, age, ffm_kg=None):
 
 
 def _today_actuals() -> dict | None:
-    """Logged intake + the actual foods eaten, with measured expenditure —
-    today if it's logged, else the most recent logged day in the last week
-    (so the readout is useful before today's data is pre-warmed). Powers the
-    dashboard's 'today so far' card."""
+    """Logged intake + the actual foods eaten today, with measured
+    expenditure. Always today — never falls back to an older logged day, so
+    an unlogged today reads as zero/empty rather than silently showing
+    yesterday's numbers under a 'today' label. Powers the dashboard's
+    'today so far' card."""
     today = date.today()
     today_iso = today.isoformat()
     try:
-        ds = get_daily_summaries((today - timedelta(days=6)).isoformat(),
-                                 today_iso, ["nutrition_food_log", "stats_and_body"])
+        ds = get_daily_summaries(today_iso, today_iso,
+                                  ["nutrition_food_log", "stats_and_body"])
     except Exception:  # noqa: BLE001
         return None
     fl_all = ds.get("nutrition_food_log") or {}
     sb_all = ds.get("stats_and_body") or {}
-    # Prefer today; else the most recent day that actually has foods logged.
     chosen = today_iso
-    for d_iso in sorted(fl_all, reverse=True):
-        v = fl_all[d_iso]
-        if isinstance(v, dict) and "error" not in v and (v.get("loggedFoodsWithServingSizes")):
-            chosen = d_iso
-            break
     fl = fl_all.get(chosen)
     sb = sb_all.get(chosen)
     content, raw_foods, goals = {}, [], {}
@@ -2802,6 +2797,7 @@ def generate_fueling_plan(
 
     result = {
         "window": {"start": start.isoformat(), "end": end.isoformat(), "days": days},
+        "generated_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
         "units": goal.get("units") or "metric",
         "goal": goal,
         "goal_progress": goal_info.get("progress"),
