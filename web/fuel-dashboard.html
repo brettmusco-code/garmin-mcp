@@ -1236,6 +1236,7 @@ function drawProjection(){
   if(pts.length < 2){ $('projBlock').style.display='none'; return; }
   const g = PLAN.goal;
   const fin = proj.projected_finish_date;
+  const hist = (PLAN.weight_history||[]).filter(h=>h && h.weight_kg!=null);
   $('projNote').textContent = fin
     ? `~${wt(g.target_weight_kg)} around ${dmd(fin)} · max ${wd(proj.max_weekly_loss_kg)}/wk`
     : 'target not reached at the sustainable rate';
@@ -1246,13 +1247,15 @@ function drawProjection(){
   cv.width = W*dpr; cv.height = H*dpr;
   const ctx = cv.getContext('2d'); ctx.scale(dpr,dpr);
   const ink = cssVar('--ink'), dim = cssVar('--ink-faint'), line = cssVar('--line');
-  const carbs = cssVar('--carbs'), good = cssVar('--good');
+  const carbs = cssVar('--carbs'), good = cssVar('--good'), protein = cssVar('--protein');
   const padL=44, padR=14, padT=16, padB=30;
   const xs = pts.map(p=>new Date(p.date+'T00:00:00').getTime());
   const ys = pts.map(p=>p.weight_kg);
+  const hxs = hist.map(h=>new Date(h.date+'T00:00:00').getTime());
+  const hys = hist.map(h=>h.weight_kg);
   const tgt = g.target_weight_kg;
-  const x0=Math.min(...xs), x1=Math.max(...xs);
-  const yMin=Math.min(tgt, ...ys)-0.5, yMax=Math.max(...ys)+0.5;
+  const x0=Math.min(...xs, ...hxs), x1=Math.max(...xs, ...hxs);
+  const yMin=Math.min(tgt, ...ys, ...hys)-0.5, yMax=Math.max(...ys, ...hys)+0.5;
   const X = t => padL + (t-x0)/((x1-x0)||1)*(W-padL-padR);
   const Y = w => padT + (yMax-w)/((yMax-yMin)||1)*(H-padT-padB);
 
@@ -1262,13 +1265,17 @@ function drawProjection(){
     ctx.globalAlpha=.5; ctx.beginPath(); ctx.moveTo(padL,y); ctx.lineTo(W-padR,y); ctx.stroke(); ctx.globalAlpha=1;
     ctx.fillText((IMPERIAL?_lb(w):w).toFixed(1)+WU, padL-6, y); }
 
-  // x-axis date labels
+  // x-axis date labels: earliest weigh-in (if any), a spread of projection
+  // points, and the final point.
   ctx.fillStyle=dim; ctx.textAlign='center'; ctx.textBaseline='top';
+  const labelTimes = [];
+  if(hxs.length) labelTimes.push(hxs[0]);
   const step = Math.max(1, Math.ceil(pts.length/5));
-  const seen = new Set();
-  for(let i=0;i<pts.length;i+=step){ seen.add(i); ctx.fillText(dmd(pts[i].date), X(xs[i]), H-padB+8); }
-  const li = pts.length-1;
-  if(!seen.has(li)) ctx.fillText(dmd(pts[li].date), X(xs[li]), H-padB+8);
+  for(let i=0;i<pts.length;i+=step) labelTimes.push(xs[i]);
+  if(labelTimes[labelTimes.length-1]!==xs[pts.length-1]) labelTimes.push(xs[pts.length-1]);
+  const seenDay = new Set();
+  labelTimes.forEach(t=>{ const key=Math.round(t/864e5); if(seenDay.has(key)) return; seenDay.add(key);
+    ctx.fillText(dmd(new Date(t).toISOString().slice(0,10)), X(t), H-padB+8); });
   ctx.textBaseline='middle';
 
   // target line
@@ -1282,6 +1289,12 @@ function drawProjection(){
       ctx.beginPath(); ctx.moveTo(tx,padT); ctx.lineTo(tx,H-padB); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha=1;
       ctx.fillStyle=dim; ctx.textAlign='center'; ctx.textBaseline='top';
       ctx.fillText('goal '+dmd(proj.target_date), tx, padT+1); ctx.textBaseline='middle'; } }
+
+  // "today" marker separating logged weigh-ins from the forward projection.
+  if(hxs.length){ const tx=X(xs[0]);
+    ctx.strokeStyle=dim; ctx.globalAlpha=.35; ctx.setLineDash([2,3]);
+    ctx.beginPath(); ctx.moveTo(tx,padT); ctx.lineTo(tx,H-padB); ctx.stroke();
+    ctx.setLineDash([]); ctx.globalAlpha=1; }
 
   // hex→#RRGGBBAA helper so canvas gets a real alpha (color-mix isn't reliable here)
   const hx = c => c && c[0]==='#' && c.length===7;
@@ -1298,6 +1311,17 @@ function drawProjection(){
   ctx.strokeStyle=carbs; ctx.lineWidth=2.5; ctx.lineJoin='round'; ctx.beginPath();
   pts.forEach((p,i)=>{ const x=X(xs[i]), y=Y(p.weight_kg); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
   ctx.stroke();
+
+  // actual logged weigh-ins: thin line + dots in a distinct color, so real
+  // progress can be read directly against the projected curve.
+  if(hxs.length){
+    ctx.strokeStyle=protein; ctx.lineWidth=1.75; ctx.lineJoin='round'; ctx.beginPath();
+    hist.forEach((h,i)=>{ const x=X(hxs[i]), y=Y(h.weight_kg); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+    ctx.stroke();
+    ctx.fillStyle=protein;
+    hist.forEach((h,i)=>{ ctx.beginPath(); ctx.arc(X(hxs[i]),Y(h.weight_kg),2.5,0,7); ctx.fill(); });
+  }
+
   // start dot + emphasized finish (halo + core ringed against the panel)
   ctx.fillStyle=carbs;
   ctx.beginPath(); ctx.arc(X(xs[0]),Y(ys[0]),3,0,7); ctx.fill();
@@ -1305,6 +1329,15 @@ function drawProjection(){
   ctx.beginPath(); ctx.arc(fx,fy,7.5,0,7); ctx.fillStyle=wa(carbs,'33'); ctx.fill();
   ctx.beginPath(); ctx.arc(fx,fy,4,0,7); ctx.fillStyle=carbs; ctx.fill();
   ctx.strokeStyle=cssVar('--panel')||'#fff'; ctx.lineWidth=1.5; ctx.stroke();
+
+  // legend, only needed once there are two series to tell apart
+  if(hxs.length){
+    ctx.textAlign='left'; ctx.textBaseline='middle'; ctx.font='10px ui-monospace,monospace';
+    ctx.fillStyle=protein; ctx.beginPath(); ctx.arc(padL+4, padT+3, 3, 0, 7); ctx.fill();
+    ctx.fillStyle=dim; ctx.fillText('actual', padL+11, padT+3);
+    ctx.fillStyle=carbs; ctx.beginPath(); ctx.arc(padL+56, padT+3, 3, 0, 7); ctx.fill();
+    ctx.fillStyle=dim; ctx.fillText('projected', padL+63, padT+3);
+  }
 }
 render();
 window.addEventListener('resize', drawProjection);
