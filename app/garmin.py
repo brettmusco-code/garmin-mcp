@@ -1747,8 +1747,13 @@ def _today_actuals() -> dict | None:
     if isinstance(sb, dict) and "error" not in sb:
         bmr_kcal = sb.get("bmrKilocalories")
         active_kcal = sb.get("activeKilocalories")
-        expenditure = sb.get("totalKilocalories") or (
-            (bmr_kcal or 0) + (active_kcal or 0)) or None
+        # Prefer bmr + active (our own sum) over Garmin's own totalKilocalories:
+        # for a day still in progress, Garmin's total bakes in the FULL day's
+        # BMR estimate from hour zero while only activeKilocalories actually
+        # accumulates in real time — so mid-day, totalKilocalories overstates
+        # what's actually been burned so far. Fall back to Garmin's total only
+        # if we don't have both components to build our own.
+        expenditure = ((bmr_kcal or 0) + (active_kcal or 0)) or sb.get("totalKilocalories")
     # Split the day's measured burn into workout vs everyday (BMR + non-exercise
     # activity), and surface each completed workout so unplanned ones are visible.
     workout_kcal = None
