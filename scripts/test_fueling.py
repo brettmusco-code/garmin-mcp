@@ -475,6 +475,34 @@ def main():
     g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
                        sex="male", height_cm=178, age=40)
 
+    print("fuel windows scale down to match a carb-trimmed day (never mismatch):")
+    # An absurd goal (lose 22kg in 3 days) with every floor disabled forces a
+    # day's carb budget far below what a 3.5h fueled ride needs (~258g),
+    # reproducing the real-world case: a training day trimmed hard enough
+    # that the 'Workout fuel' meal line and the per-workout fuel timeline
+    # would otherwise disagree.
+    tight3 = (TODAY + timedelta(days=3)).isoformat()
+    g.set_fueling_goal(goal_type="lose", target_weight_kg=50.0, target_date=tight3,
+                       sex="male", height_cm=178, age=40, max_deficit_kcal=0,
+                       ea_min=0, ea_floor=0, bmr_floor_mult=0, min_kcal=0,
+                       periodize_deficit=False)
+    plan_fuel_trim = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7)
+    day4_ft = plan_fuel_trim["days"][4]  # the long-ride day (>=90min -> needs_fuel)
+    check("long-ride day still needs fuel", day4_ft["needs_fuel"])
+    wf = next((m for m in day4_ft["meals"] if m["meal"].startswith("Workout fuel")), None)
+    fuel_total = sum(f["pre_carbs_g"] + f["during_carbs_g_total"] + f["post_carbs_g"]
+                     for f in day4_ft["fuel"])
+    check("this day's carb budget was actually trimmed below the fuel need",
+          fuel_total < 258)  # untrimmed would be ~40+158+60=258g
+    check("'Workout fuel' meal line exists", wf is not None)
+    check("per-workout fuel timeline total matches the meal line exactly (no mismatch)",
+          wf is not None and fuel_total == wf["carbs_g"])
+    check("a note explains the fuel windows were scaled down",
+          any("fuel windows were scaled" in n.lower() for n in plan_fuel_trim["notes"]))
+    # restore the default lose goal for remaining checks
+    g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
+                       sex="male", height_cm=178, age=40)
+
     print("title duration parsing:")
     check("'50min Aerobic Run' -> ~0.83h", abs(g._duration_from_title("50min Aerobic Run") - 0.83) < 0.02)
     check("\"Master's Swim - 90min\" -> 1.5h", g._duration_from_title("Master's Swim - 90min") == 1.5)
