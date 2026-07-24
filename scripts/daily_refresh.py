@@ -130,7 +130,11 @@ def main() -> int:
         )
         return 0
 
-    today = date.today()
+    # Local day, not the UTC cron-host day: at 03:30 UTC (~11:30pm Eastern the
+    # prior day) a bare date.today() is already "tomorrow" locally, so the day
+    # that just ended — the one with a full day of food/activity — would fall
+    # outside FORCE_REFRESH_DAYS and be served stale.
+    today = garmin._local_today()
     print(f"=== daily_refresh_direct {today.isoformat()} ===")
     print()
 
