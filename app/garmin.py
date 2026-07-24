@@ -1804,24 +1804,36 @@ def _history_samples(history: list[dict]) -> dict[str, list[tuple[float, float]]
 
 
 def _mean_daily_exercise(history: list[dict], rmr_per_hr: float,
-                         as_of: date, window_days: int = 30) -> tuple[float, float]:
+                         as_of: date, window_days: int = 30) -> dict[str, tuple[float, float]]:
     """Mean *daily* net-exercise burn (Active Calories) and mean daily training
-    hours over the trailing `window_days`, each spread across every day in the
-    window — training days and off days alike. Every activity's gross calories
-    are netted against the resting-during-exercise proxy (rmr_per_hr x hours),
-    the same conversion a scheduled-session estimate gets, then totals are
-    divided by the full window so the result is a realistic *typical day*, not
-    a typical training day. Used to fill runs of unscheduled days that will
-    almost certainly pick up a workout later, so they aren't banked as
-    deep-deficit rest.
+    hours over the trailing `window_days`, split into weekday vs weekend — each
+    spread across every day of that type in the window (training days and off
+    days alike). Weekends carry the long stuff, so a phantom Saturday shouldn't
+    assume a typical *weekday* burn; splitting keeps each assumed day true to
+    its own day-of-week pattern. Every activity's gross calories are netted
+    against the resting-during-exercise proxy (rmr_per_hr x hours), the same
+    conversion a scheduled-session estimate gets. Used to fill runs of
+    unscheduled days that will almost certainly pick up a workout later, so
+    they aren't banked as deep-deficit rest.
 
-    Returns (mean_daily_kcal, mean_daily_hours); (0.0, 0.0) with no usable
-    history."""
+    Returns {"weekday": (mean_kcal, mean_hours), "weekend": (mean_kcal,
+    mean_hours)}; zeros for a bucket with no days/history. Sat/Sun are the
+    weekend."""
+    empty = {"weekday": (0.0, 0.0), "weekend": (0.0, 0.0)}
     if window_days <= 0:
-        return 0.0, 0.0
+        return empty
     lo = as_of - timedelta(days=window_days)
-    total_net = 0.0
-    total_hours = 0.0
+    # Count weekday vs weekend *days* in the window (lo, as_of] — the correct
+    # denominator so each mean is per-day-of-that-type, not diluted by the
+    # other type's day count.
+    wk_days = we_days = 0
+    for i in range(window_days):
+        d = as_of - timedelta(days=i)          # covers lo+1 .. as_of
+        if d.weekday() >= 5:
+            we_days += 1
+        else:
+            wk_days += 1
+    wk_net = wk_hrs = we_net = we_hrs = 0.0
     for a in history or []:
         if not isinstance(a, dict):
             continue
@@ -1841,9 +1853,15 @@ def _mean_daily_exercise(history: list[dict], rmr_per_hr: float,
         if not dur_s or not cal or dur_s < 600:  # skip <10min / no-calorie
             continue
         hours = dur_s / 3600.0
-        total_net += max(0.0, cal - rmr_per_hr * hours)
-        total_hours += hours
-    return total_net / window_days, total_hours / window_days
+        net = max(0.0, cal - rmr_per_hr * hours)
+        if a_date.weekday() >= 5:
+            we_net += net; we_hrs += hours
+        else:
+            wk_net += net; wk_hrs += hours
+    return {
+        "weekday": (wk_net / wk_days, wk_hrs / wk_days) if wk_days else (0.0, 0.0),
+        "weekend": (we_net / we_days, we_hrs / we_days) if we_days else (0.0, 0.0),
+    }
 
 
 def _kcal_per_hour_for(sport: str, hours: float,
@@ -2814,10 +2832,12 @@ def generate_fueling_plan(
     rmr_per_hr = (bmr or 0) / 24.0
 
     # Typical-day exercise (net Active Calories + hours) over the last 30 days,
-    # for filling runs of unscheduled days that will almost certainly pick up a
-    # workout later (see the phantom-day pass below).
-    phantom_kcal, phantom_hours = _mean_daily_exercise(
-        history, rmr_per_hr, start, window_days=30)
+    # split weekday vs weekend, for filling runs of unscheduled days that will
+    # almost certainly pick up a workout later (see the phantom-day pass below).
+    # A phantom Saturday assumes a typical Saturday, not a typical weekday.
+    phantom_avg = _mean_daily_exercise(history, rmr_per_hr, start, window_days=30)
+    # Whether any phantom-fillable average exists at all (either bucket).
+    phantom_available = any(k > 0 and h > 0 for (k, h) in phantom_avg.values())
 
     # Pass 1: resolve each day's sessions, burn, and carb ratio.
     prelim: list[dict] = []
@@ -2946,22 +2966,36 @@ def generate_fueling_plan(
     # protected — like the training day it will most likely become. Isolated
     # single unscheduled days are left as true rest.
     phantom_dates: list[str] = []
-    if phantom_kcal > 0 and phantom_hours > 0 and len(unscheduled_idx) >= 2:
+    if phantom_available and len(unscheduled_idx) >= 2:
         idx_set = set(unscheduled_idx)
         run: list[int] = []
+
+        def _phantom_avg_for(d: date) -> tuple[float, float]:
+            """Weekend average on Sat/Sun, weekday average otherwise — falling
+            back to the other bucket when the athlete has no history of that
+            day-type in the window (so the day is still filled, not left rest)."""
+            primary_key = "weekend" if d.weekday() >= 5 else "weekday"
+            other_key = "weekday" if primary_key == "weekend" else "weekend"
+            k, h = phantom_avg.get(primary_key, (0.0, 0.0))
+            if k > 0 and h > 0:
+                return k, h
+            return phantom_avg.get(other_key, (0.0, 0.0))
 
         def _flush_run(r: list[int]) -> None:
             if len(r) < 2:
                 return
             for j in r:
                 p = prelim[j]
+                p_date = date.fromisoformat(p["date"])
+                p_kcal, p_hours = _phantom_avg_for(p_date)
+                if p_kcal <= 0 or p_hours <= 0:
+                    continue   # no usable average for this day — leave as rest
                 sess = {
                     "title": "Assumed training (not yet scheduled)",
                     "sport": "training", "intensity": "easy",
-                    "hours": round(phantom_hours, 2), "hours_source": "assumed",
-                    "burn_kcal": round(phantom_kcal),
-                    "kcal_per_hour": (round(phantom_kcal / phantom_hours)
-                                      if phantom_hours else 0),
+                    "hours": round(p_hours, 2), "hours_source": "assumed",
+                    "burn_kcal": round(p_kcal),
+                    "kcal_per_hour": (round(p_kcal / p_hours) if p_hours else 0),
                     "burn_source": "assumed_30d_avg", "done": False,
                     "unplanned": False, "assumed": True,
                 }
@@ -2972,7 +3006,7 @@ def generate_fueling_plan(
                 p["projected_burn_kcal"] = sess["burn_kcal"]
                 p["primary"] = sess
                 p["carb_ratio"] = _CARB_G_PER_KG.get("easy", 4.0)
-                p["day_load"] = _session_tss("easy", phantom_hours)
+                p["day_load"] = _session_tss("easy", p_hours)
                 p["base_target"] = neat_base + sess["burn_kcal"]
                 phantom_dates.append(p["date"])
 
@@ -3190,11 +3224,18 @@ def generate_fueling_plan(
     # longer surface a note about it — the drop is silent.
 
     if phantom_dates:
+        wk = phantom_avg.get("weekday", (0.0, 0.0))
+        we = phantom_avg.get("weekend", (0.0, 0.0))
+        avg_bits = []
+        if wk[0] > 0:
+            avg_bits.append(f"~{round(wk[0])} kcal on weekdays")
+        if we[0] > 0:
+            avg_bits.append(f"~{round(we[0])} kcal on weekends")
+        avg_txt = (" (" + ", ".join(avg_bits) + ", your 30-day averages)") if avg_bits else ""
         notes.append(
             f"On {', '.join(phantom_dates)} nothing is scheduled yet, but they fall in a "
-            f"run of {len(phantom_dates)}+ consecutive open days — so each is planned as a "
-            f"typical training day (~{round(phantom_kcal)} kcal / {round(phantom_hours, 1)}h, "
-            "your 30-day average) rather than banking a deep-deficit rest day that a "
+            f"run of 2+ consecutive open days — so each is planned as a typical training day "
+            f"for that day of week{avg_txt} rather than banking a deep-deficit rest day that a "
             "later-synced workout would leave under-fuelled. Actual sessions replace these "
             "as they appear on the calendar."
         )
