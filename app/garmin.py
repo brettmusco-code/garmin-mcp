@@ -2576,7 +2576,7 @@ def _weight_trend_calibration(goal: dict, weight_kg: float) -> dict | None:
 # big lead can never gut the cut (steady momentum > yo-yo).
 _AHEAD_EASE_THRESHOLD_WEEKS = 2.0
 _AHEAD_EASE_PER_WEEK = 0.10        # 10% ease per week ahead beyond the threshold
-_AHEAD_EASE_MAX = 0.20             # never ease more than 20%
+_AHEAD_EASE_MAX = 0.50             # never ease more than 50%
 
 
 def _schedule_lead(goal: dict, weight_kg: float | None,
