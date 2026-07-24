@@ -307,6 +307,16 @@ def _coerce_garmin_date(raw: Any) -> date | None:
         return None
 
 
+def _fmt_weight(kg: float | None, units: str | None, decimals: int = 1) -> str:
+    """Format a weight for a user-facing string in the goal's display units
+    (lb for imperial, else kg). Keeps notes consistent with the dashboard."""
+    if kg is None:
+        return "—"
+    if (units or "").lower() == "imperial":
+        return f"{round(kg * 2.20462, decimals)}lb"
+    return f"{round(kg, decimals)}kg"
+
+
 def _local_now() -> datetime:
     """Timezone-aware 'now' in the athlete's local zone (US Eastern default,
     FUELING_TZ override); naive UTC-based fallback if zoneinfo is unavailable."""
@@ -2694,7 +2704,7 @@ def generate_fueling_plan(
             base_source += "+modeled_adaptation"
             notes.append(
                 f"Modeled metabolic adaptation: NEAT trimmed {round((1 - adapt) * 100)}% "
-                f"for the ~{round((goal.get('start_weight_kg') or weight_kg) - weight_kg, 1)}kg "
+                f"for the ~{_fmt_weight((goal.get('start_weight_kg') or weight_kg) - weight_kg, goal.get('units'))} "
                 "lost so far (the mid-cut slowdown). Sync weigh-ins regularly to replace this "
                 "estimate with your measured trend."
             )
@@ -3323,7 +3333,8 @@ def generate_fueling_plan(
             min_kcal_val, deficit_cap, uncapped,
         )
         if projection.get("projected_finish_date") and projection.get("beats_target_date") is False:
-            notes.append(f"At the sustainable rate you reach {tgt}kg around "
+            notes.append(f"At the sustainable rate you reach "
+                         f"{_fmt_weight(tgt, goal.get('units'))} around "
                          f"{projection['projected_finish_date']} — later than the "
                          f"{projection['target_date']} target.")
 
