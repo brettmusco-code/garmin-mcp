@@ -2537,12 +2537,16 @@ def _weight_trend_calibration(goal: dict, weight_kg: float) -> dict | None:
                         "window to read the trend.", "confidence": "low"}
     n = len(xs); sx = sum(xs); sy = sum(ys)
     sxx = sum(x * x for x in xs); sxy = sum(x * y for x, y in zip(xs, ys))
-    slope = (n * sxy - sx * sy) / ((n * sxx - sx * sx) or 1)   # kg/day (neg = losing)
+    denom = (n * sxx - sx * sx) or 1
+    slope = (n * sxy - sx * sy) / denom                       # kg/day (neg = losing)
+    intercept = (sy - slope * sx) / n
+    fitted_weight = round(intercept + slope * xs[-1], 2)      # trend value at latest weigh-in
     measured_kg_wk = round(slope * 7, 3)
     wr = _weeks_remaining(goal.get("target_date"))
     tgt = goal.get("target_weight_kg")
     if not (wr and tgt and weight_kg > tgt):
-        return {"note": None, "confidence": "low", "measured_kg_per_week": measured_kg_wk}
+        return {"note": None, "confidence": "low", "measured_kg_per_week": measured_kg_wk,
+                "fitted_weight_kg": fitted_weight}
     expected_kg_wk = -round((weight_kg - tgt) / wr, 3)
     conf = "high" if (n >= 4 and (xs[-1] - xs[0]) >= 21) else "medium"
     exp, meas = abs(expected_kg_wk), -measured_kg_wk       # positive loss rates
@@ -2562,7 +2566,75 @@ def _weight_trend_calibration(goal: dict, weight_kg: float) -> dict | None:
         note = (f"Trend check: losing ~{abs(measured_kg_wk):.2f} kg/wk, faster than the "
                 f"~{exp:.2f} kg/wk plan — ease the deficit if that's unintended.")
     return {"applied_factor": factor, "note": note, "confidence": conf,
-            "measured_kg_per_week": measured_kg_wk, "expected_kg_per_week": expected_kg_wk}
+            "measured_kg_per_week": measured_kg_wk, "expected_kg_per_week": expected_kg_wk,
+            "fitted_weight_kg": fitted_weight}
+
+
+# How far ahead of the straight-line schedule the athlete can get before the
+# plan deliberately eases the cut, and how gently. "Ahead" is measured in weeks
+# of *scheduled* loss; past the threshold the deficit is shaved, capped so a
+# big lead can never gut the cut (steady momentum > yo-yo).
+_AHEAD_EASE_THRESHOLD_WEEKS = 2.0
+_AHEAD_EASE_PER_WEEK = 0.10        # 10% ease per week ahead beyond the threshold
+_AHEAD_EASE_MAX = 0.20             # never ease more than 20%
+
+
+def _schedule_lead(goal: dict, weight_kg: float | None,
+                   trend_cal: dict | None) -> dict | None:
+    """How far ahead of the straight-line schedule the athlete is, and the
+    resulting deficit-ease factor (<=1.0).
+
+    The schedule is the line from start_weight (at set_date) to target_weight
+    (at target_date). "Where should I be today" is read off that line; the lead
+    is (expected_today - actual) converted to *weeks of scheduled loss*. Prefer
+    the weigh-in trend's fitted weight for 'actual' when it's trustworthy (less
+    noisy than a single scale reading), else the current weight.
+
+    Returns None when it can't be computed (no timeline / not a lose goal /
+    already at or past target). Otherwise a dict with lead_weeks and ease_factor
+    (1.0 = no ease)."""
+    if (goal or {}).get("goal_type") != "lose":
+        return None
+    tgt = goal.get("target_weight_kg")
+    start_w = goal.get("start_weight_kg")
+    set_date = goal.get("set_date")
+    target_date = goal.get("target_date")
+    if not (tgt and start_w and set_date and target_date and weight_kg):
+        return None
+    try:
+        d_start = datetime.strptime(set_date[:10], "%Y-%m-%d").date()
+        d_target = datetime.strptime(target_date[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+    total_days = (d_target - d_start).days
+    if total_days <= 0 or start_w <= tgt:
+        return None
+    elapsed = (_local_today() - d_start).days
+    if elapsed <= 0:
+        return None
+    frac = min(1.0, elapsed / total_days)
+    expected_today = start_w - (start_w - tgt) * frac      # straight-line schedule
+    weekly_sched = (start_w - tgt) / (total_days / 7.0)     # scheduled kg/wk
+    # 'actual' weight: the trend's fitted current value when trustworthy, else
+    # the current scale/goal weight.
+    actual = weight_kg
+    if trend_cal and trend_cal.get("confidence") in ("medium", "high") \
+            and trend_cal.get("fitted_weight_kg") is not None:
+        actual = trend_cal["fitted_weight_kg"]
+    lead_kg = expected_today - actual                       # >0 = ahead (lighter)
+    if weekly_sched <= 0:
+        return None
+    lead_weeks = lead_kg / weekly_sched
+    ease = 0.0
+    if lead_weeks >= _AHEAD_EASE_THRESHOLD_WEEKS:
+        ease = min(_AHEAD_EASE_MAX,
+                   _AHEAD_EASE_PER_WEEK * (lead_weeks - _AHEAD_EASE_THRESHOLD_WEEKS))
+    return {
+        "lead_weeks": round(lead_weeks, 2),
+        "lead_kg": round(lead_kg, 2),
+        "ease_factor": round(1.0 - ease, 3),
+        "source": "trend" if actual != weight_kg else "current_weight",
+    }
 
 
 def generate_fueling_plan(
@@ -2759,6 +2831,23 @@ def generate_fueling_plan(
             fl_mult = max(0.2, 1 + front_load_val * (2 * fl_frac - 1))
             raw *= fl_mult
         goal_adj = -round(raw) if uncapped else -min(round(raw), deficit_cap)
+
+        # Ahead-of-schedule ease: if the athlete has banked a comfortable lead
+        # on the straight-line schedule (>=2 weeks of scheduled loss), softens
+        # the cut — capped at 20% so a big lead can never gut it. This is on
+        # top of the self-tapering already baked into raw (kg-left / weeks-left
+        # recomputes each run). Trend-based when weigh-ins allow, else current
+        # weight vs schedule.
+        lead = _schedule_lead(goal, weight_kg, trend_cal)
+        if lead and lead["ease_factor"] < 1.0:
+            goal_adj = round(goal_adj * lead["ease_factor"])
+            notes.append(
+                f"Ahead of schedule by ~{lead['lead_weeks']:.1f} weeks "
+                f"({_fmt_weight(lead['lead_kg'], goal.get('units'))} under the target line"
+                f"{' by trend' if lead['source'] == 'trend' else ''}) — eased the deficit "
+                f"{round((1 - lead['ease_factor']) * 100)}% for a gentler cut while you hold "
+                "the lead. It re-tightens automatically if you drift back to schedule."
+            )
     elif gt == "gain":
         goal_adj = 400  # midpoint of +300-500, carb-led
 
