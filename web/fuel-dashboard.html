@@ -34,9 +34,10 @@
   header.top{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:16px;
     padding-bottom:18px;border-bottom:1px solid var(--line);margin-bottom:24px;}
   .brand{display:flex;align-items:center;gap:12px;}
-  .brand .mark{width:34px;height:34px;border-radius:9px;background:
-    conic-gradient(from 210deg,var(--carbs),var(--protein),var(--fat),var(--carbs));
-    box-shadow:inset 0 0 0 2px rgba(0,0,0,.15);}
+  .brand .mark{width:34px;height:34px;border-radius:9px;background:var(--bg);
+    display:flex;align-items:center;justify-content:center;
+    box-shadow:inset 0 0 0 1px var(--line);}
+  .brand .mark svg{width:24px;height:24px;display:block;}
   .brand h1{font-size:20px;letter-spacing:-.01em;margin:0;font-weight:700;}
   .brand h1 small{display:block;font-weight:500;font-size:12px;color:var(--ink-dim);letter-spacing:.04em;}
   .goalline{text-align:right;max-width:520px;}
@@ -295,7 +296,7 @@
 <div class="wrap">
   <header class="top">
     <div class="brand">
-      <div class="mark" aria-hidden="true"></div>
+      <div class="mark" aria-hidden="true"><svg viewBox="0 0 512 512"><defs><linearGradient id="brandFlame" x1="0.5" y1="0" x2="0.5" y2="1"><stop offset="0%" stop-color="#f4ad55"/><stop offset="38%" stop-color="#e8873a"/><stop offset="74%" stop-color="#4f9dde"/><stop offset="100%" stop-color="#c9a24b"/></linearGradient></defs><path fill="url(#brandFlame)" d="M256 72C256 150 330 176 366 256C388 304 392 350 366 392C340 434 300 452 256 452C212 452 172 434 146 392C120 350 124 304 146 256C160 226 182 214 196 224C186 258 196 288 220 306C204 262 214 214 244 168C258 146 260 108 256 72 Z"/><path fill="var(--bg)" d="M256 256C280 296 292 328 292 360C292 396 278 418 256 418C234 418 214 398 214 366C214 336 230 306 256 256 Z"/></svg></div>
       <h1>Fueling Plan<small id="range">—</small></h1>
     </div>
     <div class="goalline">
