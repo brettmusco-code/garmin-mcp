@@ -3185,13 +3185,9 @@ def generate_fueling_plan(
     if skipped_titles:
         notes.append("Skipped (per skip_scheduled_session): " + "; ".join(skipped_titles) + ".")
 
-    if no_show_titles:
-        cutoff = f"{_WORKOUT_CUTOFF_HOUR:02d}:{_WORKOUT_CUTOFF_MIN:02d}"
-        notes.append(
-            f"It's past {cutoff} and these weren't logged, so today's plan no longer "
-            f"assumes them: {'; '.join(no_show_titles)}. Today's target and fuel are "
-            "recomputed as if they won't happen — log the workout if you still do it."
-        )
+    # Late no-show sessions are still dropped from today's plan (so the target
+    # and fuel don't assume a workout that won't happen), but per request we no
+    # longer surface a note about it — the drop is silent.
 
     if phantom_dates:
         notes.append(
