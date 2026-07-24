@@ -331,6 +331,30 @@ def main():
     check("epoch body-comp date -> staleness_days computed (an int)",
           isinstance(_bs["staleness_days"], int))
 
+    # Regression: the current-weight reader, the history/trend reader, and the
+    # intraday refresh MUST all request the same body-composition date range.
+    # get_body_composition caches per date-range key, so a window mismatch (35d
+    # vs 30d, or UTC-vs-local "today") means the intraday refresh warms one key
+    # while the readers hit a different, stale one — today's weigh-in shows up
+    # as current weight but never in the history/trend/chart.
+    print("weigh-in readers share one canonical cache window (no key fragmentation):")
+    _seen_ranges = []
+    _save_bc2 = g.get_body_composition
+    def _record_range(startdate=None, enddate=None, **k):
+        _seen_ranges.append((startdate, enddate))
+        return {"dateWeightList": [{"calendarDate": "2026-07-23", "weight": 74100}]}
+    g.get_body_composition = _record_range
+    g._latest_body_stats()
+    g._weight_series()
+    _win = g.weigh_in_window()
+    g.get_body_composition = _save_bc2
+    check("both readers requested the identical (start, end) range",
+          len(_seen_ranges) == 2 and _seen_ranges[0] == _seen_ranges[1])
+    check("readers use the canonical weigh_in_window() range",
+          _seen_ranges and _seen_ranges[0] == _win)
+    check("window is anchored to LOCAL today, not UTC",
+          _win[1] == g._local_today().isoformat())
+
     print("generate_fueling_plan (Katch-McArdle BMR from body-fat):")
     plan = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7)
     check("no error", "error" not in plan and not plan.get("no_goal_available"))
