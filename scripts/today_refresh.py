@@ -271,6 +271,7 @@ def run_workout_check() -> int:
                 )
             except Exception as ex:  # noqa: BLE001
                 print(f"  nutrition refresh error ({nd}): {str(ex)[:120]}", file=sys.stderr)
+        _refresh_body_composition()   # weigh-ins flow intraday, like food
         _refresh_fueling_plan()
         print("[3/3] Activity details — skipped (no new activity)")
         return 0
@@ -334,15 +335,38 @@ def run_workout_check() -> int:
             if _is_rate_limit(ex):
                 return 1
 
+    _refresh_body_composition()   # weigh-ins flow intraday, like food
     _refresh_fueling_plan()
     return 0
+
+
+def _refresh_body_composition() -> None:
+    """Force-refresh recent weigh-ins into the cache, intraday — like food.
+
+    Body composition otherwise only refreshes on the nightly anchor, so a
+    morning weigh-in wouldn't reach the dashboard (or the trend/projection/
+    current-weight calc) until the next day. A 30-day window keeps the trend
+    regression fed; best-effort so a throttle never blocks the plan regen."""
+    try:
+        today = garmin._local_today()
+        garmin.get_body_composition(
+            startdate=(today - timedelta(days=30)).isoformat(),
+            enddate=today.isoformat(), force_refresh=True,
+        )
+        print("[weight] refreshed recent body composition")
+    except Exception as ex:  # noqa: BLE001
+        print(f"  body-composition refresh skipped: {str(ex)[:120]}", file=sys.stderr)
 
 
 def _refresh_fueling_plan() -> None:
     """If a fueling goal is set, regenerate the plan (self-correcting from
     today's actuals) and save it into the weekly snapshot, so the dashboard /
     /nutrition / /morning always reflect the latest intake and burn. No-op
-    when no goal is set. Runs every intraday refresh (~every few hours)."""
+    when no goal is set. Runs every intraday refresh (~every few hours).
+
+    Callers refresh weigh-ins (like food) just before this so the regenerated
+    plan's current weight, EA, trend and projection reflect a same-day
+    weigh-in instead of waiting for the nightly anchor."""
     try:
         if not (garmin.get_fueling_goal() or {}).get("goal"):
             return
