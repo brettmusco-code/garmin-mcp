@@ -25,6 +25,7 @@ from fastapi.responses import (
     JSONResponse,
     PlainTextResponse,
     RedirectResponse,
+    Response,
 )
 
 from . import cache, garmin, tokens
@@ -1004,16 +1005,72 @@ _dash_cache: dict[str, Any] = {"html": None, "ts": 0.0}
 # its own <head> with a viewport meta tag. This route serves it directly with
 # no such wrapper, so without one here, mobile browsers render it at a
 # desktop width (~980px) and shrink-to-fit — the whole page reads as tiny.
-_DASH_DOC_HEAD = (
+_DASH_DOC_HEAD_TMPL = (
     '<!doctype html><html><head><meta charset="utf-8">'
     '<meta name="viewport" content="width=device-width, initial-scale=1">'
+    '<meta name="theme-color" content="#0e1520">'
+    '<link rel="icon" href="/icon.svg" type="image/svg+xml">'
+    '<link rel="manifest" href="/manifest.json{qs}">'
     "<title>Fueling Plan</title></head><body>"
 )
 _DASH_DOC_TAIL = "</body></html>"
 
+# Static PWA assets (manifest + icons) so "Add to Home Screen" installs a
+# standalone app instead of just bookmarking the page.
+_ICON = pathlib.Path(__file__).resolve().parent.parent / "web" / "icon.svg"
+_ICON_MASKABLE = pathlib.Path(__file__).resolve().parent.parent / "web" / "icon-maskable.svg"
 
-def _dash_wrap(body_html: str) -> str:
-    return _DASH_DOC_HEAD + body_html + _DASH_DOC_TAIL
+
+def _dash_wrap(body_html: str, token_qs: str = "") -> str:
+    return _DASH_DOC_HEAD_TMPL.format(qs=token_qs) + body_html + _DASH_DOC_TAIL
+
+
+@app.api_route("/icon.svg", methods=["GET", "HEAD"])
+def icon() -> Response:
+    return Response(
+        _ICON.read_text(),
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+@app.api_route("/icon-maskable.svg", methods=["GET", "HEAD"])
+def icon_maskable() -> Response:
+    return Response(
+        _ICON_MASKABLE.read_text(),
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+@app.api_route("/manifest.json", methods=["GET", "HEAD"])
+def manifest(request: Request) -> JSONResponse:
+    """Web app manifest for the dashboard. Gated the same way /dashboard is:
+    if DASHBOARD_TOKEN is set, a matching ?k= is required, and the token is
+    carried into start_url so the installed home-screen icon keeps working."""
+    gate = os.environ.get("DASHBOARD_TOKEN")
+    start_url = "/dashboard"
+    if gate:
+        supplied = request.query_params.get("k") or ""
+        if not secrets.compare_digest(supplied, gate):
+            raise HTTPException(status_code=404, detail="not found")
+        start_url += "?" + urlencode({"k": gate})
+    return JSONResponse(
+        {
+            "name": "Fueling Plan",
+            "short_name": "Fueling",
+            "id": "/dashboard",
+            "start_url": start_url,
+            "scope": "/",
+            "display": "standalone",
+            "background_color": "#0e1520",
+            "theme_color": "#0e1520",
+            "icons": [
+                {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"},
+                {"src": "/icon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable"},
+            ],
+        }
+    )
 
 
 @app.api_route("/dashboard", methods=["GET", "HEAD"])
@@ -1025,10 +1082,12 @@ def dashboard(request: Request) -> HTMLResponse:
     import time as _time
 
     gate = os.environ.get("DASHBOARD_TOKEN")
+    token_qs = ""
     if gate:
         supplied = request.query_params.get("k") or ""
         if not secrets.compare_digest(supplied, gate):
             raise HTTPException(status_code=404, detail="not found")
+        token_qs = "?" + urlencode({"k": gate})
 
     now = _time.time()
     cached = _dash_cache["html"]
@@ -1040,16 +1099,16 @@ def dashboard(request: Request) -> HTMLResponse:
     except Exception as ex:  # noqa: BLE001
         return HTMLResponse(
             _dash_wrap(f"<h1>Fueling dashboard</h1><p>Could not build the plan: "
-                       f"{type(ex).__name__}: {ex}</p>"),
+                       f"{type(ex).__name__}: {ex}</p>", token_qs),
             status_code=500,
         )
     if plan.get("no_goal_available"):
         return HTMLResponse(_dash_wrap(
             "<h1>Fueling dashboard</h1><p>No fueling goal is set yet — run "
-            "<code>/fuel</code> in Claude to create one.</p>"
+            "<code>/fuel</code> in Claude to create one.</p>", token_qs
         ))
     if plan.get("error"):
-        return HTMLResponse(_dash_wrap(f"<h1>Fueling dashboard</h1><p>{plan['error']}</p>"))
+        return HTMLResponse(_dash_wrap(f"<h1>Fueling dashboard</h1><p>{plan['error']}</p>", token_qs))
 
     try:
         fragment = _DASH_PLAN_RE.sub(
@@ -1060,10 +1119,10 @@ def dashboard(request: Request) -> HTMLResponse:
     except Exception as ex:  # noqa: BLE001
         return HTMLResponse(
             _dash_wrap(f"<h1>Fueling dashboard</h1><p>Template error: "
-                       f"{type(ex).__name__}: {ex}</p>"),
+                       f"{type(ex).__name__}: {ex}</p>", token_qs),
             status_code=500,
         )
-    page = _dash_wrap(fragment)
+    page = _dash_wrap(fragment, token_qs)
     _dash_cache.update(html=page, ts=now)
     return HTMLResponse(page)
 
