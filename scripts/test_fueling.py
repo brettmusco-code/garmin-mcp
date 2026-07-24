@@ -840,6 +840,41 @@ def main():
     g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
                        sex="male", height_cm=178, age=40)
 
+    print("ahead-of-schedule ease (_schedule_lead):")
+    _sl_set = (TODAY - timedelta(weeks=4)).isoformat()
+    _sl_tgt = (TODAY + timedelta(weeks=16)).isoformat()
+    _sl_goal = dict(goal_type="lose", target_weight_kg=68.0, start_weight_kg=80.0,
+                    set_date=_sl_set, target_date=_sl_tgt)  # 0.6 kg/wk schedule
+    check("on schedule -> no ease",
+          g._schedule_lead(_sl_goal, 77.6, None)["ease_factor"] == 1.0)
+    check("~2wk ahead is the threshold (still no ease yet)",
+          g._schedule_lead(_sl_goal, 76.4, None)["ease_factor"] == 1.0)
+    _far = g._schedule_lead(_sl_goal, 74.0, None)
+    check("far ahead eases", _far["ease_factor"] < 1.0)
+    check("ease is capped at 20% no matter how far ahead", _far["ease_factor"] >= 0.80)
+    check("behind schedule -> no ease",
+          g._schedule_lead(_sl_goal, 78.5, None)["ease_factor"] == 1.0)
+    check("non-lose goal -> None", g._schedule_lead(dict(goal_type="maintain"), 75, None) is None)
+    check("prefers trend fitted weight when trustworthy",
+          g._schedule_lead(_sl_goal, 77.6, {"confidence": "high", "fitted_weight_kg": 74.0})["source"] == "trend")
+    check("falls back to current weight without a trend",
+          g._schedule_lead(_sl_goal, 74.0, None)["source"] == "current_weight")
+    # In-plan: a goal where current weight is well ahead of the line eases the
+    # deficit and surfaces a note. Use a manual weight override to drive it.
+    g.set_fueling_goal(goal_type="lose", target_weight_kg=68.0, target_date=_sl_tgt,
+                       sex="male", height_cm=178, age=40, start_weight_kg=80.0,
+                       current_weight_kg=74.0, max_deficit_kcal=0)
+    # set_date is stamped to today by set_fueling_goal, so the lead is measured
+    # from a fresh schedule start; force a known set_date via the stored goal.
+    _g = g.get_fueling_goal()["goal"]; _g["set_date"] = _sl_set
+    cache.put("fueling_goal", {"key": "current"}, _g, key_parts=["current"])
+    plan_ahead = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7)
+    check("ahead-of-schedule note surfaced",
+          any("ahead of schedule" in n.lower() for n in plan_ahead["notes"]))
+    # restore the default goal
+    g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
+                       sex="male", height_cm=178, age=40)
+
     print("max_loss_lb_per_week + trajectory projection:")
     g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
                        sex="male", height_cm=178, age=40)
