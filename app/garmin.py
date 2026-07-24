@@ -715,6 +715,24 @@ def get_body_composition(
     return data
 
 
+# Every weigh-in reader (current weight, history series, trend, chart) MUST
+# request this exact date range. get_body_composition caches per date-range
+# key, so a reader asking for a different window — even by one day, or by
+# UTC-vs-local "today" — hits a different cache entry that no intraday refresh
+# warmed, and silently serves stale data. This is the single source of truth.
+WEIGH_IN_WINDOW_DAYS = 35
+
+
+def weigh_in_window() -> tuple[str, str]:
+    """Canonical (start_iso, end_iso) for body-composition reads/refreshes,
+    anchored to the athlete's LOCAL day so the cache key doesn't shift at the
+    UTC midnight boundary. Refresh jobs force-refresh this exact range so the
+    readers below get a cache hit on fresh data."""
+    end = _local_today()
+    start = end - timedelta(days=WEIGH_IN_WINDOW_DAYS)
+    return start.isoformat(), end.isoformat()
+
+
 def get_training_score(
     metric: str,
     startdate: str | date,
@@ -1675,21 +1693,21 @@ def get_fueling_goal() -> dict:
     return {"goal": goal, "progress": progress}
 
 
-def _latest_body_stats(lookback_days: int = 30) -> dict:
+def _latest_body_stats() -> dict:
     """Latest weight + body-fat + lean/muscle mass from Garmin body
     composition (Renpho syncs here). Only weight is consumed elsewhere; this
     surfaces the composition fields for recomposition context."""
-    today = date.today()
+    today = _local_today()
     out: dict[str, Any] = {
         "weight_kg": None, "body_fat_pct": None, "lean_mass_kg": None,
         "muscle_mass_kg": None, "fat_mass_kg": None, "as_of": None,
         "staleness_days": None,
     }
     try:
-        bc = get_body_composition(
-            startdate=(today - timedelta(days=lookback_days)).isoformat(),
-            enddate=today.isoformat(),
-        )
+        # Canonical weigh-in window (shared with the history/trend readers) so
+        # the intraday refresh warms the same cache key we read here.
+        start_iso, end_iso = weigh_in_window()
+        bc = get_body_composition(startdate=start_iso, enddate=end_iso)
     except Exception:  # noqa: BLE001
         return out
     entries = (bc or {}).get("dateWeightList") or []
@@ -2462,13 +2480,15 @@ def _project_trajectory(weight_kg, target, start_w, target_date, front_load_val,
     return out
 
 
-def _weight_series(days: int = 35) -> list[tuple[str, float]]:
+def _weight_series() -> list[tuple[str, float]]:
     """Recent (date, weight_kg) points from Garmin body composition, oldest
-    first. Empty when no weigh-ins are available in the window."""
-    end = _local_today()
-    start = end - timedelta(days=days)
+    first. Empty when no weigh-ins are available in the window. Uses the
+    canonical weigh-in window so it shares a cache key with the current-weight
+    reader and the intraday refresh — otherwise today's weigh-in would land in
+    a different cache entry and never appear in the history/trend/chart."""
     try:
-        bc = get_body_composition(start.isoformat(), end.isoformat())
+        start_iso, end_iso = weigh_in_window()
+        bc = get_body_composition(start_iso, end_iso)
     except Exception:  # noqa: BLE001
         bc = None
     rows = (bc or {}).get("dateWeightList") if isinstance(bc, dict) else None
@@ -2524,7 +2544,7 @@ def _weight_trend_calibration(goal: dict, weight_kg: float) -> dict | None:
     Returns a dict (possibly note-only) or None for non-lose goals."""
     if (goal or {}).get("goal_type") != "lose":
         return None
-    series = _weight_series(35)
+    series = _weight_series()
     if len(series) < 3:
         return {"note": "Trend check: not enough recent weigh-ins to calibrate against "
                         "your actual loss rate — sync weight a few times a week to unlock "
@@ -3441,7 +3461,7 @@ def generate_fueling_plan(
                                  else "measured maintenance + net exercise"},
         "adaptive_tdee": adaptive,
         "weight_trend": trend_cal,
-        "weight_history": [{"date": d, "weight_kg": w} for d, w in _weight_series(35)],
+        "weight_history": [{"date": d, "weight_kg": w} for d, w in _weight_series()],
         "fat_free_mass_kg": ffm_kg,
         "body_fat_pct": body.get("body_fat_pct"),
         "daily_kcal_adjustment": goal_adj,
@@ -4247,13 +4267,10 @@ def get_athlete_baseline(force_refresh: bool = False) -> dict[str, Any]:
     def _age_days(d_str: str | None) -> int | None:
         if not d_str:
             return None
-        try:
-            # Accept "2026-04-15" or "2026-04-15T10:58:02"
-            d_clean = d_str.split("T")[0].split(" ")[0]
-            d = datetime.strptime(d_clean, "%Y-%m-%d").date()
-            return (today - d).days
-        except (ValueError, AttributeError):
-            return None
+        # Accept ISO strings ("2026-04-15", "2026-04-15T10:58:02") and Garmin
+        # epoch ints (body-comp dates) — _coerce_garmin_date handles both.
+        d = _coerce_garmin_date(d_str)
+        return (today - d).days if d else None
 
     out: dict[str, Any] = {
         "as_of": today_iso,
@@ -4351,13 +4368,17 @@ def get_athlete_baseline(force_refresh: bool = False) -> dict[str, Any]:
     # --- Weight (prefer body_composition if logged recently, else LT endpoint) ---
     if out.get("weight_kg") is None:
         try:
-            bc = get_body_composition(
-                startdate=(today - timedelta(days=30)).isoformat(),
-                enddate=today_iso,
-            )
+            # Canonical weigh-in window so this reuses the intraday-warmed cache
+            # entry instead of a differently-keyed (and stale) one.
+            _bc_start, _bc_end = weigh_in_window()
+            bc = get_body_composition(startdate=_bc_start, enddate=_bc_end)
             entries = bc.get("dateWeightList") or []
             if entries:
-                latest = max(entries, key=lambda e: e.get("date", ""))
+                # Newest by parsed date — Garmin mixes ISO strings and epoch
+                # ints, so a lexical key would misorder them.
+                latest = max(entries, key=lambda e: (
+                    _coerce_garmin_date(e.get("date") or e.get("calendarDate"))
+                    or date.min))
                 w_grams = latest.get("weight")
                 if w_grams:
                     out["weight_kg"] = round(w_grams / 1000.0, 1)

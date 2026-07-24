@@ -372,9 +372,11 @@ def main() -> int:
         ("hill_score",         lambda: garmin.get_training_score("hill", startdate=today_iso, force_refresh=False)),
         ("endurance_score",    lambda: garmin.get_training_score("endurance", startdate=today_iso, force_refresh=False)),
         ("personal_records",   lambda: garmin.get_personal_records(force_refresh=False)),
+        # Canonical weigh-in window (garmin.weigh_in_window) so the nightly
+        # anchor warms the exact cache key the history/trend/current-weight
+        # readers hit — a mismatched range would leave them serving stale data.
         ("body_composition",   lambda: garmin.get_body_composition(
-            startdate=(today - timedelta(days=30)).isoformat(),
-            enddate=today_iso, force_refresh=False,
+            *garmin.weigh_in_window(), force_refresh=False,
         )),
     ]
     for label, fn in ops:

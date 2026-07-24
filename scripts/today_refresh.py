@@ -345,13 +345,15 @@ def _refresh_body_composition() -> None:
 
     Body composition otherwise only refreshes on the nightly anchor, so a
     morning weigh-in wouldn't reach the dashboard (or the trend/projection/
-    current-weight calc) until the next day. A 30-day window keeps the trend
-    regression fed; best-effort so a throttle never blocks the plan regen."""
+    current-weight calc) until the next day. It force-refreshes the *canonical*
+    weigh-in window (garmin.weigh_in_window) so it warms the exact cache key the
+    history/trend/current-weight readers hit — refreshing any other range would
+    leave those readers on a stale key. Best-effort so a throttle never blocks
+    the plan regen."""
     try:
-        today = garmin._local_today()
+        start_iso, end_iso = garmin.weigh_in_window()
         garmin.get_body_composition(
-            startdate=(today - timedelta(days=30)).isoformat(),
-            enddate=today.isoformat(), force_refresh=True,
+            startdate=start_iso, enddate=end_iso, force_refresh=True,
         )
         print("[weight] refreshed recent body composition")
     except Exception as ex:  # noqa: BLE001
