@@ -1016,9 +1016,14 @@ _DASH_DOC_HEAD_TMPL = (
 _DASH_DOC_TAIL = "</body></html>"
 
 # Static PWA assets (manifest + icons) so "Add to Home Screen" installs a
-# standalone app instead of just bookmarking the page.
-_ICON = pathlib.Path(__file__).resolve().parent.parent / "web" / "icon.svg"
-_ICON_MASKABLE = pathlib.Path(__file__).resolve().parent.parent / "web" / "icon-maskable.svg"
+# standalone app instead of just bookmarking the page. Chrome's install
+# check wants raster icons at 192/512px (SVG-only icons aren't reliably
+# picked up on Android), so those are the ones listed in the manifest; the
+# SVG is kept only as the browser-tab favicon.
+_WEB_DIR = pathlib.Path(__file__).resolve().parent.parent / "web"
+_ICON_SVG = _WEB_DIR / "icon.svg"
+_ICON_192 = _WEB_DIR / "icon-192.png"
+_ICON_512 = _WEB_DIR / "icon-512.png"
 
 
 def _dash_wrap(body_html: str, token_qs: str = "") -> str:
@@ -1028,17 +1033,26 @@ def _dash_wrap(body_html: str, token_qs: str = "") -> str:
 @app.api_route("/icon.svg", methods=["GET", "HEAD"])
 def icon() -> Response:
     return Response(
-        _ICON.read_text(),
+        _ICON_SVG.read_text(),
         media_type="image/svg+xml",
         headers={"Cache-Control": "public, max-age=86400"},
     )
 
 
-@app.api_route("/icon-maskable.svg", methods=["GET", "HEAD"])
-def icon_maskable() -> Response:
+@app.api_route("/icon-192.png", methods=["GET", "HEAD"])
+def icon_192() -> Response:
     return Response(
-        _ICON_MASKABLE.read_text(),
-        media_type="image/svg+xml",
+        _ICON_192.read_bytes(),
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+@app.api_route("/icon-512.png", methods=["GET", "HEAD"])
+def icon_512() -> Response:
+    return Response(
+        _ICON_512.read_bytes(),
+        media_type="image/png",
         headers={"Cache-Control": "public, max-age=86400"},
     )
 
@@ -1066,8 +1080,8 @@ def manifest(request: Request) -> JSONResponse:
             "background_color": "#0e1520",
             "theme_color": "#0e1520",
             "icons": [
-                {"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"},
-                {"src": "/icon-maskable.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable"},
+                {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
+                {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"},
             ],
         }
     )
