@@ -1747,7 +1747,11 @@ def _mean_daily_exercise(history: list[dict], rmr_per_hr: float,
     for a in history or []:
         if not isinstance(a, dict):
             continue
-        d_str = (a.get("startTimeLocal") or a.get("startTimeGMT") or "")[:10]
+        # startTimeLocal is usually an ISO string but Garmin occasionally
+        # returns an epoch int — coerce before slicing so a stray int doesn't
+        # blow up the whole plan ("'int' object is not subscriptable").
+        raw = a.get("startTimeLocal") or a.get("startTimeGMT") or ""
+        d_str = str(raw)[:10]
         try:
             a_date = date.fromisoformat(d_str)
         except (ValueError, TypeError):
@@ -1934,7 +1938,7 @@ def _today_actuals() -> dict | None:
         for a in (get_activities_in_range(chosen, chosen) or []):
             if not isinstance(a, dict):
                 continue
-            if ((a.get("startTimeLocal") or a.get("startTimeGMT") or "")[:10]) != chosen:
+            if (str(a.get("startTimeLocal") or a.get("startTimeGMT") or "")[:10]) != chosen:
                 continue
             dur_s = a.get("duration") or a.get("elapsedDuration") or 0
             cal = a.get("calories")
@@ -2686,7 +2690,7 @@ def generate_fueling_plan(
         for a in history:
             if not isinstance(a, dict):
                 continue
-            if ((a.get("startTimeLocal") or a.get("startTimeGMT") or "")[:10]) != today_iso:
+            if (str(a.get("startTimeLocal") or a.get("startTimeGMT") or "")[:10]) != today_iso:
                 continue
             dur_s = a.get("duration") or a.get("elapsedDuration") or a.get("movingDuration")
             cal = a.get("calories")
