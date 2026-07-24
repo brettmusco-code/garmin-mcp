@@ -1472,9 +1472,13 @@ function drawProjection(){
     .filter((t,i,a)=>a.indexOf(t)===i)         // unique timestamps
     .sort((a,b)=>a-b);
   let lastX = -Infinity;
-  drawn.forEach(t=>{ const px=X(t); if(px-lastX < MIN_LABEL_GAP) return; lastX=px;
-    ctx.fillText(dmd(new Date(t).toISOString().slice(0,10)), px, H-padB+8); });
-  ctx.textBaseline='middle';
+  drawn.forEach((t,i)=>{ const px=X(t); if(px-lastX < MIN_LABEL_GAP) return; lastX=px;
+    // Anchor edge labels inward so a centered label never clips the canvas:
+    // the last label (near W-padR) right-aligns, the first left-aligns.
+    if(i===drawn.length-1){ ctx.textAlign='right'; ctx.fillText(dmd(new Date(t).toISOString().slice(0,10)), Math.min(px, W-padR), H-padB+8); }
+    else if(i===0){ ctx.textAlign='left'; ctx.fillText(dmd(new Date(t).toISOString().slice(0,10)), Math.max(px, padL), H-padB+8); }
+    else { ctx.textAlign='center'; ctx.fillText(dmd(new Date(t).toISOString().slice(0,10)), px, H-padB+8); } });
+  ctx.textAlign='center'; ctx.textBaseline='middle';
 
   // target line
   ctx.strokeStyle=good; ctx.setLineDash([4,4]); ctx.beginPath();
