@@ -953,8 +953,10 @@ def main():
           g._modeled_adaptation_factor({"goal_type": "lose", "start_weight_kg": 77.0}, 77.0) == 1.0)
     check("3kg lost -> ~3.6% NEAT trim",
           abs(g._modeled_adaptation_factor({"goal_type": "lose", "start_weight_kg": 77.0}, 74.0) - 0.964) < 0.001)
-    check("discount is capped (10kg lost -> 8%, not 12%)",
-          abs(g._modeled_adaptation_factor({"goal_type": "lose", "start_weight_kg": 80.0}, 70.0) - 0.92) < 1e-9)
+    check("10kg lost -> 12% NEAT trim (Leibel-supported deep-cut cap)",
+          abs(g._modeled_adaptation_factor({"goal_type": "lose", "start_weight_kg": 80.0}, 70.0) - 0.88) < 1e-9)
+    check("discount is capped at 12% (15kg lost -> still 12%, not 18%)",
+          abs(g._modeled_adaptation_factor({"goal_type": "lose", "start_weight_kg": 85.0}, 70.0) - 0.88) < 1e-9)
     check("maintain goal -> no discount",
           g._modeled_adaptation_factor({"goal_type": "maintain", "start_weight_kg": 77.0}, 74.0) == 1.0)
     check("no start weight -> no discount",

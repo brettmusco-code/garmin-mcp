@@ -2613,17 +2613,32 @@ def _weight_series() -> list[tuple[str, float]]:
 
 
 # Modeled adaptive thermogenesis: on a sustained cut the body downregulates
-# NEAT (the classic mid-diet stall). Absent enough weigh-ins to measure it,
-# estimate it from mass already lost — adaptation scales roughly with the
-# fraction of bodyweight shed. ~1.2% of NEAT per kg lost, capped so it can
-# only ever shave a modest slice, never invent a large correction.
+# NEAT (the classic mid-diet stall). This is the REAL driver of a plateau —
+# true maintenance drifts below the textbook estimate, so a plan that doesn't
+# account for it feeds you at a deficit smaller than it thinks and you lose
+# slower than planned. Trimming the expenditure estimate keeps the deficit
+# honest → faster, not slower, loss (subject to the EA / BMR floors below).
+#
+# Adaptation isn't gated by an absolute bodyweight; it begins early in any
+# deficit and scales with fat mass shed (Rosenbaum/Leibel; Biggest Loser
+# follow-ups: ~5-10%+ TDEE suppression, tracking % mass lost). kg-lost-from-
+# start is the best proxy available here. ~1.2% of NEAT per kg lost, capped so
+# the modeled estimate can only shave a modest slice — the *measured* weigh-in
+# trend overrides it entirely once there's enough scale data to calibrate.
 _ADAPT_PER_KG_LOST = 0.012
-_ADAPT_MAX = 0.08          # cap the modeled discount at 8% of NEAT
+# Cap the modeled discount at 12% of NEAT. Leibel/Rosenbaum 1995 (NEJM) put
+# non-resting EE decline at 3-4 kcal/kg-FFM/day for a 10% loss (~23-31
+# kcal/day per kg here) — the 1.2%/kg slope matches its lower edge, and a 12%
+# cap (reached ~10kg/22lb lost) tracks that range for a deep cut rather than
+# truncating it early at 8%. The measured weigh-in trend overrides this once
+# there's enough scale data.
+_ADAPT_MAX = 0.12
 
 
 def _modeled_adaptation_factor(goal: dict, weight_kg: float | None) -> float:
     """Multiplicative NEAT discount (<=1.0) from modeled metabolic adaptation,
-    based on kg lost so far. 1.0 (no discount) for non-lose goals, unknown
+    scaling with kg lost from the start weight (the fat-loss proxy that tracks
+    real adaptive thermogenesis). 1.0 (no discount) for non-lose goals, unknown
     weight, or no measurable loss yet. This is the fallback for when the
     *measured* weigh-in trend can't calibrate — the two must not both apply."""
     if (goal or {}).get("goal_type") != "lose":
@@ -2899,8 +2914,9 @@ def generate_fueling_plan(
             notes.append(
                 f"Modeled metabolic adaptation: NEAT trimmed {round((1 - adapt) * 100)}% "
                 f"for the ~{_fmt_weight((goal.get('start_weight_kg') or weight_kg) - weight_kg, goal.get('units'))} "
-                "lost so far (the mid-cut slowdown). Sync weigh-ins regularly to replace this "
-                "estimate with your measured trend."
+                "lost so far (the mid-cut slowdown — keeps your real deficit honest so you "
+                "don't stall). Sync weigh-ins regularly to replace this estimate with your "
+                "measured trend."
             )
 
     # Goal daily kcal adjustment (deficit/surplus)
