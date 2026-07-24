@@ -59,6 +59,21 @@
   .chip.crit{color:var(--crit);border-color:color-mix(in srgb,var(--crit) 45%,transparent);background:color-mix(in srgb,var(--crit) 12%,transparent);}
   .chip .dot{width:7px;height:7px;border-radius:50%;background:currentColor;}
 
+  /* Tabs */
+  .tabs{display:flex;gap:4px;margin:0 0 22px;padding:4px;background:var(--panel-2);
+    border:1px solid var(--line);border-radius:12px;position:sticky;top:8px;z-index:5;
+    box-shadow:var(--shadow);backdrop-filter:saturate(1.2);}
+  .tab-btn{flex:1;appearance:none;border:0;background:transparent;cursor:pointer;
+    font:inherit;font-size:14px;font-weight:600;color:var(--ink-dim);
+    padding:9px 12px;border-radius:9px;transition:background .13s ease,color .13s ease;
+    -webkit-tap-highlight-color:transparent;}
+  .tab-btn:hover{color:var(--ink);}
+  .tab-btn.active{background:var(--panel);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.18);}
+  .tab-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+  .tabpanel{display:none;}
+  .tabpanel.active{display:block;animation:tabin .18s ease;}
+  @keyframes tabin{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:none;}}
+
   .topwrap{margin-bottom:22px;}
   @media(max-width:480px){
     .wrap{padding:20px 14px 56px;}
@@ -278,53 +293,72 @@
     </div>
   </header>
 
-  <div class="topwrap">
-    <div class="card today-combined" id="todayCard">
-      <div class="tc-head">
-        <div class="eyebrow" id="todayEyebrow">TODAY</div>
-        <div class="chip good" id="todayEA" style="display:none"></div>
+  <nav class="tabs" id="tabs" role="tablist">
+    <button class="tab-btn active" role="tab" aria-selected="true" data-tab="today" onclick="showTab('today')">Today</button>
+    <button class="tab-btn" role="tab" aria-selected="false" data-tab="week" onclick="showTab('week')">Week</button>
+    <button class="tab-btn" role="tab" aria-selected="false" data-tab="progress" onclick="showTab('progress')">Progress</button>
+  </nav>
+
+  <!-- TODAY: the combined today card + today's full detail -->
+  <div class="tabpanel active" id="tab-today" role="tabpanel">
+    <div class="topwrap">
+      <div class="card today-combined" id="todayCard">
+        <div class="tc-head">
+          <div class="eyebrow" id="todayEyebrow">TODAY</div>
+          <div class="chip good" id="todayEA" style="display:none"></div>
+        </div>
+        <div class="statrow" id="todayStats"></div>
+        <div class="adj" id="todayAdj"></div>
+        <div class="burnbreak" id="todayBurn"></div>
+        <div class="macros" id="todayMacros"></div>
+        <div class="today-session" id="todaySession"></div>
+        <div class="foods" id="actFoods"></div>
       </div>
-      <div class="statrow" id="todayStats"></div>
-      <div class="adj" id="todayAdj"></div>
-      <div class="burnbreak" id="todayBurn"></div>
-      <div class="macros" id="todayMacros"></div>
-      <div class="today-session" id="todaySession"></div>
-      <div class="foods" id="actFoods"></div>
     </div>
+    <section class="block" id="todayDetailBlock">
+      <div class="lead"><h2>Today's detail</h2><span>macros · meals · per-workout fuel</span></div>
+      <div class="card" id="todayDetail"></div>
+    </section>
   </div>
 
-  <div class="card">
-    <h2>Week ahead</h2>
-    <div class="sub">Tap any day for its full fueling detail below.</div>
-    <div class="daylist" id="weekBody"></div>
+  <!-- WEEK: week-ahead list (tap a day -> detail below) + past days -->
+  <div class="tabpanel" id="tab-week" role="tabpanel">
+    <div class="card">
+      <h2>Week ahead</h2>
+      <div class="sub">Tap any day for its full fueling detail below.</div>
+      <div class="daylist" id="weekBody"></div>
+    </div>
+
+    <section class="block" id="detailBlock">
+      <div class="lead"><h2>Day detail</h2><span>macros · meals · per-workout fuel</span></div>
+      <div class="card" id="detail"></div>
+    </section>
+
+    <section class="block" id="recentBlock">
+      <div class="lead"><h2>Last 2 days</h2><span>actual intake vs plan</span></div>
+      <div class="card recent"><div id="recent"></div></div>
+    </section>
   </div>
 
-  <section class="block" id="detailBlock">
-    <div class="lead"><h2>Day detail</h2><span>macros · meals · per-workout fuel</span></div>
-    <div class="card" id="detail"></div>
-  </section>
+  <!-- PROGRESS: weight -> target + trajectory + flags -->
+  <div class="tabpanel" id="tab-progress" role="tabpanel">
+    <section class="block">
+      <div class="lead"><h2>Weight &rarr; target</h2><span id="paceNote"></span></div>
+      <div class="card progress">
+        <div class="track" id="wtrack"></div>
+      </div>
+    </section>
 
-  <section class="block">
-    <div class="lead"><h2>Weight &rarr; target</h2><span id="paceNote"></span></div>
-    <div class="card progress">
-      <div class="track" id="wtrack"></div>
-    </div>
-  </section>
+    <section class="block" id="projBlock">
+      <div class="lead"><h2>Projected trajectory</h2><span id="projNote"></span></div>
+      <div class="card"><canvas id="projChart" height="220" style="width:100%;display:block"></canvas></div>
+    </section>
 
-  <section class="block" id="recentBlock">
-    <div class="lead"><h2>Last 2 days</h2><span>actual intake vs plan</span></div>
-    <div class="card recent"><div id="recent"></div></div>
-  </section>
-
-  <section class="block" id="projBlock">
-    <div class="lead"><h2>Projected trajectory</h2><span id="projNote"></span></div>
-    <div class="card"><canvas id="projChart" height="220" style="width:100%;display:block"></canvas></div>
-  </section>
-
-  <section class="block" id="flagBlock">
-    <div class="lead"><h2>Flags</h2><span>read before you eat</span></div>
-    <div class="flags" id="flags"></div>
-  </section>
+    <section class="block" id="flagBlock">
+      <div class="lead"><h2>Flags</h2><span>read before you eat</span></div>
+      <div class="flags" id="flags"></div>
+    </section>
+  </div>
 
   <footer><b>generate_fueling_plan</b> &middot; session burn calibrated from your 90-day Garmin history &middot; durations from TrainingPeaks&rarr;Garmin</footer>
 </div>
@@ -1134,7 +1168,8 @@ function renderRecent(){
   }).join('') + `</div>`;
 }
 
-function renderDay(d){
+function renderDay(d, targetId){
+  targetId = targetId || 'detail';
   const rest = d.primary_intensity==='rest';
   const sess = rest ? 'Rest day' : `${d.sessions.length} session${d.sessions.length>1?'s':''}`;
   const anyActual = !rest && d.sessions.some(s=>s.burn_source==='actual_today');
@@ -1187,7 +1222,7 @@ function renderDay(d){
     </div>` : '';
   const trimBadge = d.carbs_trimmed
     ? `<span class="trimflag" title="Deficit too steep to hold this day's training carbs">⚠ carbs cut</span>` : '';
-  $('detail').innerHTML = `
+  $(targetId).innerHTML = `
     <div class="detail-head"><div class="t">${dow(d.date)} ${dmd(d.date)}<small>${sess}</small></div>
       <div class="dc-tags">${trimBadge}<div class="chip ${eaPill(d.energy_availability_kcal_per_kg_ffm)}"><span class="dot"></span>EA ${d.energy_availability_kcal_per_kg_ffm}</div></div></div>
     ${sessList ? `<div style="margin-bottom:14px">${sessList}</div>` : ''}
@@ -1340,6 +1375,8 @@ function render(){
   } else { document.querySelector('#wtrack').closest('.block').style.display='none'; }
 
   selectDay(0);
+  // Today tab shows the lead day's full detail (days[0] is today/plan-start).
+  if(days[0]) renderDay(days[0], 'todayDetail');
 
   const notes = PLAN.notes||[];
   if(notes.length){
@@ -1353,6 +1390,18 @@ function render(){
   } else $('flagBlock').style.display='none';
 
   drawProjection();
+}
+
+function showTab(name){
+  document.querySelectorAll('.tabpanel').forEach(p=>p.classList.toggle('active', p.id==='tab-'+name));
+  document.querySelectorAll('.tab-btn').forEach(b=>{
+    const on = b.dataset.tab===name;
+    b.classList.toggle('active', on); b.setAttribute('aria-selected', on?'true':'false');
+  });
+  // The projection canvas can only size itself when its panel is visible, so
+  // (re)draw it the moment the Progress tab is shown.
+  if(name==='progress') drawProjection();
+  window.scrollTo({top:0, behavior:'auto'});
 }
 
 function cssVar(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
@@ -1371,6 +1420,7 @@ function drawProjection(){
   const cv = $('projChart');
   const dpr = window.devicePixelRatio || 1;
   const W = cv.clientWidth, H = 220;
+  if(W <= 0) return;   // panel not visible yet — showTab('progress') will redraw
   cv.width = W*dpr; cv.height = H*dpr;
   const ctx = cv.getContext('2d'); ctx.scale(dpr,dpr);
   const ink = cssVar('--ink'), dim = cssVar('--ink-faint'), line = cssVar('--line');
