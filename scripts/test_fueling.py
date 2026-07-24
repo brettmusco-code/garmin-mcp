@@ -621,8 +621,8 @@ def main():
           not any(s["sport"] == "cycling" for s in plan_late["days"][0]["sessions"]))
     check("past cutoff: day falls back to rest once its only session is dropped",
           plan_late["days"][0]["primary_intensity"] == "rest")
-    check("past cutoff: a note explains the no-show drop",
-          any("past 20:30" in n and "weren't logged" in n for n in plan_late["notes"]))
+    check("past cutoff: the drop is silent (no cutoff note surfaced)",
+          not any("weren't logged" in n or "20:30" in n for n in plan_late["notes"]))
     # Before the cutoff, the same session is kept.
     g._local_now = lambda: _dt(TODAY.year, TODAY.month, TODAY.day, 12, 0, tzinfo=_ET)
     plan_early = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=1)

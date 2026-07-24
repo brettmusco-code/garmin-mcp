@@ -993,7 +993,12 @@ const _lb = (kg)=> kg==null ? null : kg*2.20462;
 const wt = (kg)=> kg==null ? '—' : `${Math.round(IMPERIAL?_lb(kg):kg)}${WU}`;   // absolute weight
 const wt1 = (kg)=> kg==null ? '—' : `${(IMPERIAL?_lb(kg):kg).toFixed(1)}${WU}`;  // 1-decimal
 const wd = (kg)=> kg==null ? '—' : `${(IMPERIAL?_lb(kg):kg).toFixed(1)}${WU}`;   // a delta (kg) → display units
-const todayISO = new Date().toISOString().slice(0,10);
+// Local calendar date (NOT UTC) — must match the plan's server-side local
+// "today" (America/New_York). toISOString() is UTC and rolls over at 8pm ET,
+// which would make the lead card's date disagree with today_actuals and blank
+// out EATEN in the evening. Build the date from local Y/M/D instead.
+const todayISO = (()=>{const d=new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;})();
 const dow = (iso)=>{const d=new Date(iso+'T00:00:00');return d.toLocaleDateString(undefined,{weekday:'short'});};
 const dmd = (iso)=>{const d=new Date(iso+'T00:00:00');return d.toLocaleDateString(undefined,{month:'short',day:'numeric'});};
 function renderUpdated(iso){
@@ -1051,9 +1056,11 @@ function statCell(lab, val, cls){
 
 // Burn breakdown (BMR / everyday NEAT / workouts) + food list for the merged
 // today card. The stat row, macros and session are populated in render().
-function renderActuals(){
+// `show` mirrors render()'s haveActuals so foods/burn never render on a day
+// whose EATEN total is intentionally blank (e.g. a future-plan lead card).
+function renderActuals(show){
   const a = PLAN.today_actuals;
-  if(!a){ $('todayBurn').innerHTML=''; $('actFoods').innerHTML=''; return; }
+  if(!a || !show){ $('todayBurn').innerHTML=''; $('actFoods').innerHTML=''; return; }
   // Break the measured burn into BMR / everyday (NEAT, above BMR, excluding
   // workouts) / workouts, so the three figures visibly sum to the total.
   let burnLine = '';
@@ -1185,9 +1192,12 @@ function render(){
   $('todayEyebrow').textContent = (isToday?'TODAY · ':'PLAN · ')
     + dow(first.date).toUpperCase()+' '+dmd(first.date);
 
-  // Actuals only apply when the lead card is genuinely today.
+  // Actuals apply when the lead card IS the actuals' day. Gate on the payload
+  // itself (a.date === first.date), not the browser clock — otherwise a UTC-vs-
+  // local date skew in the evening blanks EATEN while the food list (also from
+  // `a`) still renders, so the card shows foods with no eaten total.
   const a = PLAN.today_actuals;
-  const haveActuals = isToday && a && a.is_today;
+  const haveActuals = !!(a && a.is_today && a.date === first.date);
   const eaten = haveActuals ? (a.consumed_kcal||0) : null;
   const target = first.target_kcal;
   // TARGET / EATEN / REMAINING. On a future-plan lead card there's no intake
@@ -1229,7 +1239,7 @@ function render(){
   $('todaySession').innerHTML =
     `<div class="s ${first.primary_intensity==='rest'?'rest':''}">${first.primary_intensity==='rest'?'Rest day':sess}<small>${first.needs_fuel?'tap the row for its fuel plan':'no session fuel needed'}</small></div>`;
 
-  renderActuals();
+  renderActuals(haveActuals);
   renderRecent();
 
   $('weekBody').innerHTML = days.map((d,idx)=>{
