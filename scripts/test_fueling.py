@@ -301,8 +301,23 @@ def main():
     gi = g.get_fueling_goal()
     check("goal returned", gi["goal"]["goal_type"] == "lose")
     check("weeks remaining ~6", gi["progress"]["weeks_remaining"] == 6)
-    check("kg to target = 2.0", gi["progress"]["kg_to_target"] == 2.0)
+    # current weight = the weigh-in snapshot (74.1), NOT the baseline stub
+    # (74.0) — the "now" card must match the chart's latest actual, so both
+    # read _latest_body_stats. kg_to_target = 74.1 - 72.0.
+    check("kg to target = 2.1", gi["progress"]["kg_to_target"] == 2.1)
+    check("current weight comes from the weigh-in snapshot, not the baseline",
+          gi["progress"]["current_weight_kg"] == 74.1)
     check("required daily change negative", gi["progress"]["required_daily_kcal_change"] < 0)
+
+    # Regression: the dashboard "now" card (goal_progress.current_weight_kg)
+    # and the chart's latest actual (body.weight_kg) MUST agree — both resolve
+    # from the shared weigh-in snapshot. The original bug had goal_progress
+    # read the nightly baseline's stale LT weight while body read the fresh
+    # weigh-in, so the card and chart disagreed (169.8lb vs 165.8lb).
+    _plan_agree = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7)
+    check("now-card weight == chart weight (both from the weigh-in snapshot)",
+          _plan_agree["goal_progress"]["current_weight_kg"]
+          == _plan_agree["body"]["weight_kg"] == 74.1)
 
     print("_fmt_weight respects display units (notes match the dashboard):")
     check("metric -> kg", g._fmt_weight(68.0, "metric") == "68.0kg")

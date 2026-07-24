@@ -1755,13 +1755,28 @@ def get_fueling_goal() -> dict:
 
     current_weight = None
     weight_staleness = None
+    # Read the current weight from the SAME shared weigh-in snapshot the
+    # dashboard chart + fueling plan use, so the "now" card can't disagree
+    # with the chart's latest actual point. The athlete baseline is a
+    # nightly-recomputed blob (36h TTL) whose weight comes from the stale LT
+    # power.weight; using it here made "now" lag a same-day weigh-in until
+    # the next nightly recompute. Fall back to the baseline only if no
+    # weigh-in has been recorded at all.
     try:
-        base = get_athlete_baseline()
-        if isinstance(base, dict):
-            current_weight = base.get("weight_kg")
-            weight_staleness = (base.get("staleness_days") or {}).get("weight")
+        bs = _latest_body_stats()
+        if isinstance(bs, dict) and bs.get("weight_kg") is not None:
+            current_weight = bs.get("weight_kg")
+            weight_staleness = bs.get("staleness_days")
     except Exception:  # noqa: BLE001
         pass
+    if current_weight is None:
+        try:
+            base = get_athlete_baseline()
+            if isinstance(base, dict):
+                current_weight = base.get("weight_kg")
+                weight_staleness = (base.get("staleness_days") or {}).get("weight")
+        except Exception:  # noqa: BLE001
+            pass
     # A manual current-weight override on the goal wins over Garmin's reading.
     manual_weight = goal.get("current_weight_kg")
     if manual_weight:
@@ -4415,6 +4430,10 @@ def get_athlete_baseline(force_refresh: bool = False) -> dict[str, Any]:
         weight_kg = pwr.get("weight")
         ptw = pwr.get("powerToWeight")
         out["run_ftp_wkg"] = round(ptw, 2) if ptw else None
+        # LT's power.weight is whatever weight was on file at the threshold
+        # test — often stale. Keep it only as a fallback; the weigh-in
+        # snapshot (actual scale reading) overrides it below so current
+        # weight can't disagree with the fueling plan / dashboard chart.
         out["weight_kg"] = round(weight_kg, 1) if weight_kg else None
         out["staleness_days"]["lt_hr"] = _age_days(shr.get("calendarDate"))
         out["staleness_days"]["run_ftp"] = _age_days(pwr.get("calendarDate"))
@@ -4452,20 +4471,21 @@ def get_athlete_baseline(force_refresh: bool = False) -> dict[str, Any]:
     except Exception as ex:  # noqa: BLE001
         out["notes"].append(f"hill_score lookup failed: {str(ex)[:100]}")
 
-    # --- Weight (prefer body_composition if logged recently, else LT endpoint) ---
-    if out.get("weight_kg") is None:
-        try:
-            # Shared weigh-in snapshot (same source as the fueling plan's
-            # current weight), so this can't disagree with the dashboard.
-            entries = _weigh_in_entries()
-            if entries:
-                latest = entries[-1]        # newest
-                w = latest.get("weight_kg")
-                if w:
-                    out["weight_kg"] = round(w, 1)
-                    out["staleness_days"]["weight"] = _age_days(latest.get("date"))
-        except Exception as ex:  # noqa: BLE001
-            out["notes"].append(f"body_composition lookup failed: {str(ex)[:100]}")
+    # --- Weight (ALWAYS prefer the weigh-in snapshot; fall back to LT) ---
+    # The weigh-in snapshot is the actual scale reading and the same source
+    # the fueling plan's current weight + the dashboard chart use, so it must
+    # win over LT's power.weight (set above) — otherwise the "now" card shows
+    # a stale threshold-test weight while the chart shows today's weigh-in.
+    try:
+        entries = _weigh_in_entries()
+        if entries:
+            latest = entries[-1]        # newest
+            w = latest.get("weight_kg")
+            if w:
+                out["weight_kg"] = round(w, 1)
+                out["staleness_days"]["weight"] = _age_days(latest.get("date"))
+    except Exception as ex:  # noqa: BLE001
+        out["notes"].append(f"body_composition lookup failed: {str(ex)[:100]}")
 
     # --- Race predictions ---
     try:
