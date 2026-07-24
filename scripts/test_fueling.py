@@ -516,32 +516,51 @@ def main():
           g._session_tss("threshold", 1.0) > g._session_tss("easy", 1.3))
     check("rest is zero load", g._session_tss("rest", 2.0) == 0.0)
 
-    print("mean daily exercise over trailing 30 days (phantom-day input):")
-    _md_kcal, _md_hours = g._mean_daily_exercise(
-        [{"duration": 3600, "calories": 700, "activityType": {"typeKey": "cycling"},
-          "startTimeLocal": (TODAY - timedelta(days=i)).isoformat() + " 07:00:00"}
-         for i in range(1, 10)],  # 9 rides @700kcal/1h in the window
-        rmr_per_hr=70.0, as_of=TODAY, window_days=30)
-    check("spreads net burn across the whole window, not just training days",
-          abs(_md_kcal - 9 * (700 - 70) / 30.0) < 1)
-    check("also returns mean daily hours", abs(_md_hours - 9 / 30.0) < 0.01)
-    check("no history -> zero", g._mean_daily_exercise([], 70.0, TODAY) == (0.0, 0.0))
+    print("mean daily exercise over trailing 30 days (weekday vs weekend split):")
+    # Build one ride on every day in the last 30, but make weekend rides bigger
+    # (1000 kcal / 1.5h) than weekday rides (700 kcal / 1h). The split means
+    # should reflect each day-type's own pattern, each divided by that type's
+    # day count in the window — NOT one blended average.
+    _hist_split = []
+    for i in range(30):  # days TODAY .. TODAY-29 — exactly the window/denominator
+        d = TODAY - timedelta(days=i)
+        wknd = d.weekday() >= 5
+        _hist_split.append({
+            "duration": int((1.5 if wknd else 1.0) * 3600),
+            "calories": 1000 if wknd else 700,
+            "activityType": {"typeKey": "cycling"},
+            "startTimeLocal": d.isoformat() + " 07:00:00"})
+    _avg = g._mean_daily_exercise(_hist_split, rmr_per_hr=70.0, as_of=TODAY, window_days=30)
+    check("returns a weekday/weekend dict", set(_avg) == {"weekday", "weekend"})
+    # Every day in the window has a ride, so each bucket's per-day mean is just
+    # that bucket's single-session net.
+    check("weekday mean ~ weekday session net (700 - 70*1.0)",
+          abs(_avg["weekday"][0] - (700 - 70)) < 5)
+    check("weekend mean ~ weekend session net (1000 - 70*1.5)",
+          abs(_avg["weekend"][0] - (1000 - 70 * 1.5)) < 5)
+    check("weekend burn assumption exceeds weekday (long sessions land on weekends)",
+          _avg["weekend"][0] > _avg["weekday"][0])
+    check("weekend hours mean ~ 1.5", abs(_avg["weekend"][1] - 1.5) < 0.05)
+    check("no history -> both buckets zero",
+          g._mean_daily_exercise([], 70.0, TODAY) == {"weekday": (0.0, 0.0), "weekend": (0.0, 0.0)})
     # Garmin sometimes returns startTimeLocal as an epoch int, not an ISO
-    # string. A stray int must be skipped, not crash the whole plan with
-    # "'int' object is not subscriptable".
+    # string. A stray int must be skipped, not crash the whole plan.
+    _wd = (TODAY - timedelta(days=(TODAY.weekday() + 1) % 7 + 1))  # a recent weekday
+    while _wd.weekday() >= 5:
+        _wd -= timedelta(days=1)
     _mixed = g._mean_daily_exercise(
         [{"duration": 3600, "calories": 700, "activityType": {"typeKey": "cycling"},
           "startTimeLocal": 1690000000000},  # epoch int — must not blow up
          {"duration": 3600, "calories": 700, "activityType": {"typeKey": "cycling"},
-          "startTimeLocal": (TODAY - timedelta(days=1)).isoformat() + " 07:00:00"}],
+          "startTimeLocal": _wd.isoformat() + " 07:00:00"}],
         rmr_per_hr=70.0, as_of=TODAY, window_days=30)
-    check("int startTimeLocal is skipped, not fatal (one valid day counts)",
-          abs(_mixed[0] - (700 - 70) / 30.0) < 1)
+    check("int startTimeLocal is skipped, not fatal (one valid weekday counts)",
+          _mixed["weekday"][0] > 0)
     check("activities outside the window are excluded",
           g._mean_daily_exercise(
               [{"duration": 3600, "calories": 700, "activityType": {"typeKey": "cycling"},
                 "startTimeLocal": (TODAY - timedelta(days=45)).isoformat() + " 07:00:00"}],
-              70.0, TODAY, window_days=30) == (0.0, 0.0))
+              70.0, TODAY, window_days=30) == {"weekday": (0.0, 0.0), "weekend": (0.0, 0.0)})
 
     print("phantom-day fill: runs of >=2 unscheduled days assume typical training:")
     # One scheduled day, then a long open stretch. The open run should be
