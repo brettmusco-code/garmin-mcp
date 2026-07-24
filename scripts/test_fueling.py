@@ -496,6 +496,17 @@ def main():
           abs(_md_kcal - 9 * (700 - 70) / 30.0) < 1)
     check("also returns mean daily hours", abs(_md_hours - 9 / 30.0) < 0.01)
     check("no history -> zero", g._mean_daily_exercise([], 70.0, TODAY) == (0.0, 0.0))
+    # Garmin sometimes returns startTimeLocal as an epoch int, not an ISO
+    # string. A stray int must be skipped, not crash the whole plan with
+    # "'int' object is not subscriptable".
+    _mixed = g._mean_daily_exercise(
+        [{"duration": 3600, "calories": 700, "activityType": {"typeKey": "cycling"},
+          "startTimeLocal": 1690000000000},  # epoch int — must not blow up
+         {"duration": 3600, "calories": 700, "activityType": {"typeKey": "cycling"},
+          "startTimeLocal": (TODAY - timedelta(days=1)).isoformat() + " 07:00:00"}],
+        rmr_per_hr=70.0, as_of=TODAY, window_days=30)
+    check("int startTimeLocal is skipped, not fatal (one valid day counts)",
+          abs(_mixed[0] - (700 - 70) / 30.0) < 1)
     check("activities outside the window are excluded",
           g._mean_daily_exercise(
               [{"duration": 3600, "calories": 700, "activityType": {"typeKey": "cycling"},
