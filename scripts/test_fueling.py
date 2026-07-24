@@ -319,11 +319,12 @@ def main():
     check("None -> None", g._coerce_garmin_date(None) is None)
     check("garbage -> None", g._coerce_garmin_date("not-a-date") is None)
 
-    print("_latest_body_stats parses an epoch date into a real as_of (not the raw epoch):")
+    print("weigh-in snapshot parses an epoch date into a real as_of (not the raw epoch):")
     _save_bc = g.get_body_composition
     g.get_body_composition = lambda startdate=None, enddate=None, **k: {"dateWeightList": [
         {"date": 1784796695, "weight": 74900, "bodyFat": 14.0}]}  # epoch seconds, not ISO
-    _bs = g._latest_body_stats()  # must not raise "'int' object is not subscriptable"
+    g.refresh_weigh_in_snapshot()  # writer path: fetch + persist to stable key
+    _bs = g._latest_body_stats()   # reader path: must not raise "'int' object is not subscriptable"
     g.get_body_composition = _save_bc
     check("epoch body-comp date -> weight still parsed, no crash", _bs["weight_kg"] == 74.9)
     check("epoch body-comp date -> as_of is a real ISO date (2026-07-23), not the raw epoch",
@@ -331,29 +332,34 @@ def main():
     check("epoch body-comp date -> staleness_days computed (an int)",
           isinstance(_bs["staleness_days"], int))
 
-    # Regression: the current-weight reader, the history/trend reader, and the
-    # intraday refresh MUST all request the same body-composition date range.
-    # get_body_composition caches per date-range key, so a window mismatch (35d
-    # vs 30d, or UTC-vs-local "today") means the intraday refresh warms one key
-    # while the readers hit a different, stale one — today's weigh-in shows up
-    # as current weight but never in the history/trend/chart.
-    print("weigh-in readers share one canonical cache window (no key fragmentation):")
-    _seen_ranges = []
+    # Regression: a NEW weigh-in must reach the readers via the STABLE snapshot
+    # key, not a date-range key that rolls over each local midnight. The bug was
+    # that the refresh warmed a date-keyed entry (30d window) while the readers
+    # hit a different one (35d, or UTC-vs-local end date) — so on the readonly
+    # web instance the fresh weigh-in never appeared. Here: the writer persists
+    # today's weigh-in once; every reader then sees it with NO further fetch,
+    # even though the date-range fetcher is disabled.
+    print("weigh-in readers share one STABLE snapshot (survives date rollover):")
     _save_bc2 = g.get_body_composition
-    def _record_range(startdate=None, enddate=None, **k):
-        _seen_ranges.append((startdate, enddate))
-        return {"dateWeightList": [{"calendarDate": "2026-07-23", "weight": 74100}]}
-    g.get_body_composition = _record_range
-    g._latest_body_stats()
-    g._weight_series()
-    _win = g.weigh_in_window()
+    g.get_body_composition = lambda startdate=None, enddate=None, **k: {"dateWeightList": [
+        {"calendarDate": g._local_today().isoformat(), "weight": 73500}]}
+    g.refresh_weigh_in_snapshot()   # cron writes the snapshot
+    # Now make any further date-range fetch explode: readers must not need it.
+    def _boom(*a, **k):
+        raise AssertionError("readers must read the snapshot, not re-fetch by date range")
+    g.get_body_composition = _boom
+    _bs2 = g._latest_body_stats()
+    _series = g._weight_series()
     g.get_body_composition = _save_bc2
-    check("both readers requested the identical (start, end) range",
-          len(_seen_ranges) == 2 and _seen_ranges[0] == _seen_ranges[1])
-    check("readers use the canonical weigh_in_window() range",
-          _seen_ranges and _seen_ranges[0] == _win)
-    check("window is anchored to LOCAL today, not UTC",
-          _win[1] == g._local_today().isoformat())
+    check("current-weight reader sees the fresh weigh-in from the snapshot",
+          _bs2["weight_kg"] == 73.5 and _bs2["as_of"] == g._local_today().isoformat())
+    check("history series sees the same fresh weigh-in (no separate fetch)",
+          _series and _series[-1] == (g._local_today().isoformat(), 73.5))
+    check("snapshot window is anchored to LOCAL today, not UTC",
+          g.weigh_in_window()[1] == g._local_today().isoformat())
+    # Restore the default weigh-in (TODAY-1, 74.1kg) into the snapshot so the
+    # downstream generate_fueling_plan checks see the fixture they expect.
+    g.refresh_weigh_in_snapshot()
 
     print("generate_fueling_plan (Katch-McArdle BMR from body-fat):")
     plan = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7)
@@ -853,6 +859,7 @@ def main():
     g.get_body_composition = lambda startdate=None, enddate=None, **k: {"dateWeightList": [
         {"date": (TODAY - timedelta(days=1)).isoformat(), "weight": 70300,
          "bodyFat": 14.0, "muscleMass": 34000}]}
+    g.refresh_weigh_in_snapshot()   # readers use the stable snapshot now
     near = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7, front_load=0.5)
     flat_near = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7, front_load=0)
     check("near target, front-loaded deficit eases below linear",
@@ -861,6 +868,7 @@ def main():
     # restore stubs + default goal
     g.get_athlete_baseline = _fake_baseline
     g.get_body_composition = _fake_body_comp
+    g.refresh_weigh_in_snapshot()   # re-seed snapshot with the default fixture
     g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
                        sex="male", height_cm=178, age=40)
 
@@ -1078,9 +1086,11 @@ def main():
     _bc = g.get_body_composition
     g.get_body_composition = lambda startdate=None, enddate=None, **k: {"dateWeightList": [
         {"date": (TODAY - timedelta(days=1)).isoformat(), "weight": 74100}]}  # no bodyFat
+    g.refresh_weigh_in_snapshot()   # readers use the stable snapshot
     g.set_fueling_goal(goal_type="maintain")
     plan3 = g.generate_fueling_plan(days=3)
     g.get_body_composition = _bc
+    g.refresh_weigh_in_snapshot()   # restore default fixture for later tests
     check("bmr fallback source", plan3["bmr"]["source"] == "weight_x22_fallback")
     check("maintain -> no deficit", plan3["daily_kcal_adjustment"] == 0)
 

@@ -372,11 +372,11 @@ def main() -> int:
         ("hill_score",         lambda: garmin.get_training_score("hill", startdate=today_iso, force_refresh=False)),
         ("endurance_score",    lambda: garmin.get_training_score("endurance", startdate=today_iso, force_refresh=False)),
         ("personal_records",   lambda: garmin.get_personal_records(force_refresh=False)),
-        # Canonical weigh-in window (garmin.weigh_in_window) so the nightly
-        # anchor warms the exact cache key the history/trend/current-weight
-        # readers hit — a mismatched range would leave them serving stale data.
-        ("body_composition",   lambda: garmin.get_body_composition(
-            *garmin.weigh_in_window(), force_refresh=False,
+        # Seed the STABLE weigh-in snapshot every reader uses (current weight,
+        # history, trend, chart) so a fresh weigh-in isn't gated on a date-keyed
+        # cache entry that rolls over each local midnight.
+        ("body_composition",   lambda: garmin.refresh_weigh_in_snapshot(
+            force_refresh=False,
         )),
     ]
     for label, fn in ops:
@@ -403,7 +403,7 @@ def main() -> int:
     for tool in ("daily_summary", "activities_month", "calendar_month",
                  "workout_by_id", "race_predictions", "lactate_threshold",
                  "training_score", "personal_records", "body_composition",
-                 "athlete_baseline"):
+                 "weigh_in_snapshot", "athlete_baseline"):
         count = cache.count_keys(tool_prefix=tool)
         print(f"  {tool}: {count}")
 

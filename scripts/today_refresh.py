@@ -345,17 +345,13 @@ def _refresh_body_composition() -> None:
 
     Body composition otherwise only refreshes on the nightly anchor, so a
     morning weigh-in wouldn't reach the dashboard (or the trend/projection/
-    current-weight calc) until the next day. It force-refreshes the *canonical*
-    weigh-in window (garmin.weigh_in_window) so it warms the exact cache key the
-    history/trend/current-weight readers hit — refreshing any other range would
-    leave those readers on a stale key. Best-effort so a throttle never blocks
-    the plan regen."""
+    current-weight calc) until the next day. Writes the parsed weigh-ins to the
+    STABLE snapshot key every reader uses (garmin.refresh_weigh_in_snapshot),
+    so a new weigh-in shows up the moment this runs — no waiting on a date-keyed
+    cache entry to roll over. Best-effort so a throttle never blocks plan regen."""
     try:
-        start_iso, end_iso = garmin.weigh_in_window()
-        garmin.get_body_composition(
-            startdate=start_iso, enddate=end_iso, force_refresh=True,
-        )
-        print("[weight] refreshed recent body composition")
+        entries = garmin.refresh_weigh_in_snapshot(force_refresh=True)
+        print(f"[weight] refreshed weigh-in snapshot ({len(entries)} readings)")
     except Exception as ex:  # noqa: BLE001
         print(f"  body-composition refresh skipped: {str(ex)[:120]}", file=sys.stderr)
 

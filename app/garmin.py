@@ -715,22 +715,144 @@ def get_body_composition(
     return data
 
 
-# Every weigh-in reader (current weight, history series, trend, chart) MUST
-# request this exact date range. get_body_composition caches per date-range
-# key, so a reader asking for a different window — even by one day, or by
-# UTC-vs-local "today" — hits a different cache entry that no intraday refresh
-# warmed, and silently serves stale data. This is the single source of truth.
+# --- Weigh-in snapshot: a STABLE cache key for recent weigh-ins ------------
+#
+# get_body_composition caches per date-range key ({start}__{end}). Every
+# weigh-in reader wants "recent weigh-ins ending today", so end=today — which
+# rolls at every local midnight, minting a brand-new COLD key each day. On the
+# readonly web instance a cold key is a cache miss (live calls are disabled),
+# so the readers silently fall back to whatever older data exists and a fresh
+# weigh-in never appears until some job happens to warm that exact day's key.
+#
+# Fix: the refresh jobs fetch recent body composition and persist the parsed
+# weigh-ins under ONE stable key (weigh_in_snapshot/current) that never
+# date-shifts. All readers (current weight, history, trend, chart) read that
+# key, so a new weigh-in reaches the dashboard the moment the next cron tick
+# writes it — no date-rollover blanking.
 WEIGH_IN_WINDOW_DAYS = 35
+# Generous TTL: we'd rather show a stale weight (with its as_of date and the
+# >14-day review flag) than blank the dashboard if the cron misses a few runs.
+WEIGH_IN_SNAPSHOT_TTL_SEC = 21 * 24 * 3600
 
 
 def weigh_in_window() -> tuple[str, str]:
-    """Canonical (start_iso, end_iso) for body-composition reads/refreshes,
-    anchored to the athlete's LOCAL day so the cache key doesn't shift at the
-    UTC midnight boundary. Refresh jobs force-refresh this exact range so the
-    readers below get a cache hit on fresh data."""
+    """(start_iso, end_iso) window for a body-composition fetch, anchored to
+    the athlete's LOCAL day. Only the refresh path and the cold-snapshot
+    fallback hit this date-range key; steady-state reads use the stable
+    snapshot below, so day-to-day key rollover no longer blanks the readers."""
     end = _local_today()
     start = end - timedelta(days=WEIGH_IN_WINDOW_DAYS)
     return start.isoformat(), end.isoformat()
+
+
+def _parse_weigh_ins(bc: Any) -> list[dict]:
+    """Normalise Garmin's dateWeightList into sorted (oldest-first) entries:
+    {date: ISO, weight_kg, [body_fat_pct], [muscle_mass_kg]}. Handles grams and
+    epoch (s/ms) dates. Empty when there are no usable readings."""
+    rows = (bc or {}).get("dateWeightList") if isinstance(bc, dict) else None
+    out: list[dict] = []
+    for r in rows or []:
+        d = _coerce_garmin_date(r.get("date") or r.get("calendarDate"))
+        w = r.get("weight")
+        if w is None or not d:
+            continue
+        try:
+            w = float(w)
+        except (TypeError, ValueError):
+            continue
+        if w > 500:            # grams -> kg
+            w /= 1000.0
+        entry: dict = {"date": d.isoformat(), "weight_kg": round(w, 2)}
+        bf = r.get("bodyFat")
+        if bf:
+            try:
+                entry["body_fat_pct"] = round(float(bf), 1)
+            except (TypeError, ValueError):
+                pass
+        mm = r.get("muscleMass")
+        if mm:
+            try:
+                entry["muscle_mass_kg"] = round(float(mm) / 1000.0, 1)
+            except (TypeError, ValueError):
+                pass
+        out.append(entry)
+    out.sort(key=lambda e: e["date"])
+    return out
+
+
+def store_weigh_in_snapshot(entries: list[dict]) -> None:
+    """Persist parsed weigh-ins under the stable snapshot key. No-op on empty
+    so a transient empty fetch never clobbers a good snapshot."""
+    if entries:
+        cache.put("weigh_in_snapshot", {}, entries, key_parts=["current"])
+
+
+def refresh_weigh_in_snapshot(force_refresh: bool = True) -> list[dict]:
+    """Fetch recent body composition and persist it under the stable weigh-in
+    snapshot key every reader uses. Called by the refresh jobs (intraday +
+    nightly) so a new weigh-in reaches the dashboard without waiting for a
+    date-keyed cache entry to roll over. Returns the parsed entries."""
+    start_iso, end_iso = weigh_in_window()
+    bc = get_body_composition(start_iso, end_iso, force_refresh=force_refresh)
+    entries = _parse_weigh_ins(bc)
+    store_weigh_in_snapshot(entries)
+    return entries
+
+
+def _weigh_in_entries() -> list[dict]:
+    """Canonical recent weigh-ins (oldest first) that every reader shares.
+    Reads the STABLE snapshot key first (written by the refresh jobs); falls
+    back to a date-range fetch and, on a writer instance, seeds the snapshot so
+    later reads are stable. Returns [] when nothing is available."""
+    snap = cache.get("weigh_in_snapshot", {}, key_parts=["current"],
+                     ttl_seconds=WEIGH_IN_SNAPSHOT_TTL_SEC)
+    if isinstance(snap, list):
+        return snap
+    # Cold snapshot (first run after deploy, or expired): fall back to the
+    # date-range endpoint. On a writer this does a live fetch and seeds the
+    # stable key; on the readonly web instance it returns the date-keyed cache
+    # entry if present, else [] (live calls disabled).
+    try:
+        start_iso, end_iso = weigh_in_window()
+        bc = get_body_composition(start_iso, end_iso)
+        entries = _parse_weigh_ins(bc)
+    except Exception:  # noqa: BLE001
+        entries = []
+    # Last resort (readonly web instance, before the first cron tick seeds the
+    # snapshot): today's date-range key may miss, but an earlier day's key is
+    # likely still cached. Scan the body_composition cache and use the freshest
+    # entry we can find, so the dashboard shows a weight instead of blanking.
+    if not entries and READONLY_MODE and cache.enabled():
+        entries = _scan_cached_weigh_ins()
+    if entries and not READONLY_MODE:
+        store_weigh_in_snapshot(entries)
+    return entries
+
+
+def _scan_cached_weigh_ins() -> list[dict]:
+    """Best-effort: read every cached body_composition object and return the
+    parsed weigh-ins from whichever range holds the newest reading. Bounded to
+    a handful of keys; swallows all errors (pure fallback)."""
+    best: list[dict] = []
+    best_latest = ""
+    try:
+        for key in cache.list_keys("body_composition", limit=40):
+            # key: PREFIX/body_composition/<start>__<end>.json
+            leaf = key.rsplit("/", 1)[-1][:-5] if key.endswith(".json") else None
+            if not leaf or "__" not in leaf:
+                continue
+            start_s, _, end_s = leaf.partition("__")
+            try:
+                bc = get_body_composition(start_s, end_s)
+            except Exception:  # noqa: BLE001
+                continue
+            entries = _parse_weigh_ins(bc)
+            if entries and entries[-1]["date"] > best_latest:
+                best_latest = entries[-1]["date"]
+                best = entries
+    except Exception:  # noqa: BLE001
+        return best
+    return best
 
 
 def get_training_score(
@@ -1068,10 +1190,10 @@ def nutrition_trend(weeks: int = 4) -> dict:
         )
         for entry in (bc.get("dateWeightList") or []):
             try:
-                d_str = entry.get("date") or entry.get("calendarDate")
+                # date may be ISO or a Garmin epoch (s/ms) — coerce both.
+                d = _coerce_garmin_date(entry.get("date") or entry.get("calendarDate"))
                 w_grams = entry.get("weight")
-                if d_str and w_grams:
-                    d = datetime.strptime(d_str[:10], "%Y-%m-%d").date()
+                if d and w_grams:
                     weight_readings.append((d, w_grams / 1000.0))
             except (ValueError, TypeError):
                 continue
@@ -1694,44 +1816,31 @@ def get_fueling_goal() -> dict:
 
 
 def _latest_body_stats() -> dict:
-    """Latest weight + body-fat + lean/muscle mass from Garmin body
-    composition (Renpho syncs here). Only weight is consumed elsewhere; this
-    surfaces the composition fields for recomposition context."""
+    """Latest weight + body-fat + lean/muscle mass from the stable weigh-in
+    snapshot (Renpho syncs into Garmin body composition). Only weight is
+    consumed elsewhere; this surfaces the composition fields for recomp."""
     today = _local_today()
     out: dict[str, Any] = {
         "weight_kg": None, "body_fat_pct": None, "lean_mass_kg": None,
         "muscle_mass_kg": None, "fat_mass_kg": None, "as_of": None,
         "staleness_days": None,
     }
-    try:
-        # Canonical weigh-in window (shared with the history/trend readers) so
-        # the intraday refresh warms the same cache key we read here.
-        start_iso, end_iso = weigh_in_window()
-        bc = get_body_composition(startdate=start_iso, enddate=end_iso)
-    except Exception:  # noqa: BLE001
-        return out
-    entries = (bc or {}).get("dateWeightList") or []
+    entries = _weigh_in_entries()          # oldest first, already parsed
     if not entries:
         return out
-    # Pick the newest entry by parsed date (Garmin mixes ISO strings and
-    # epochs, so a lexical string sort would misorder them); fall back to
-    # date.min for unparseable entries so they never win.
-    latest = max(entries, key=lambda e: (
-        _coerce_garmin_date(e.get("date") or e.get("calendarDate")) or date.min))
-    w_g = latest.get("weight")
-    if w_g:
-        out["weight_kg"] = round(w_g / 1000.0, 1)
-    bf = latest.get("bodyFat")
+    latest = entries[-1]                    # newest
+    w = latest.get("weight_kg")
+    if w:
+        out["weight_kg"] = round(w, 1)
+    bf = latest.get("body_fat_pct")
     if bf and out["weight_kg"]:
         out["body_fat_pct"] = round(float(bf), 1)
         out["fat_mass_kg"] = round(out["weight_kg"] * bf / 100.0, 1)
         out["lean_mass_kg"] = round(out["weight_kg"] * (1 - bf / 100.0), 1)
-    mm = latest.get("muscleMass")
+    mm = latest.get("muscle_mass_kg")
     if mm:
-        out["muscle_mass_kg"] = round(mm / 1000.0, 1)
-    # date is usually an ISO string but body-comp entries often send an epoch
-    # (s or ms) — parse both into a real date for as_of/staleness.
-    d = _coerce_garmin_date(latest.get("date") or latest.get("calendarDate"))
+        out["muscle_mass_kg"] = round(mm, 1)
+    d = _coerce_garmin_date(latest.get("date"))
     if d:
         out["as_of"] = d.isoformat()
         out["staleness_days"] = (today - d).days
@@ -2481,33 +2590,11 @@ def _project_trajectory(weight_kg, target, start_w, target_date, front_load_val,
 
 
 def _weight_series() -> list[tuple[str, float]]:
-    """Recent (date, weight_kg) points from Garmin body composition, oldest
-    first. Empty when no weigh-ins are available in the window. Uses the
-    canonical weigh-in window so it shares a cache key with the current-weight
-    reader and the intraday refresh — otherwise today's weigh-in would land in
-    a different cache entry and never appear in the history/trend/chart."""
-    try:
-        start_iso, end_iso = weigh_in_window()
-        bc = get_body_composition(start_iso, end_iso)
-    except Exception:  # noqa: BLE001
-        bc = None
-    rows = (bc or {}).get("dateWeightList") if isinstance(bc, dict) else None
-    out: list[tuple[str, float]] = []
-    for r in rows or []:
-        try:
-            # date may be ISO or an epoch (s/ms) — normalise to ISO.
-            d_parsed = _coerce_garmin_date(r.get("date") or r.get("calendarDate"))
-            w = r.get("weight")
-            if w is None or not d_parsed:
-                continue
-            w = float(w)
-            if w > 500:            # grams -> kg
-                w /= 1000.0
-            out.append((d_parsed.isoformat(), round(w, 2)))
-        except (TypeError, ValueError):
-            continue
-    out.sort(key=lambda x: x[0])
-    return out
+    """Recent (date, weight_kg) points, oldest first, from the shared weigh-in
+    snapshot — the same source as the current-weight reader, so a new weigh-in
+    appears in the history/trend/chart the moment the refresh job writes it."""
+    return [(e["date"], e["weight_kg"]) for e in _weigh_in_entries()
+            if e.get("weight_kg") is not None]
 
 
 # Modeled adaptive thermogenesis: on a sustained cut the body downregulates
@@ -4368,20 +4455,14 @@ def get_athlete_baseline(force_refresh: bool = False) -> dict[str, Any]:
     # --- Weight (prefer body_composition if logged recently, else LT endpoint) ---
     if out.get("weight_kg") is None:
         try:
-            # Canonical weigh-in window so this reuses the intraday-warmed cache
-            # entry instead of a differently-keyed (and stale) one.
-            _bc_start, _bc_end = weigh_in_window()
-            bc = get_body_composition(startdate=_bc_start, enddate=_bc_end)
-            entries = bc.get("dateWeightList") or []
+            # Shared weigh-in snapshot (same source as the fueling plan's
+            # current weight), so this can't disagree with the dashboard.
+            entries = _weigh_in_entries()
             if entries:
-                # Newest by parsed date — Garmin mixes ISO strings and epoch
-                # ints, so a lexical key would misorder them.
-                latest = max(entries, key=lambda e: (
-                    _coerce_garmin_date(e.get("date") or e.get("calendarDate"))
-                    or date.min))
-                w_grams = latest.get("weight")
-                if w_grams:
-                    out["weight_kg"] = round(w_grams / 1000.0, 1)
+                latest = entries[-1]        # newest
+                w = latest.get("weight_kg")
+                if w:
+                    out["weight_kg"] = round(w, 1)
                     out["staleness_days"]["weight"] = _age_days(latest.get("date"))
         except Exception as ex:  # noqa: BLE001
             out["notes"].append(f"body_composition lookup failed: {str(ex)[:100]}")
