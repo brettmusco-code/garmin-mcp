@@ -74,8 +74,10 @@
   .card .sub{color:var(--ink-dim);font-size:12.5px;margin-bottom:18px;}
 
   .adj{font-size:12.5px;color:var(--ink-dim);margin-bottom:5px;}
-  #todayBurn:not(:empty){margin-bottom:18px;}
-  #todayBurn:empty{margin-bottom:13px;}
+  #todayBurn:not(:empty){margin-bottom:16px;}
+  #todayBurn:empty{margin-bottom:11px;}
+  /* Tier separator: the context sublines end, the macro budget begins. */
+  .today-combined .macros{padding-top:15px;border-top:1px solid var(--line);}
   .adj b{font-family:var(--mono);}
 
   /* Combined today card: TARGET / EATEN / REMAINING stat row */
@@ -207,9 +209,13 @@
   .energy .op{color:var(--ink-faint);}
   .energy .def{margin-left:auto;color:var(--good);font-weight:600;}
   .energy .def b{color:var(--good);}
-  .eabreak{font-size:12px;color:var(--ink-dim);margin:-6px 0 16px;padding:0 2px;line-height:1.5;}
+  .eabreak{display:flex;flex-wrap:wrap;align-items:baseline;gap:6px 12px;
+    font-size:12px;color:var(--ink-dim);margin:-6px 0 16px;padding:0 2px;}
   .eabreak b{font-family:var(--mono);color:var(--ink);}
-  .eabreak small{color:var(--ink-faint);}
+  .eabreak .eab-lead{margin-right:2px;}
+  .eabreak .eab-lead small,.eabreak .eab-note{color:var(--ink-faint);font-size:11px;}
+  .eabreak .eab-op{color:var(--ink-faint);}
+  .eabreak .eab-note{margin-left:auto;}
 
   .progress{display:grid;grid-template-columns:1fr;gap:14px;}
   .track{position:relative;height:12px;border-radius:8px;background:var(--panel-2);margin:26px 0 8px;}
@@ -241,10 +247,17 @@
   .block > .lead h2{font-size:14.5px;font-weight:650;margin:0;letter-spacing:-.01em;}
   .block > .lead span{font-size:12px;color:var(--ink-dim);text-align:right;}
 
-  .flags{display:flex;flex-direction:column;gap:10px;}
-  .flag{display:flex;gap:10px;align-items:flex-start;background:var(--panel);border:1px solid var(--line);
-    border-left:3px solid var(--warn);border-radius:10px;padding:11px 14px;font-size:13px;color:var(--ink);}
-  .flag .ic{color:var(--warn);font-weight:700;}
+  #flagBlock{margin-top:16px;margin-bottom:2px;}
+  .flags{display:flex;flex-direction:column;gap:7px;}
+  /* Informational notes: quiet, compact rows — not full-height banners. */
+  .flag{display:flex;gap:9px;align-items:baseline;background:var(--panel);border:1px solid var(--line);
+    border-left:3px solid var(--line);border-radius:9px;padding:8px 13px;font-size:12.5px;
+    line-height:1.4;color:var(--ink-dim);}
+  .flag .ic{color:var(--ink-faint);font-weight:700;flex:0 0 auto;font-size:11px;}
+  /* Urgent (RED-S / under-fuelling): warn-coloured and full-ink text. */
+  .flag.urgent{border-left-color:var(--warn);color:var(--ink);
+    background:color-mix(in srgb,var(--warn) 6%,var(--panel));}
+  .flag.urgent .ic{color:var(--warn);}
   footer{margin-top:26px;text-align:center;color:var(--ink-faint);font-size:11.5px;}
   footer b{color:var(--ink-dim);}
 </style>
@@ -261,6 +274,10 @@
       <div class="updated" id="updated"></div>
     </div>
   </header>
+
+  <section class="block" id="flagBlock">
+    <div class="flags" id="flags"></div>
+  </section>
 
   <div class="topwrap">
     <div class="card today-combined" id="todayCard">
@@ -303,11 +320,6 @@
   <section class="block" id="projBlock">
     <div class="lead"><h2>Projected trajectory</h2><span id="projNote"></span></div>
     <div class="card"><canvas id="projChart" height="220" style="width:100%;display:block"></canvas></div>
-  </section>
-
-  <section class="block" id="flagBlock">
-    <div class="lead"><h2>Flags</h2><span>read before you eat</span></div>
-    <div class="flags" id="flags"></div>
   </section>
 
   <footer><b>generate_fueling_plan</b> &middot; session burn calibrated from your 90-day Garmin history &middot; durations from TrainingPeaks&rarr;Garmin</footer>
@@ -1159,11 +1171,16 @@ function renderDay(d){
     <span class="def">${nf(d.target_deficit_kcal)} deficit</span></div>`;
   // EA breakdown (#3: expose the components so the number is auditable):
   // EA = (intake − exercise) / FFM. Intake includes TEF (canonical definition).
+  // EA's unit is intrinsically kcal/kg-FFM (sports-science standard) and is
+  // shown as-is; the raw FFM figure is dropped to keep the row scannable.
   const ead = d.energy_availability_detail;
-  const eaBreak = ead ? `<div class="eabreak">EA <b>${d.energy_availability_kcal_per_kg_ffm}</b>
-     = (eat <b>${nf(ead.intake_kcal)}</b>${ead.tef_kcal?` <small>incl. ${nf(ead.tef_kcal)} TEF</small>`:''}
-     − exercise <b>${nf(ead.exercise_kcal)}</b>) ÷ FFM <b>${ead.ffm_kg}kg</b>
-     <small>· 1 EA pt ≈ ${nf(ead.kcal_per_ea_point)} kcal</small></div>` : '';
+  const eaBreak = ead ? `<div class="eabreak">
+      <span class="eab-lead">Energy availability <b>${d.energy_availability_kcal_per_kg_ffm}</b> <small>kcal/kg FFM</small></span>
+      <span class="eab-stat">eat <b>${nf(ead.intake_kcal)}</b></span>
+      <span class="eab-op">−</span>
+      <span class="eab-stat">exercise <b>${nf(ead.exercise_kcal)}</b></span>
+      <span class="eab-note">1 pt ≈ ${nf(ead.kcal_per_ea_point)} kcal</span>
+    </div>` : '';
   const trimBadge = d.carbs_trimmed
     ? `<span class="trimflag" title="Deficit too steep to hold this day's training carbs">⚠ carbs cut</span>` : '';
   $('detail').innerHTML = `
@@ -1189,7 +1206,14 @@ function render(){
     ? `Maintain <b>${wt(b.weight_kg??g.start_weight_kg)}</b>`
     : `${gt==='lose'?'Cut':'Build'} to <b>${wt(g.target_weight_kg)}</b> by ${g.target_date}`;
   $('goal').innerHTML = goalTxt;
-  const adj = PLAN.daily_kcal_adjustment;
+  // Show the REAL average daily deficit the plan actually runs (after the EA /
+  // BMR floors bind), not the raw uncapped goal adjustment — the two diverge
+  // sharply once a floor is active, and the raw number reads as misleadingly
+  // aggressive.
+  const days0 = PLAN.days||[];
+  const realDef = days0.length
+    ? Math.round(days0.reduce((s,d)=>s+(d.target_deficit_kcal||0),0)/days0.length)
+    : PLAN.daily_kcal_adjustment;
   const meta = [];
   if(gp.weeks_remaining!=null) meta.push(`<span><b>${gp.weeks_remaining}</b> wk left</span>`);
   const bmrTag = PLAN.bmr.source==='katch_mcardle'?' <small style="color:var(--ink-faint)">Katch</small>'
@@ -1197,7 +1221,9 @@ function render(){
   meta.push(`<span>BMR <b>${nf(PLAN.bmr.value)}</b>${bmrTag}</span>`);
   if(b.body_fat_pct!=null) meta.push(`<span>Body fat <b>${b.body_fat_pct}%</b></span>`);
   if(PLAN.fat_free_mass_kg) meta.push(`<span>FFM <b>${wt(PLAN.fat_free_mass_kg)}</b></span>`);
-  meta.push(`<span>Daily <b>${adj>0?'+':''}${nf(adj)}</b></span>`);
+  const gt0 = g.goal_type;
+  const defLabel = gt0==='gain'?'surplus':'deficit';
+  meta.push(`<span>Avg ${defLabel} <b>${nf(Math.abs(realDef))}</b>/day</span>`);
   $('meta').innerHTML = meta.join('');
   renderUpdated(PLAN.generated_at);
 
@@ -1312,8 +1338,15 @@ function render(){
   selectDay(0);
 
   const notes = PLAN.notes||[];
-  if(notes.length){ $('flags').innerHTML = notes.map(n=>`<div class="flag"><span class="ic">!</span><span>${n}</span></div>`).join(''); }
-  else $('flagBlock').style.display='none';
+  if(notes.length){
+    // Rank the urgent ones first (RED-S / under-fuelling / below-BMR) and give
+    // them a stronger colour than informational trend/pace notes.
+    const urgent = n => /low energy|red-s|under-fuel|below bmr|too low|could not absorb/i.test(n);
+    const sorted = [...notes].sort((a,b)=>(urgent(b)?1:0)-(urgent(a)?1:0));
+    $('flags').innerHTML = sorted.map(n=>
+      `<div class="flag${urgent(n)?' urgent':''}"><span class="ic">${urgent(n)?'▲':'ℹ'}</span><span>${n}</span></div>`
+    ).join('');
+  } else $('flagBlock').style.display='none';
 
   drawProjection();
 }

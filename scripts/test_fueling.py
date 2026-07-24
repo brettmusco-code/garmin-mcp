@@ -304,6 +304,12 @@ def main():
     check("kg to target = 2.0", gi["progress"]["kg_to_target"] == 2.0)
     check("required daily change negative", gi["progress"]["required_daily_kcal_change"] < 0)
 
+    print("_fmt_weight respects display units (notes match the dashboard):")
+    check("metric -> kg", g._fmt_weight(68.0, "metric") == "68.0kg")
+    check("imperial -> lb", g._fmt_weight(68.0, "imperial") == "149.9lb")
+    check("None units defaults to kg", g._fmt_weight(68.0, None) == "68.0kg")
+    check("None weight -> dash", g._fmt_weight(None, "imperial") == "—")
+
     print("_coerce_garmin_date parses ISO strings and epoch (s/ms):")
     check("ISO string", g._coerce_garmin_date("2026-07-24") == date(2026, 7, 24))
     check("ISO datetime", g._coerce_garmin_date("2026-07-24T06:00:00.0") == date(2026, 7, 24))
