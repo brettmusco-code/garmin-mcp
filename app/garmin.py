@@ -1543,6 +1543,7 @@ def set_fueling_goal(
     current_weight_kg: float | None = None,
     units: str | None = None,
     notes: str | None = None,
+    aggressive: bool | None = None,
 ) -> dict:
     """Persist the athlete's fueling goal to R2 (single active goal, keyed
     'current'). This is the target weight + timeline the fueling plan is built
@@ -1574,6 +1575,13 @@ def set_fueling_goal(
         deficit runs (1 + front_load)x the linear pace; at the midpoint,
         the linear pace; near target, (1 - front_load)x. Recomputed from
         each weigh-in, so it self-tapers. 0/unset = flat linear pace.
+      aggressive: hold the MAX sustainable deficit (bounded by the EA/BMR
+        floors + max_loss_lb_per_week cap) instead of pacing to the target
+        date, and don't ease off when ahead of schedule. Losing weight then
+        pulls the finish date EARLIER rather than just softening the cut.
+        Default false — the date-paced, ahead-of-schedule-easing behavior.
+        The per-day energy-availability floor still applies, so "aggressive"
+        can never push a day below the safe EA minimum.
 
     goal_type: 'lose' | 'gain' | 'maintain'. For 'lose'/'gain' provide
     target_weight_kg and target_date so a daily deficit/surplus can be computed.
@@ -1626,6 +1634,7 @@ def set_fueling_goal(
         "home_lat": round(float(home_lat), 4) if home_lat is not None else None,
         "home_lon": round(float(home_lon), 4) if home_lon is not None else None,
         "skip_breakfast_weekdays": bool(skip_breakfast_weekdays) if skip_breakfast_weekdays is not None else None,
+        "aggressive": bool(aggressive) if aggressive is not None else None,
         # Manual current-weight override — used when Garmin's synced weight is
         # stale or wrong. Wins over the Garmin reading everywhere (progress,
         # BMR, EA, projection) until cleared. Stamped with the date it was set.
@@ -2533,11 +2542,15 @@ def get_adaptive_tdee(weeks: int = 6) -> dict:
 
 def _project_trajectory(weight_kg, target, start_w, target_date, front_load_val,
                         bmr, mean_expenditure, ffm_kg, ea_min_val, floor_mult,
-                        min_kcal_val, deficit_cap, uncapped) -> dict:
+                        min_kcal_val, deficit_cap, uncapped, aggressive=False) -> dict:
     """Simulate the weight curve forward week by week under the SAME deficit
     logic the plan uses (front-load + floors), so the taper is visible and we
     can report a realistic finish date. FFM held constant (slightly
-    conservative). Returns weekly points + finish date."""
+    conservative). Returns weekly points + finish date.
+
+    aggressive: mirror the plan's aggressive mode — hold the max sustainable
+    deficit every week instead of pacing to the target date, so a lighter
+    current weight yields an EARLIER finish rather than the same date."""
     if not (target and weight_kg and weight_kg > target):
         return {}
 
@@ -2569,15 +2582,20 @@ def _project_trajectory(weight_kg, target, start_w, target_date, front_load_val,
         if w <= target:
             finish = d
             break
-        weeks_left = None
-        if td and (td - d).days > 0:
-            weeks_left = max(1, (td - d).days / 7.0)
-        d_lin = ((w - target) * 7700 / weeks_left) / 7 if weeks_left else max_daily
-        mult = 1.0
-        if front_load_val and start_w and start_w > target:
-            frac = max(0.0, min(1.0, (w - target) / (start_w - target)))
-            mult = max(0.2, 1 + front_load_val * (2 * frac - 1))
-        daily = min(d_lin * mult, max_daily)
+        if aggressive:
+            # Hold the max sustainable deficit — the finish date then falls out
+            # of the pace, so losing weight brings it forward.
+            daily = max_daily
+        else:
+            weeks_left = None
+            if td and (td - d).days > 0:
+                weeks_left = max(1, (td - d).days / 7.0)
+            d_lin = ((w - target) * 7700 / weeks_left) / 7 if weeks_left else max_daily
+            mult = 1.0
+            if front_load_val and start_w and start_w > target:
+                frac = max(0.0, min(1.0, (w - target) / (start_w - target)))
+                mult = max(0.2, 1 + front_load_val * (2 * frac - 1))
+            daily = min(d_lin * mult, max_daily)
         daily = max(0.0, daily)
         w = w - daily * 7 / 7700.0
         d = d + timedelta(days=7)
@@ -2954,38 +2972,53 @@ def generate_fueling_plan(
     home_lat = goal.get("home_lat")
     home_lon = goal.get("home_lon")
 
+    aggressive = bool(goal.get("aggressive"))
     goal_adj = 0
     if gt == "lose":
-        kg_to_lose = (weight_kg - tgt) if tgt else None
-        if kg_to_lose and kg_to_lose > 0 and wr:
-            raw = (kg_to_lose * 7700 / wr) / 7
-        else:
-            raw = 400  # moderate default cut when no target/timeline
-        # Front-load: steeper while far from target, easing as weight nears
-        # goal. Recomputed from current weight each run, so it self-tapers.
-        start_w = goal.get("start_weight_kg")
-        if front_load_val and start_w and tgt and start_w > tgt:
-            fl_frac = max(0.0, min(1.0, (weight_kg - tgt) / (start_w - tgt)))
-            fl_mult = max(0.2, 1 + front_load_val * (2 * fl_frac - 1))
-            raw *= fl_mult
-        goal_adj = -round(raw) if uncapped else -min(round(raw), deficit_cap)
-
-        # Ahead-of-schedule ease: if the athlete has banked a comfortable lead
-        # on the straight-line schedule (>=2 weeks of scheduled loss), softens
-        # the cut — capped at 20% so a big lead can never gut it. This is on
-        # top of the self-tapering already baked into raw (kg-left / weeks-left
-        # recomputes each run). Trend-based when weigh-ins allow, else current
-        # weight vs schedule.
-        lead = _schedule_lead(goal, weight_kg, trend_cal)
-        if lead and lead["ease_factor"] < 1.0:
-            goal_adj = round(goal_adj * lead["ease_factor"])
+        if aggressive:
+            # Aggressive: hold the max sustainable deficit (bounded by the
+            # deficit cap; the per-day EA/BMR floors below still clamp it), so
+            # being ahead pulls the finish date earlier instead of easing the
+            # cut. No date-pacing, no ahead-of-schedule ease.
+            raw = deficit_cap if (deficit_cap and not uncapped) else 1500.0
+            goal_adj = -round(raw)
             notes.append(
-                f"Ahead of schedule by ~{lead['lead_weeks']:.1f} weeks "
-                f"({_fmt_weight(lead['lead_kg'], goal.get('units'))} under the target line"
-                f"{' by trend' if lead['source'] == 'trend' else ''}) — eased the deficit "
-                f"{round((1 - lead['ease_factor']) * 100)}% for a gentler cut while you hold "
-                "the lead. It re-tightens automatically if you drift back to schedule."
+                "Aggressive mode: holding the maximum sustainable deficit "
+                f"(~{round(raw)} kcal/day, floored by energy availability) rather "
+                "than pacing to the target date — losing faster pulls your finish "
+                "date earlier. Turn it off via set_fueling_goal (aggressive=false)."
             )
+        else:
+            kg_to_lose = (weight_kg - tgt) if tgt else None
+            if kg_to_lose and kg_to_lose > 0 and wr:
+                raw = (kg_to_lose * 7700 / wr) / 7
+            else:
+                raw = 400  # moderate default cut when no target/timeline
+            # Front-load: steeper while far from target, easing as weight nears
+            # goal. Recomputed from current weight each run, so it self-tapers.
+            start_w = goal.get("start_weight_kg")
+            if front_load_val and start_w and tgt and start_w > tgt:
+                fl_frac = max(0.0, min(1.0, (weight_kg - tgt) / (start_w - tgt)))
+                fl_mult = max(0.2, 1 + front_load_val * (2 * fl_frac - 1))
+                raw *= fl_mult
+            goal_adj = -round(raw) if uncapped else -min(round(raw), deficit_cap)
+
+            # Ahead-of-schedule ease: if the athlete has banked a comfortable
+            # lead on the straight-line schedule (>=2 weeks of scheduled loss),
+            # softens the cut — capped at 20% so a big lead can never gut it.
+            # This is on top of the self-tapering already baked into raw
+            # (kg-left / weeks-left recomputes each run). Trend-based when
+            # weigh-ins allow, else current weight vs schedule.
+            lead = _schedule_lead(goal, weight_kg, trend_cal)
+            if lead and lead["ease_factor"] < 1.0:
+                goal_adj = round(goal_adj * lead["ease_factor"])
+                notes.append(
+                    f"Ahead of schedule by ~{lead['lead_weeks']:.1f} weeks "
+                    f"({_fmt_weight(lead['lead_kg'], goal.get('units'))} under the target line"
+                    f"{' by trend' if lead['source'] == 'trend' else ''}) — eased the deficit "
+                    f"{round((1 - lead['ease_factor']) * 100)}% for a gentler cut while you hold "
+                    "the lead. It re-tightens automatically if you drift back to schedule."
+                )
     elif gt == "gain":
         goal_adj = 400  # midpoint of +300-500, carb-led
 
@@ -3557,7 +3590,7 @@ def generate_fueling_plan(
         projection = _project_trajectory(
             weight_kg, tgt, goal.get("start_weight_kg"), goal.get("target_date"),
             front_load_val, bmr, mean_exp, ffm_kg, ea_min_val, floor_mult,
-            min_kcal_val, deficit_cap, uncapped,
+            min_kcal_val, deficit_cap, uncapped, aggressive=aggressive,
         )
         if projection.get("projected_finish_date") and projection.get("beats_target_date") is False:
             notes.append(f"At the sustainable rate you reach "
