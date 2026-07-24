@@ -1,4 +1,7 @@
 <!-- TEMPLATE: /fuel replaces the `const PLAN` object in the <script> with the generate_fueling_plan JSON, then publishes this as an Artifact. The embedded object below is sample data so the file renders standalone. -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Roboto+Mono:wght@500;600&display=swap" rel="stylesheet">
 <style>
   :root{
     --bg:#0e1520; --panel:#18232f; --panel-2:#1f2c3a; --line:#2a3a4c;
@@ -7,8 +10,8 @@
     --protein:#4f9dde; --carbs:#e8873a; --fat:#c9a24b;
     --good:#3fb98a; --warn:#e8873a; --crit:#e05260;
     --radius:14px; --shadow:0 1px 0 rgba(255,255,255,.03), 0 12px 30px -18px rgba(0,0,0,.7);
-    --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",Menlo,monospace;
-    --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --mono:"Roboto Mono",ui-monospace,"SF Mono","JetBrains Mono",Menlo,monospace;
+    --sans:"Inter",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   }
   @media (prefers-color-scheme: light){
     :root{ --bg:#f4f6f9; --panel:#ffffff; --panel-2:#f0f3f7; --line:#e0e6ee;
@@ -24,8 +27,8 @@
 
   *{box-sizing:border-box}
   body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
-    line-height:1.5;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
-    font-variant-numeric:tabular-nums;}
+    font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased;
+    text-rendering:optimizeLegibility;font-variant-numeric:tabular-nums;}
   h1,h2,h3{text-wrap:balance;}
   .wrap{max-width:1060px;margin:0 auto;padding:34px 22px 72px;}
   .num{font-family:var(--mono);font-variant-numeric:tabular-nums;}
@@ -247,7 +250,6 @@
   .block > .lead h2{font-size:14.5px;font-weight:650;margin:0;letter-spacing:-.01em;}
   .block > .lead span{font-size:12px;color:var(--ink-dim);text-align:right;}
 
-  #flagBlock{margin-top:16px;margin-bottom:2px;}
   .flags{display:flex;flex-direction:column;gap:7px;}
   /* Informational notes: quiet, compact rows — not full-height banners. */
   .flag{display:flex;gap:9px;align-items:baseline;background:var(--panel);border:1px solid var(--line);
@@ -274,10 +276,6 @@
       <div class="updated" id="updated"></div>
     </div>
   </header>
-
-  <section class="block" id="flagBlock">
-    <div class="flags" id="flags"></div>
-  </section>
 
   <div class="topwrap">
     <div class="card today-combined" id="todayCard">
@@ -320,6 +318,11 @@
   <section class="block" id="projBlock">
     <div class="lead"><h2>Projected trajectory</h2><span id="projNote"></span></div>
     <div class="card"><canvas id="projChart" height="220" style="width:100%;display:block"></canvas></div>
+  </section>
+
+  <section class="block" id="flagBlock">
+    <div class="lead"><h2>Flags</h2><span>read before you eat</span></div>
+    <div class="flags" id="flags"></div>
   </section>
 
   <footer><b>generate_fueling_plan</b> &middot; session burn calibrated from your 90-day Garmin history &middot; durations from TrainingPeaks&rarr;Garmin</footer>
@@ -1371,7 +1374,7 @@ function drawProjection(){
   const ctx = cv.getContext('2d'); ctx.scale(dpr,dpr);
   const ink = cssVar('--ink'), dim = cssVar('--ink-faint'), line = cssVar('--line');
   const carbs = cssVar('--carbs'), good = cssVar('--good'), protein = cssVar('--protein');
-  const padL=44, padR=14, padT=16, padB=30;
+  const padL=58, padR=16, padT=16, padB=32;   // padL fits a right-aligned "149.9lb" without clipping
   const xs = pts.map(p=>new Date(p.date+'T00:00:00').getTime());
   const ys = pts.map(p=>p.weight_kg);
   const hxs = hist.map(h=>new Date(h.date+'T00:00:00').getTime());
@@ -1383,10 +1386,10 @@ function drawProjection(){
   const Y = w => padT + (yMax-w)/((yMax-yMin)||1)*(H-padT-padB);
 
   ctx.strokeStyle=line; ctx.lineWidth=1; ctx.fillStyle=dim;
-  ctx.font='10px ui-monospace,monospace'; ctx.textAlign='right'; ctx.textBaseline='middle';
+  ctx.font='11px "Roboto Mono",ui-monospace,monospace'; ctx.textAlign='right'; ctx.textBaseline='middle';
   for(let k=0;k<=3;k++){ const w=yMin+(yMax-yMin)*k/3; const y=Y(w);
     ctx.globalAlpha=.5; ctx.beginPath(); ctx.moveTo(padL,y); ctx.lineTo(W-padR,y); ctx.stroke(); ctx.globalAlpha=1;
-    ctx.fillText((IMPERIAL?_lb(w):w).toFixed(1)+WU, padL-6, y); }
+    ctx.fillText((IMPERIAL?_lb(w):w).toFixed(1)+WU, padL-8, y); }
 
   // x-axis date labels: earliest weigh-in (if any), a spread of projection
   // points, and the final point.
@@ -1455,7 +1458,7 @@ function drawProjection(){
 
   // legend, only needed once there are two series to tell apart
   if(hxs.length){
-    ctx.textAlign='left'; ctx.textBaseline='middle'; ctx.font='10px ui-monospace,monospace';
+    ctx.textAlign='left'; ctx.textBaseline='middle'; ctx.font='11px "Roboto Mono",ui-monospace,monospace';
     ctx.fillStyle=protein; ctx.beginPath(); ctx.arc(padL+4, padT+3, 3, 0, 7); ctx.fill();
     ctx.fillStyle=dim; ctx.fillText('actual', padL+11, padT+3);
     ctx.fillStyle=carbs; ctx.beginPath(); ctx.arc(padL+56, padT+3, 3, 0, 7); ctx.fill();
