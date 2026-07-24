@@ -7,6 +7,7 @@ endpoint always hands back the configured MCP_BEARER_TOKEN.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -1005,16 +1006,6 @@ _dash_cache: dict[str, Any] = {"html": None, "ts": 0.0}
 # its own <head> with a viewport meta tag. This route serves it directly with
 # no such wrapper, so without one here, mobile browsers render it at a
 # desktop width (~980px) and shrink-to-fit — the whole page reads as tiny.
-_DASH_DOC_HEAD_TMPL = (
-    '<!doctype html><html><head><meta charset="utf-8">'
-    '<meta name="viewport" content="width=device-width, initial-scale=1">'
-    '<meta name="theme-color" content="#0e1520">'
-    '<link rel="icon" href="/icon.svg" type="image/svg+xml">'
-    '<link rel="manifest" href="/manifest.json{qs}">'
-    "<title>Fueling Plan</title></head><body>"
-)
-_DASH_DOC_TAIL = "</body></html>"
-
 # Static PWA assets (manifest + icons) so "Add to Home Screen" installs a
 # standalone app instead of just bookmarking the page. Chrome's install
 # check wants raster icons at 192/512px (SVG-only icons aren't reliably
@@ -1026,6 +1017,28 @@ _ICON_192 = _WEB_DIR / "icon-192.png"
 _ICON_512 = _WEB_DIR / "icon-512.png"
 
 
+def _content_hash(path: pathlib.Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()[:10]
+
+
+# Content-hashed query strings so a changed icon always gets a fresh URL —
+# without this, browsers happily serve a day-old cached icon (see the long
+# Cache-Control below) even after the file on disk has changed.
+_ICON_SVG_V = _content_hash(_ICON_SVG)
+_ICON_192_V = _content_hash(_ICON_192)
+_ICON_512_V = _content_hash(_ICON_512)
+
+_DASH_DOC_HEAD_TMPL = (
+    '<!doctype html><html><head><meta charset="utf-8">'
+    '<meta name="viewport" content="width=device-width, initial-scale=1">'
+    '<meta name="theme-color" content="#0e1520">'
+    f'<link rel="icon" href="/icon.svg?v={_ICON_SVG_V}" type="image/svg+xml">'
+    '<link rel="manifest" href="/manifest.json{qs}">'
+    "<title>Fueling Plan</title></head><body>"
+)
+_DASH_DOC_TAIL = "</body></html>"
+
+
 def _dash_wrap(body_html: str, token_qs: str = "") -> str:
     return _DASH_DOC_HEAD_TMPL.format(qs=token_qs) + body_html + _DASH_DOC_TAIL
 
@@ -1035,7 +1048,7 @@ def icon() -> Response:
     return Response(
         _ICON_SVG.read_text(),
         media_type="image/svg+xml",
-        headers={"Cache-Control": "public, max-age=86400"},
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
     )
 
 
@@ -1044,7 +1057,7 @@ def icon_192() -> Response:
     return Response(
         _ICON_192.read_bytes(),
         media_type="image/png",
-        headers={"Cache-Control": "public, max-age=86400"},
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
     )
 
 
@@ -1053,7 +1066,7 @@ def icon_512() -> Response:
     return Response(
         _ICON_512.read_bytes(),
         media_type="image/png",
-        headers={"Cache-Control": "public, max-age=86400"},
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
     )
 
 
@@ -1080,8 +1093,8 @@ def manifest(request: Request) -> JSONResponse:
             "background_color": "#0e1520",
             "theme_color": "#0e1520",
             "icons": [
-                {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
-                {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"},
+                {"src": f"/icon-192.png?v={_ICON_192_V}", "sizes": "192x192", "type": "image/png", "purpose": "any maskable"},
+                {"src": f"/icon-512.png?v={_ICON_512_V}", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"},
             ],
         }
     )
