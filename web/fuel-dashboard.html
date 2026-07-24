@@ -164,6 +164,9 @@
   .eapill.good{color:var(--good);background:color-mix(in srgb,var(--good) 14%,transparent);}
   .eapill.warn{color:var(--warn);background:color-mix(in srgb,var(--warn) 15%,transparent);}
   .eapill.crit{color:var(--crit);background:color-mix(in srgb,var(--crit) 15%,transparent);}
+  .trimflag{font-size:11px;font-weight:600;padding:2px 7px;border-radius:6px;white-space:nowrap;
+    color:var(--warn);background:color-mix(in srgb,var(--warn) 14%,transparent);
+    border:1px solid color-mix(in srgb,var(--warn) 35%,transparent);}
 
   .foods{margin-top:14px;display:flex;flex-direction:column;gap:0;max-height:230px;overflow:auto;}
   .foods .f{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;
@@ -204,6 +207,9 @@
   .energy .op{color:var(--ink-faint);}
   .energy .def{margin-left:auto;color:var(--good);font-weight:600;}
   .energy .def b{color:var(--good);}
+  .eabreak{font-size:12px;color:var(--ink-dim);margin:-6px 0 16px;padding:0 2px;line-height:1.5;}
+  .eabreak b{font-family:var(--mono);color:var(--ink);}
+  .eabreak small{color:var(--ink-faint);}
 
   .progress{display:grid;grid-template-columns:1fr;gap:14px;}
   .track{position:relative;height:12px;border-radius:8px;background:var(--panel-2);margin:26px 0 8px;}
@@ -1151,11 +1157,21 @@ function renderDay(d){
     <span class="op">=</span><span>burn <b>${nf(d.expected_expenditure_kcal)}</b></span>
     <span class="op">−</span><span>eat <b>${nf(d.target_kcal)}</b></span>
     <span class="def">${nf(d.target_deficit_kcal)} deficit</span></div>`;
+  // EA breakdown (#3: expose the components so the number is auditable):
+  // EA = (intake − exercise) / FFM. Intake includes TEF (canonical definition).
+  const ead = d.energy_availability_detail;
+  const eaBreak = ead ? `<div class="eabreak">EA <b>${d.energy_availability_kcal_per_kg_ffm}</b>
+     = (eat <b>${nf(ead.intake_kcal)}</b>${ead.tef_kcal?` <small>incl. ${nf(ead.tef_kcal)} TEF</small>`:''}
+     − exercise <b>${nf(ead.exercise_kcal)}</b>) ÷ FFM <b>${ead.ffm_kg}kg</b>
+     <small>· 1 EA pt ≈ ${nf(ead.kcal_per_ea_point)} kcal</small></div>` : '';
+  const trimBadge = d.carbs_trimmed
+    ? `<span class="trimflag" title="Deficit too steep to hold this day's training carbs">⚠ carbs cut</span>` : '';
   $('detail').innerHTML = `
     <div class="detail-head"><div class="t">${dow(d.date)} ${dmd(d.date)}<small>${sess}</small></div>
-      <div class="chip ${eaPill(d.energy_availability_kcal_per_kg_ffm)}"><span class="dot"></span>EA ${d.energy_availability_kcal_per_kg_ffm}</div></div>
+      <div class="dc-tags">${trimBadge}<div class="chip ${eaPill(d.energy_availability_kcal_per_kg_ffm)}"><span class="dot"></span>EA ${d.energy_availability_kcal_per_kg_ffm}</div></div></div>
     ${sessList ? `<div style="margin-bottom:14px">${sessList}</div>` : ''}
     ${energy}
+    ${eaBreak}
     <div class="detail-grid">
       <div><h3>Targets · ${nf(d.target_kcal)} kcal</h3><div class="macros">${macros}</div></div>
       <div><h3>Meals</h3>${meals}</div>
@@ -1257,6 +1273,7 @@ function render(){
       <div class="dc-top">
         <div class="dc-day">${dow(d.date)}<small>${dmd(d.date)}</small></div>
         <div class="dc-tags">
+          ${d.carbs_trimmed?`<span class="trimflag" title="Deficit too steep to hold this day's training carbs — carbs cut to fit; the session(s) will be under-fuelled">⚠ carbs cut</span>`:''}
           <span class="eapill ${eaPill(e)}">EA ${e??'—'}</span>
           <span class="fuelmark${d.needs_fuel?' on':''}" title="${d.needs_fuel?'fuel plan':'no fuel needed'}"></span>
         </div>

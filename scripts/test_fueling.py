@@ -860,6 +860,40 @@ def main():
     check("swim: no during-fuel", swim_card["during_carbs_g_total"] == 0)
     check("swim: post-fuel intact", swim_card["post_carbs_g"] > 0)
 
+    print("modeled metabolic adaptation (NEAT discount from kg lost):")
+    check("no loss -> no discount",
+          g._modeled_adaptation_factor({"goal_type": "lose", "start_weight_kg": 77.0}, 77.0) == 1.0)
+    check("3kg lost -> ~3.6% NEAT trim",
+          abs(g._modeled_adaptation_factor({"goal_type": "lose", "start_weight_kg": 77.0}, 74.0) - 0.964) < 0.001)
+    check("discount is capped (10kg lost -> 8%, not 12%)",
+          abs(g._modeled_adaptation_factor({"goal_type": "lose", "start_weight_kg": 80.0}, 70.0) - 0.92) < 1e-9)
+    check("maintain goal -> no discount",
+          g._modeled_adaptation_factor({"goal_type": "maintain", "start_weight_kg": 77.0}, 74.0) == 1.0)
+    check("no start weight -> no discount",
+          g._modeled_adaptation_factor({"goal_type": "lose"}, 74.0) == 1.0)
+    # In-plan: with weight below start and no weigh-in trend to calibrate, the
+    # modeled discount applies and is disclosed; EA detail is exposed per day.
+    _tgt_adapt = (TODAY + timedelta(weeks=8)).isoformat()
+    g.set_fueling_goal(goal_type="lose", target_weight_kg=70.0, target_date=_tgt_adapt,
+                       sex="male", height_cm=178, age=40, start_weight_kg=80.0)
+    plan_adapt = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=3)
+    check("plan applies modeled adaptation to the energy base",
+          "modeled_adaptation" in plan_adapt["energy_base"]["source"])
+    check("modeled-adaptation note surfaced",
+          any("metabolic adaptation" in n.lower() for n in plan_adapt["notes"]))
+    check("EA detail exposed with intake/exercise/ffm components",
+          all(set(("intake_kcal", "exercise_kcal", "ffm_kg")).issubset(
+              (d.get("energy_availability_detail") or {})) for d in plan_adapt["days"]))
+    check("EA detail reconciles: (intake - exercise)/ffm == reported EA",
+          all(abs(round((d["energy_availability_detail"]["intake_kcal"]
+                         - d["energy_availability_detail"]["exercise_kcal"])
+                        / d["energy_availability_detail"]["ffm_kg"], 1)
+                  - d["energy_availability_kcal_per_kg_ffm"]) <= 0.1
+              for d in plan_adapt["days"]))
+    # restore the default goal
+    g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
+                       sex="male", height_cm=178, age=40)
+
     print("adaptive TDEE:")
     _save_nt, _save_air = g.nutrition_trend, g.get_activities_in_range
     g.nutrition_trend = lambda weeks=4: {

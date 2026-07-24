@@ -2480,6 +2480,29 @@ def _weight_series(days: int = 35) -> list[tuple[str, float]]:
     return out
 
 
+# Modeled adaptive thermogenesis: on a sustained cut the body downregulates
+# NEAT (the classic mid-diet stall). Absent enough weigh-ins to measure it,
+# estimate it from mass already lost — adaptation scales roughly with the
+# fraction of bodyweight shed. ~1.2% of NEAT per kg lost, capped so it can
+# only ever shave a modest slice, never invent a large correction.
+_ADAPT_PER_KG_LOST = 0.012
+_ADAPT_MAX = 0.08          # cap the modeled discount at 8% of NEAT
+
+
+def _modeled_adaptation_factor(goal: dict, weight_kg: float | None) -> float:
+    """Multiplicative NEAT discount (<=1.0) from modeled metabolic adaptation,
+    based on kg lost so far. 1.0 (no discount) for non-lose goals, unknown
+    weight, or no measurable loss yet. This is the fallback for when the
+    *measured* weigh-in trend can't calibrate — the two must not both apply."""
+    if (goal or {}).get("goal_type") != "lose":
+        return 1.0
+    start_w = goal.get("start_weight_kg")
+    if not (start_w and weight_kg) or weight_kg >= start_w:
+        return 1.0
+    kg_lost = start_w - weight_kg
+    return 1.0 - min(_ADAPT_MAX, _ADAPT_PER_KG_LOST * kg_lost)
+
+
 def _weight_trend_calibration(goal: dict, weight_kg: float) -> dict | None:
     """Compare the measured weight trend to what the planned deficit predicts
     and, when there's enough data, nudge the non-exercise base to close the gap
@@ -2652,12 +2675,29 @@ def generate_fueling_plan(
     # Weigh-in trend recalibration: compare the measured weight trend to what
     # the planned deficit predicts and nudge the base to close the gap.
     trend_cal = _weight_trend_calibration(goal, weight_kg)
+    measured_trend_applied = False
     if trend_cal:
         if trend_cal.get("applied_factor"):
             neat_base *= trend_cal["applied_factor"]
             base_source = base_source + "+weigh_in_trend"
+            measured_trend_applied = True
         if trend_cal.get("note"):
             notes.append(trend_cal["note"])
+
+    # Modeled adaptive thermogenesis — only when the *measured* trend didn't
+    # already correct the base (else we'd double-count the same slowdown). Uses
+    # kg-lost-so-far as the proxy for how much NEAT has downregulated.
+    if not measured_trend_applied and base_source.startswith("rmr"):
+        adapt = _modeled_adaptation_factor(goal, weight_kg)
+        if adapt < 1.0:
+            neat_base *= adapt
+            base_source += "+modeled_adaptation"
+            notes.append(
+                f"Modeled metabolic adaptation: NEAT trimmed {round((1 - adapt) * 100)}% "
+                f"for the ~{round((goal.get('start_weight_kg') or weight_kg) - weight_kg, 1)}kg "
+                "lost so far (the mid-cut slowdown). Sync weigh-ins regularly to replace this "
+                "estimate with your measured trend."
+            )
 
     # Goal daily kcal adjustment (deficit/surplus)
     wr = _weeks_remaining(goal.get("target_date"))
@@ -3096,10 +3136,20 @@ def generate_fueling_plan(
         carbs_g, fat_g, carbs_trimmed = _fill_macros(
             target_kcal, protein_g, carb_target_g, weight_kg)
 
-        # Energy availability = (intake − exercise energy) / fat-free mass.
-        # Sports-science low-EA threshold is ~30 kcal/kg FFM/day; below ~25
-        # is a clear RED-S / under-fueling risk.
+        # Energy availability = (dietary intake − exercise energy) / fat-free
+        # mass. Intake is the food eaten (target_kcal, TEF included — that's the
+        # canonical definition). Sports-science low-EA threshold is ~30 kcal/kg
+        # FFM/day; below ~25 is a clear RED-S / under-fueling risk.
         energy_availability = round((target_kcal - total_burn) / ffm_kg, 1) if ffm_kg else None
+        # Auditable breakdown so the EA number is legible on the card: how
+        # intake and exercise combine, and what one point of EA costs in kcal.
+        energy_availability_detail = {
+            "intake_kcal": target_kcal,
+            "exercise_kcal": total_burn,
+            "tef_kcal": tef_kcal,          # part of intake, shown for transparency
+            "ffm_kg": ffm_kg,
+            "kcal_per_ea_point": round(ffm_kg) if ffm_kg else None,
+        } if ffm_kg else None
 
         # Fuel only sessions at/above the minimum duration (default 90 min).
         fuel_cards = []
@@ -3196,6 +3246,7 @@ def generate_fueling_plan(
             "carb_g_per_kg": carb_ratio,
             "carbs_trimmed": carbs_trimmed,
             "energy_availability_kcal_per_kg_ffm": energy_availability,
+            "energy_availability_detail": energy_availability_detail,
             "needs_fuel": bool(fuel_cards),
             "fuel": fuel_cards,
             "skip_breakfast": skip_bf,
