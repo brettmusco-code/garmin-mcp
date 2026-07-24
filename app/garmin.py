@@ -1608,7 +1608,7 @@ def _latest_body_stats(lookback_days: int = 30) -> dict:
     entries = (bc or {}).get("dateWeightList") or []
     if not entries:
         return out
-    latest = max(entries, key=lambda e: (e.get("date") or e.get("calendarDate") or ""))
+    latest = max(entries, key=lambda e: str(e.get("date") or e.get("calendarDate") or ""))
     w_g = latest.get("weight")
     if w_g:
         out["weight_kg"] = round(w_g / 1000.0, 1)
@@ -1620,7 +1620,9 @@ def _latest_body_stats(lookback_days: int = 30) -> dict:
     mm = latest.get("muscleMass")
     if mm:
         out["muscle_mass_kg"] = round(mm / 1000.0, 1)
-    d_str = latest.get("date") or latest.get("calendarDate")
+    # date is usually an ISO string but can come back as an epoch int —
+    # coerce before slicing so it never blows up the plan.
+    d_str = str(latest.get("date") or latest.get("calendarDate") or "")
     if d_str:
         out["as_of"] = d_str[:10]
         try:
@@ -2664,7 +2666,7 @@ def generate_fueling_plan(
     scheduled_by_date: dict[str, list[dict]] = {}
     try:
         for it in get_scheduled_workouts(start.isoformat(), end.isoformat()):
-            d_str = (it.get("date") or "")[:10]
+            d_str = str(it.get("date") or "")[:10]
             if d_str:
                 scheduled_by_date.setdefault(d_str, []).append(it)
     except Exception as ex:  # noqa: BLE001
