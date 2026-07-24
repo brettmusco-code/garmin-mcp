@@ -835,7 +835,7 @@ def nutrition_plan_vs_actual(days_back: int = 7) -> dict:
     Returns per-day rows + weekly totals + logging summary.
     """
     days_back = max(1, min(int(days_back), 14))
-    today_d = date.today()
+    today_d = _local_today()   # local day so "today is in progress" is correct
 
     # Fetch the most recent weekly snapshot — need its nutrition_plan
     snapshots = get_weekly_snapshots(weeks_back=1)
@@ -1018,7 +1018,7 @@ def nutrition_trend(weeks: int = 4) -> dict:
          stats_and_body + body_composition entries
     """
     weeks = max(1, min(int(weeks), 26))
-    today_d = date.today()
+    today_d = _local_today()   # local day anchors the trailing window correctly
     window_days = weeks * 7
     window_start = today_d - timedelta(days=window_days - 1)
 
@@ -1480,10 +1480,10 @@ def set_fueling_goal(
         # stale or wrong. Wins over the Garmin reading everywhere (progress,
         # BMR, EA, projection) until cleared. Stamped with the date it was set.
         "current_weight_kg": round(float(current_weight_kg), 1) if current_weight_kg else None,
-        "current_weight_as_of": date.today().isoformat() if current_weight_kg else None,
+        "current_weight_as_of": _local_today().isoformat() if current_weight_kg else None,
         "units": units_n,
         "notes": notes,
-        "set_date": date.today().isoformat(),
+        "set_date": _local_today().isoformat(),
     }
     cache.put("fueling_goal", {"key": "current"}, goal, key_parts=["current"])
     # Verify the write actually landed. cache.put swallows errors (e.g. the
@@ -1586,7 +1586,7 @@ def _weeks_remaining(target_date: str | None) -> int | None:
         td = datetime.strptime(target_date[:10], "%Y-%m-%d").date()
     except (ValueError, TypeError):
         return None
-    days = (td - date.today()).days
+    days = (td - _local_today()).days
     if days <= 0:
         return 0
     return max(1, (days + 6) // 7)
@@ -1628,7 +1628,7 @@ def get_fueling_goal() -> dict:
     if sd:
         try:
             progress["goal_age_days"] = (
-                date.today() - datetime.strptime(sd, "%Y-%m-%d").date()
+                _local_today() - datetime.strptime(sd, "%Y-%m-%d").date()
             ).days
         except (ValueError, TypeError):
             pass
@@ -2409,9 +2409,9 @@ def _project_trajectory(weight_kg, target, start_w, target_date, front_load_val,
     except (ValueError, TypeError):
         td = None
 
-    points = [{"date": date.today().isoformat(), "weight_kg": round(weight_kg, 2)}]
+    points = [{"date": _local_today().isoformat(), "weight_kg": round(weight_kg, 2)}]
     w = weight_kg
-    d = date.today()
+    d = _local_today()
     finish = None
     for _ in range(60):  # up to ~14 months
         if w <= target:
@@ -2443,7 +2443,7 @@ def _project_trajectory(weight_kg, target, start_w, target_date, front_load_val,
     }
     if finish:
         out["projected_finish_date"] = finish.isoformat()
-        out["projected_weeks"] = round((finish - date.today()).days / 7.0, 1)
+        out["projected_weeks"] = round((finish - _local_today()).days / 7.0, 1)
         if td:
             out["beats_target_date"] = finish <= td
     else:
@@ -3405,7 +3405,7 @@ def push_nutrition_targets_to_garmin(
     diagnostics, so one live run tells you exactly what stuck.
     """
     days = max(1, min(int(days), 7))
-    start = _coerce_date(target_date) if target_date else date.today()
+    start = _coerce_date(target_date) if target_date else _local_today()
 
     # Collect per-day targets from recent snapshots (latest wins per date).
     plan: dict[str, dict] = {}
@@ -3759,8 +3759,12 @@ def get_daily_summaries(
     result: dict[str, dict[str, Any]] = {m: {} for m in metrics}
 
     tasks: list[tuple[str, str]] = []
-    today_str = date.today().isoformat()
-    yesterday_str = (date.today() - timedelta(days=1)).isoformat()
+    # Local day, not UTC: in the evening a UTC "today" is already tomorrow, so
+    # the athlete's current local day would be classified as older-than-
+    # yesterday and frozen at IMMUTABLE_TTL — never re-fetched, exactly the
+    # stale-food symptom. Anchor the "still mutable" window to the local day.
+    today_str = _local_today().isoformat()
+    yesterday_str = (_local_today() - timedelta(days=1)).isoformat()
     for m in metrics:
         for d in dates:
             if not force_refresh:
@@ -4689,7 +4693,7 @@ def resource_athlete_profile() -> dict[str, Any]:
 
 def resource_today_summary() -> dict[str, Any]:
     c = get_client()
-    today = date.today().isoformat()
+    today = _local_today().isoformat()
     out: dict[str, Any] = {"date": today}
     for key, call in [
         ("stats", lambda: c.get_stats(today)),
@@ -4707,7 +4711,7 @@ def resource_today_summary() -> dict[str, Any]:
 
 def resource_training_readiness() -> dict[str, Any]:
     c = get_client()
-    today = date.today().isoformat()
+    today = _local_today().isoformat()
     out: dict[str, Any] = {"date": today}
     for key, call in [
         ("training_readiness", lambda: c.get_training_readiness(today)),
