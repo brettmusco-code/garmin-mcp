@@ -1462,9 +1462,17 @@ function drawProjection(){
   const step = Math.max(1, Math.ceil(pts.length/5));
   for(let i=0;i<pts.length;i+=step) labelTimes.push(xs[i]);
   if(labelTimes[labelTimes.length-1]!==xs[pts.length-1]) labelTimes.push(xs[pts.length-1]);
-  const seenDay = new Set();
-  labelTimes.forEach(t=>{ const key=Math.round(t/864e5); if(seenDay.has(key)) return; seenDay.add(key);
-    ctx.fillText(dmd(new Date(t).toISOString().slice(0,10)), X(t), H-padB+8); });
+  // Draw left→right, skipping any label that would overprint the previous
+  // one. Adjacent weigh-ins (e.g. Jul 23 + Jul 24) sit ~1px apart on a
+  // multi-week axis, so exact same-day dedup isn't enough — enforce a
+  // minimum pixel gap so labels never collide into "Ju1u2324".
+  const MIN_LABEL_GAP = 34;
+  const drawn = labelTimes
+    .filter((t,i,a)=>a.indexOf(t)===i)         // unique timestamps
+    .sort((a,b)=>a-b);
+  let lastX = -Infinity;
+  drawn.forEach(t=>{ const px=X(t); if(px-lastX < MIN_LABEL_GAP) return; lastX=px;
+    ctx.fillText(dmd(new Date(t).toISOString().slice(0,10)), px, H-padB+8); });
   ctx.textBaseline='middle';
 
   // target line
