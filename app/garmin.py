@@ -256,6 +256,55 @@ def _coerce_date(d: str | date) -> date:
     return datetime.strptime(d, "%Y-%m-%d").date()
 
 
+# The fueling plan's notion of "today" is a *local training day*, not a UTC
+# day. The server runs in UTC (Render), so a bare date.today() rolls over to
+# tomorrow at 20:00 Eastern — the plan would show Friday while it's still
+# Thursday evening. Anchor "today" to the athlete's local zone instead.
+# Override with FUELING_TZ (any IANA name) if you're not on US Eastern.
+try:
+    from zoneinfo import ZoneInfo
+    _LOCAL_TZ = ZoneInfo(os.environ.get("FUELING_TZ", "America/New_York"))
+except Exception:  # noqa: BLE001 — bad tz name or missing tzdata: fall back to UTC
+    _LOCAL_TZ = None
+
+# After this local time, a scheduled session that still isn't logged is treated
+# as a no-show — the day's plan stops assuming it will happen (and stops
+# fuelling for it). Late-evening sessions rarely materialise once it's this
+# late. Local hour, 24h; override with FUELING_WORKOUT_CUTOFF_HOUR /
+# FUELING_WORKOUT_CUTOFF_MIN.
+try:
+    _WORKOUT_CUTOFF_HOUR = int(os.environ.get("FUELING_WORKOUT_CUTOFF_HOUR", "20"))
+    _WORKOUT_CUTOFF_MIN = int(os.environ.get("FUELING_WORKOUT_CUTOFF_MIN", "30"))
+except (TypeError, ValueError):
+    _WORKOUT_CUTOFF_HOUR, _WORKOUT_CUTOFF_MIN = 20, 30
+
+
+def _local_now() -> datetime:
+    """Timezone-aware 'now' in the athlete's local zone (US Eastern default,
+    FUELING_TZ override); naive UTC-based fallback if zoneinfo is unavailable."""
+    if _LOCAL_TZ is not None:
+        return datetime.now(_LOCAL_TZ)
+    return datetime.now()
+
+
+def _local_today() -> date:
+    """Local calendar date — the plan's 'today'. Use in place of date.today()
+    everywhere 'today' means the athlete's training day, not a UTC day."""
+    return _local_now().date()
+
+
+def _past_workout_cutoff(d: date | None = None) -> bool:
+    """True when it's past the evening cutoff on local day `d` (default today),
+    i.e. a not-yet-done scheduled session should be treated as a no-show."""
+    now = _local_now()
+    day = d or now.date()
+    if now.date() > day:
+        return True          # the day is already over
+    if now.date() < day:
+        return False         # a future day — nothing has been missed yet
+    return (now.hour, now.minute) >= (_WORKOUT_CUTOFF_HOUR, _WORKOUT_CUTOFF_MIN)
+
+
 def _validate_range(start: str | date, end: str | date) -> tuple[date, date]:
     s = _coerce_date(start)
     e = _coerce_date(end)
@@ -1479,7 +1528,7 @@ def _load_skipped_sessions() -> list[dict]:
     ) or []
     if not isinstance(skips, list):
         return []
-    today_iso = date.today().isoformat()
+    today_iso = _local_today().isoformat()
     pruned = [s for s in skips if isinstance(s, dict) and (s.get("date") or "") >= today_iso]
     if len(pruned) != len(skips):
         cache.put("fueling_skips", {"key": "current"}, pruned, key_parts=["current"])
@@ -1894,7 +1943,7 @@ def _today_actuals() -> dict | None:
     an unlogged today reads as zero/empty rather than silently showing
     yesterday's numbers under a 'today' label. Powers the dashboard's
     'today so far' card."""
-    today = date.today()
+    today = _local_today()
     today_iso = today.isoformat()
     try:
         ds = get_daily_summaries(today_iso, today_iso,
@@ -1989,7 +2038,7 @@ def _recent_days(n: int = 2) -> list[dict]:
     """The last n days' actual consumed calories vs the planned target (from
     the saved weekly snapshot) and measured expenditure — for a quick
     'am I on plan' readout."""
-    today = date.today()
+    today = _local_today()
     try:
         ds = get_daily_summaries((today - timedelta(days=n)).isoformat(),
                                  (today - timedelta(days=1)).isoformat(),
@@ -2474,7 +2523,7 @@ def generate_fueling_plan(
     existing snapshot fields are preserved.
     """
     days = max(1, min(int(days), 28))
-    start = _coerce_date(start_date) if start_date else date.today()
+    start = _coerce_date(start_date) if start_date else _local_today()
     end = start + timedelta(days=days - 1)
     notes: list[str] = []
 
@@ -2628,7 +2677,7 @@ def generate_fueling_plan(
     # date (Mon..yesterday); an integer looks back that many days.
     if rebalance and not carb_load:
         if rebalance is True:
-            rb_days = date.today().weekday()  # Monday -> 0: fresh week, skip
+            rb_days = _local_today().weekday()  # Monday -> 0: fresh week, skip
         else:
             try:
                 rb_days = max(0, min(int(rebalance), 14))
@@ -2637,7 +2686,7 @@ def generate_fueling_plan(
         if rb_days:
             try:
                 pva = nutrition_plan_vs_actual(days_back=min(rb_days + 1, 14))
-                today_iso = date.today().isoformat()
+                today_iso = _local_today().isoformat()
                 drift = 0.0
                 counted = 0
                 for r in pva.get("rows", []):
@@ -2686,7 +2735,7 @@ def generate_fueling_plan(
     # Completed activities *today* — used to swap the estimate for the real
     # burn on the current day once a session is done, so today's target and
     # energy-availability track reality instead of a projection.
-    today_iso = date.today().isoformat()
+    today_iso = _local_today().isoformat()
     actual_today: list[dict] = []
     if start.isoformat() <= today_iso <= end.isoformat():
         for a in history:
@@ -2725,6 +2774,7 @@ def generate_fueling_plan(
     skipped_sessions = _load_skipped_sessions()
     skipped_titles: list[str] = []
     fuel_trim_dates: list[str] = []
+    no_show_titles: list[str] = []   # today's sessions dropped as late no-shows
 
     # Estimated-session burn is calibrated from the athlete's own history of
     # gross per-activity calories, so it needs the same gross-to-Active
@@ -2790,6 +2840,21 @@ def generate_fueling_plan(
                     "kcal_per_hour": round(m["kcal"] / m["hours"]) if m["hours"] else 0,
                     "burn_source": "actual_today", "done": True, "unplanned": True,
                 })
+
+        # Late-evening no-show: once it's past the local cutoff (default 20:30
+        # Eastern), a scheduled session for TODAY that still hasn't been logged
+        # almost certainly won't happen — drop it so the day stops planning
+        # (and fuelling) around a workout that isn't coming. Completed/unplanned
+        # sessions stay; only not-yet-done scheduled ones are removed.
+        if d_iso == today_iso and _past_workout_cutoff(d):
+            kept = []
+            for s in sessions:
+                if (not s.get("done")) and s.get("burn_source") not in ("none",) \
+                        and s.get("intensity") != "rest":
+                    no_show_titles.append(f"{s['title']} on {d_iso}")
+                else:
+                    kept.append(s)
+            sessions = kept
 
         if not sessions:
             sessions = [{"title": "rest", "sport": "rest", "intensity": "rest",
@@ -3091,6 +3156,14 @@ def generate_fueling_plan(
 
     if skipped_titles:
         notes.append("Skipped (per skip_scheduled_session): " + "; ".join(skipped_titles) + ".")
+
+    if no_show_titles:
+        cutoff = f"{_WORKOUT_CUTOFF_HOUR:02d}:{_WORKOUT_CUTOFF_MIN:02d}"
+        notes.append(
+            f"It's past {cutoff} and these weren't logged, so today's plan no longer "
+            f"assumes them: {'; '.join(no_show_titles)}. Today's target and fuel are "
+            "recomputed as if they won't happen — log the workout if you still do it."
+        )
 
     if phantom_dates:
         notes.append(

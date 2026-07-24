@@ -123,6 +123,15 @@ def check(label, cond):
 def main():
     target_date = (TODAY + timedelta(weeks=6)).isoformat()
 
+    # Pin "now" to local noon so plan tests are deterministic regardless of the
+    # wall-clock time the suite runs at — otherwise, running after the 20:30
+    # workout cutoff would drop today's scheduled session and break unrelated
+    # periodization checks. The dedicated cutoff test overrides this locally.
+    from datetime import datetime as _dt_pin
+    from zoneinfo import ZoneInfo as _ZI_pin
+    _ET_pin = _ZI_pin("America/New_York")
+    g._local_now = lambda: _dt_pin(TODAY.year, TODAY.month, TODAY.day, 12, 0, tzinfo=_ET_pin)
+
     print("set_fueling_goal:")
     saved = g.set_fueling_goal(
         goal_type="lose", target_weight_kg=72.0, target_date=target_date,
@@ -575,6 +584,40 @@ def main():
           and not any(s.get("assumed") for s in plan_iso["days"][1]["sessions"]))
     g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
                        sex="male", height_cm=178, age=40)
+
+    print("local-timezone 'today' + late-workout cutoff:")
+    from datetime import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZI
+    _ET = _ZI("America/New_York")
+    check("_local_today returns a date", isinstance(g._local_today(), date))
+    _save_now = g._local_now
+    # 8:00pm ET: before the 20:30 cutoff -> nothing dropped
+    g._local_now = lambda: _dt(TODAY.year, TODAY.month, TODAY.day, 20, 0, tzinfo=_ET)
+    check("before cutoff: not flagged as past", g._past_workout_cutoff(TODAY) is False)
+    # 9:00pm ET: past the cutoff for today, but not for a future day
+    g._local_now = lambda: _dt(TODAY.year, TODAY.month, TODAY.day, 21, 0, tzinfo=_ET)
+    check("past cutoff for today", g._past_workout_cutoff(TODAY) is True)
+    check("future day never past cutoff", g._past_workout_cutoff(TODAY + timedelta(days=1)) is False)
+    check("a fully-elapsed past day is past cutoff", g._past_workout_cutoff(TODAY - timedelta(days=1)) is True)
+    # A not-yet-done scheduled session TODAY is dropped as a no-show past cutoff.
+    _save_sched_co = g.get_scheduled_workouts
+    g.get_scheduled_workouts = lambda s, e, **k: [
+        {"date": s, "title": "Evening Threshold", "sportTypeKey": "cycling",
+         "duration": 75 * 60, "itemType": "workout"}]
+    plan_late = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=1)
+    check("past cutoff: unlogged scheduled session dropped from today",
+          not any(s["sport"] == "cycling" for s in plan_late["days"][0]["sessions"]))
+    check("past cutoff: day falls back to rest once its only session is dropped",
+          plan_late["days"][0]["primary_intensity"] == "rest")
+    check("past cutoff: a note explains the no-show drop",
+          any("past 20:30" in n and "weren't logged" in n for n in plan_late["notes"]))
+    # Before the cutoff, the same session is kept.
+    g._local_now = lambda: _dt(TODAY.year, TODAY.month, TODAY.day, 12, 0, tzinfo=_ET)
+    plan_early = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=1)
+    check("before cutoff: scheduled session is kept",
+          any(s["sport"] == "cycling" for s in plan_early["days"][0]["sessions"]))
+    g.get_scheduled_workouts = _save_sched_co
+    g._local_now = _save_now
 
     print("floors dropped (bmr_floor_mult=0, ea_floor=0):")
     plan_nf = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7,
