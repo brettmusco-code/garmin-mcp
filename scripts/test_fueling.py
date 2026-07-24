@@ -304,14 +304,26 @@ def main():
     check("kg to target = 2.0", gi["progress"]["kg_to_target"] == 2.0)
     check("required daily change negative", gi["progress"]["required_daily_kcal_change"] < 0)
 
-    print("_latest_body_stats tolerates an epoch-int date (Garmin sometimes sends one):")
+    print("_coerce_garmin_date parses ISO strings and epoch (s/ms):")
+    check("ISO string", g._coerce_garmin_date("2026-07-24") == date(2026, 7, 24))
+    check("ISO datetime", g._coerce_garmin_date("2026-07-24T06:00:00.0") == date(2026, 7, 24))
+    check("epoch seconds (int)", g._coerce_garmin_date(1784796695) == date(2026, 7, 23))
+    check("epoch seconds (str)", g._coerce_garmin_date("1784796695") == date(2026, 7, 23))
+    check("epoch millis", g._coerce_garmin_date(1690000000000) == date(2023, 7, 22))
+    check("None -> None", g._coerce_garmin_date(None) is None)
+    check("garbage -> None", g._coerce_garmin_date("not-a-date") is None)
+
+    print("_latest_body_stats parses an epoch date into a real as_of (not the raw epoch):")
     _save_bc = g.get_body_composition
     g.get_body_composition = lambda startdate=None, enddate=None, **k: {"dateWeightList": [
-        {"date": 1690000000000, "weight": 74900, "bodyFat": 14.0}]}  # int date, not ISO
+        {"date": 1784796695, "weight": 74900, "bodyFat": 14.0}]}  # epoch seconds, not ISO
     _bs = g._latest_body_stats()  # must not raise "'int' object is not subscriptable"
     g.get_body_composition = _save_bc
-    check("int body-comp date -> weight still parsed, no crash", _bs["weight_kg"] == 74.9)
-    check("int body-comp date -> as_of coerced to string", isinstance(_bs["as_of"], str))
+    check("epoch body-comp date -> weight still parsed, no crash", _bs["weight_kg"] == 74.9)
+    check("epoch body-comp date -> as_of is a real ISO date (2026-07-23), not the raw epoch",
+          _bs["as_of"] == "2026-07-23")
+    check("epoch body-comp date -> staleness_days computed (an int)",
+          isinstance(_bs["staleness_days"], int))
 
     print("generate_fueling_plan (Katch-McArdle BMR from body-fat):")
     plan = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7)

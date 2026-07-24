@@ -1001,13 +1001,12 @@ function renderUpdated(iso){
   if(!iso){ el.innerHTML=''; return; }
   const t = new Date(iso);
   if(isNaN(t.getTime())){ el.innerHTML=''; return; }
-  const mins = Math.max(0, Math.round((Date.now()-t.getTime())/60000));
-  // Absolute local time only — the "(Xm ago)" relative stamp was removed by
-  // request. Render in the viewer's own timezone (Eastern for the athlete).
+  // Absolute local time only — no relative "(ago)" clause and no trailing
+  // "may be stale" text (removed by request). Rendered in the viewer's own
+  // timezone (Eastern for the athlete).
   const timeStr = t.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});
-  const stale = mins>150; // hourly refresh cadence — flag if it's been well over that
-  el.classList.toggle('stale', stale);
-  el.innerHTML = `Updated <b>${timeStr}</b>${stale?' — may be stale':''}`;
+  el.classList.remove('stale');
+  el.innerHTML = `Updated <b>${timeStr}</b>`;
 }
 
 const EAF_RAW = PLAN.config ? PLAN.config.ea_floor_kcal_per_kg_ffm : 30;
