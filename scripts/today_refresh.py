@@ -123,7 +123,7 @@ def _check_cooldowns() -> tuple[bool, str | None]:
 
 def run_live() -> int:
     """Refresh live intraday metrics (6-hour cadence)."""
-    print(f"=== today_refresh [live] {date.today()} ===")
+    print(f"=== today_refresh [live] {garmin._local_today()} ===")
 
     active, reason = _check_cooldowns()
     if active:
@@ -134,7 +134,7 @@ def run_live() -> int:
     if not _oauth_preflight():
         return 1
 
-    today_iso = date.today().isoformat()
+    today_iso = garmin._local_today().isoformat()
     print(f"[1/1] Live metrics ({len(LIVE_METRICS)}): {', '.join(LIVE_METRICS)}")
     try:
         # force_refresh=False so we honor any no-data sentinels written
@@ -181,10 +181,22 @@ def run_live() -> int:
 
 def run_workout_check() -> int:
     """Check for a new activity and refresh post-sync data if found (1-hour cadence)."""
-    today = date.today()
+    # Anchor to the athlete's LOCAL day, not the cron host's UTC day. The cron
+    # runs in UTC (Render); a bare date.today() rolls to tomorrow at ~8pm
+    # Eastern, so evening food logged on the local day was being ignored while
+    # the refresh force-fetched an empty not-yet-started UTC day.
+    today = garmin._local_today()
     today_iso = today.isoformat()
     yesterday_iso = (today - timedelta(days=1)).isoformat()
-    print(f"=== today_refresh [workout] {today_iso} ===")
+    # When the UTC day differs from the local day (evenings/early mornings),
+    # refresh nutrition for BOTH so a workout or food that Garmin filed under
+    # the other calendar day is still picked up.
+    utc_today_iso = date.today().isoformat()
+    nutrition_days = [today_iso]
+    if utc_today_iso not in nutrition_days:
+        nutrition_days.append(utc_today_iso)
+    print(f"=== today_refresh [workout] {today_iso}"
+          f"{' (+UTC ' + utc_today_iso + ')' if len(nutrition_days) > 1 else ''} ===")
 
     active, reason = _check_cooldowns()
     if active:
@@ -248,15 +260,17 @@ def run_workout_check() -> int:
         # No new activity, but food logged through the day still needs to flow
         # through — refresh nutrition every run and regenerate the plan so the
         # dashboard reflects intraday logging within the hour.
-        print("[2/3] Post-sync metrics — nutrition only (no new activity)")
-        try:
-            garmin.get_daily_summaries(
-                startdate=today_iso, enddate=today_iso,
-                metrics=["nutrition_food_log", "nutrition_meals", "stats_and_body"],
-                force_refresh=True,
-            )
-        except Exception as ex:  # noqa: BLE001
-            print(f"  nutrition refresh error: {str(ex)[:120]}", file=sys.stderr)
+        print(f"[2/3] Post-sync metrics — nutrition only (no new activity), "
+              f"days: {', '.join(nutrition_days)}")
+        for nd in nutrition_days:
+            try:
+                garmin.get_daily_summaries(
+                    startdate=nd, enddate=nd,
+                    metrics=["nutrition_food_log", "nutrition_meals", "stats_and_body"],
+                    force_refresh=True,
+                )
+            except Exception as ex:  # noqa: BLE001
+                print(f"  nutrition refresh error ({nd}): {str(ex)[:120]}", file=sys.stderr)
         _refresh_fueling_plan()
         print("[3/3] Activity details — skipped (no new activity)")
         return 0
