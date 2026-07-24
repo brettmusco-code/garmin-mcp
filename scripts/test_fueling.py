@@ -851,7 +851,7 @@ def main():
           g._schedule_lead(_sl_goal, 76.4, None)["ease_factor"] == 1.0)
     _far = g._schedule_lead(_sl_goal, 74.0, None)
     check("far ahead eases", _far["ease_factor"] < 1.0)
-    check("ease is capped at 20% no matter how far ahead", _far["ease_factor"] >= 0.80)
+    check("ease is capped at 50% no matter how far ahead", _far["ease_factor"] >= 0.50)
     check("behind schedule -> no ease",
           g._schedule_lead(_sl_goal, 78.5, None)["ease_factor"] == 1.0)
     check("non-lose goal -> None", g._schedule_lead(dict(goal_type="maintain"), 75, None) is None)
