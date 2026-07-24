@@ -279,6 +279,34 @@ except (TypeError, ValueError):
     _WORKOUT_CUTOFF_HOUR, _WORKOUT_CUTOFF_MIN = 20, 30
 
 
+def _coerce_garmin_date(raw: Any) -> date | None:
+    """Parse a Garmin date field into a date. Garmin is inconsistent: usually
+    an ISO string ('2026-07-24' or '2026-07-24T...'), but body-composition
+    dateWeightList entries often send an epoch — in seconds (10 digits) or
+    milliseconds (13). Returns None if it can't be parsed."""
+    if raw is None or raw == "":
+        return None
+    # Numeric (or all-digit string) -> epoch. Milliseconds if it's too big to
+    # be a plausible seconds timestamp (>~ year 5138).
+    if isinstance(raw, (int, float)) or (isinstance(raw, str) and raw.isdigit()):
+        try:
+            v = float(raw)
+        except (TypeError, ValueError):
+            return None
+        if v > 1e11:          # milliseconds
+            v /= 1000.0
+        try:
+            return datetime.fromtimestamp(v, tz=_LOCAL_TZ).date() if _LOCAL_TZ \
+                else datetime.utcfromtimestamp(v).date()
+        except (ValueError, OverflowError, OSError):
+            return None
+    s = str(raw)[:10]
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+
+
 def _local_now() -> datetime:
     """Timezone-aware 'now' in the athlete's local zone (US Eastern default,
     FUELING_TZ override); naive UTC-based fallback if zoneinfo is unavailable."""
@@ -1657,7 +1685,11 @@ def _latest_body_stats(lookback_days: int = 30) -> dict:
     entries = (bc or {}).get("dateWeightList") or []
     if not entries:
         return out
-    latest = max(entries, key=lambda e: str(e.get("date") or e.get("calendarDate") or ""))
+    # Pick the newest entry by parsed date (Garmin mixes ISO strings and
+    # epochs, so a lexical string sort would misorder them); fall back to
+    # date.min for unparseable entries so they never win.
+    latest = max(entries, key=lambda e: (
+        _coerce_garmin_date(e.get("date") or e.get("calendarDate")) or date.min))
     w_g = latest.get("weight")
     if w_g:
         out["weight_kg"] = round(w_g / 1000.0, 1)
@@ -1669,17 +1701,12 @@ def _latest_body_stats(lookback_days: int = 30) -> dict:
     mm = latest.get("muscleMass")
     if mm:
         out["muscle_mass_kg"] = round(mm / 1000.0, 1)
-    # date is usually an ISO string but can come back as an epoch int —
-    # coerce before slicing so it never blows up the plan.
-    d_str = str(latest.get("date") or latest.get("calendarDate") or "")
-    if d_str:
-        out["as_of"] = d_str[:10]
-        try:
-            out["staleness_days"] = (
-                today - datetime.strptime(d_str[:10], "%Y-%m-%d").date()
-            ).days
-        except (ValueError, TypeError):
-            pass
+    # date is usually an ISO string but body-comp entries often send an epoch
+    # (s or ms) — parse both into a real date for as_of/staleness.
+    d = _coerce_garmin_date(latest.get("date") or latest.get("calendarDate"))
+    if d:
+        out["as_of"] = d.isoformat()
+        out["staleness_days"] = (today - d).days
     return out
 
 
@@ -2410,7 +2437,7 @@ def _project_trajectory(weight_kg, target, start_w, target_date, front_load_val,
 def _weight_series(days: int = 35) -> list[tuple[str, float]]:
     """Recent (date, weight_kg) points from Garmin body composition, oldest
     first. Empty when no weigh-ins are available in the window."""
-    end = date.today()
+    end = _local_today()
     start = end - timedelta(days=days)
     try:
         bc = get_body_composition(start.isoformat(), end.isoformat())
@@ -2420,14 +2447,15 @@ def _weight_series(days: int = 35) -> list[tuple[str, float]]:
     out: list[tuple[str, float]] = []
     for r in rows or []:
         try:
-            d = str(r.get("date") or r.get("calendarDate") or "")[:10]
+            # date may be ISO or an epoch (s/ms) — normalise to ISO.
+            d_parsed = _coerce_garmin_date(r.get("date") or r.get("calendarDate"))
             w = r.get("weight")
-            if w is None or not d:
+            if w is None or not d_parsed:
                 continue
             w = float(w)
             if w > 500:            # grams -> kg
                 w /= 1000.0
-            out.append((d, round(w, 2)))
+            out.append((d_parsed.isoformat(), round(w, 2)))
         except (TypeError, ValueError):
             continue
     out.sort(key=lambda x: x[0])
