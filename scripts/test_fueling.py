@@ -295,6 +295,15 @@ def main():
     check("kg to target = 2.0", gi["progress"]["kg_to_target"] == 2.0)
     check("required daily change negative", gi["progress"]["required_daily_kcal_change"] < 0)
 
+    print("_latest_body_stats tolerates an epoch-int date (Garmin sometimes sends one):")
+    _save_bc = g.get_body_composition
+    g.get_body_composition = lambda startdate=None, enddate=None, **k: {"dateWeightList": [
+        {"date": 1690000000000, "weight": 74900, "bodyFat": 14.0}]}  # int date, not ISO
+    _bs = g._latest_body_stats()  # must not raise "'int' object is not subscriptable"
+    g.get_body_composition = _save_bc
+    check("int body-comp date -> weight still parsed, no crash", _bs["weight_kg"] == 74.9)
+    check("int body-comp date -> as_of coerced to string", isinstance(_bs["as_of"], str))
+
     print("generate_fueling_plan (Katch-McArdle BMR from body-fat):")
     plan = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7)
     check("no error", "error" not in plan and not plan.get("no_goal_available"))
