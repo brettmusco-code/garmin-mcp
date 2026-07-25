@@ -1112,6 +1112,46 @@ def main():
           any("Rebalanced from the last 2 logged" in n for n in plan_rb["notes"]))
     check("rebalance off by default: adjustment unchanged",
           g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7)["daily_kcal_adjustment"] == base_adj)
+    # Adjustment breakdown surfaces the rebalance component in the target math.
+    check("top-level breakdown splits base vs rebalance",
+          plan_rb["adjustment_breakdown"]["base_deficit_kcal"] == base_adj
+          and plan_rb["adjustment_breakdown"]["rebalance_kcal"] == round(-800 / 7))
+    check("rebalance detail names the drift",
+          plan_rb["rebalance"] and plan_rb["rebalance"]["logged_days"] == 2
+          and plan_rb["rebalance"]["net_drift_kcal"] == 800)
+    check("per-day rows carry the rebalance breakdown",
+          all("rebalance_kcal" in d["adjustment_breakdown"] for d in plan_rb["days"]))
+
+    print("deficit-only rebalance (never give calories back):")
+    # Undereating: two-way rebalance would RAISE targets; deficit-only suppresses it.
+    def _under_pva(days_back=7):
+        return {"rows": [
+            {"date": (TODAY - timedelta(days=2)).isoformat(), "foods_logged": 5,
+             "actual_kcal": 2000, "adjusted_target_kcal": 2600},
+            {"date": (TODAY - timedelta(days=1)).isoformat(), "foods_logged": 4,
+             "actual_kcal": 2100, "adjusted_target_kcal": 2500},
+        ]}
+    g.nutrition_plan_vs_actual = _under_pva
+    two_way = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7, rebalance=3)
+    check("two-way rebalance loosens after undereating",
+          two_way["daily_kcal_adjustment"] > base_adj)
+    g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
+                       sex="male", height_cm=178.0, age=40,
+                       rebalance_deficit_only=True)
+    d_only = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7, rebalance=3)
+    check("deficit-only holds the deficit when undereating",
+          d_only["daily_kcal_adjustment"] == base_adj
+          and d_only["adjustment_breakdown"]["rebalance_kcal"] == 0)
+    check("deficit-only surfaces a 'deficit stands' note",
+          any("deficit stands" in n for n in d_only["notes"]))
+    # But deficit-only STILL tightens when overeating.
+    g.nutrition_plan_vs_actual = _fake_pva
+    d_over = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7, rebalance=3)
+    check("deficit-only still tightens on overeating",
+          abs(d_over["daily_kcal_adjustment"] - (base_adj - 800 / 7)) <= 1)
+    # Restore a two-way goal for later tests.
+    g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
+                       sex="male", height_cm=178.0, age=40)
 
     print("logging suggestions from past days:")
     def _sugg_pva(days_back=7):

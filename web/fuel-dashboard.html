@@ -1215,11 +1215,18 @@ function renderDay(d, targetId){
         <div class="phase"><div class="p">Post · &lt;60m</div><div class="d"><b>${f.post_protein_g}g</b> protein + <b>${f.post_carbs_g}g</b> carbs</div><div class="w">start the refuel window</div></div>
       </div></div>`).join('');
   const baseKc = d.expected_expenditure_kcal - (d.net_exercise_kcal||0);
+  // Rebalance component of today's target (from the rolling self-correction).
+  // Negative = tightened to pay back an overage; positive = loosened. Shown
+  // inline so the target math accounts for every kcal of the adjustment.
+  const ab = d.adjustment_breakdown||{};
+  const rb = Math.round(ab.rebalance_kcal||0);
+  const rbChip = rb ? `<span class="op">·</span><span title="Rolling rebalance from recent logged days, folded into today's target">rebalance <b>${rb>0?'+':''}${nf(rb)}</b></span>` : '';
   const energy = `<div class="energy">
     <span>base <b>${nf(baseKc)}</b></span>
     ${d.net_exercise_kcal?`<span class="op">+</span><span>net exercise <b>${nf(d.net_exercise_kcal)}</b></span>`:''}
     <span class="op">=</span><span>burn <b>${nf(d.expected_expenditure_kcal)}</b></span>
     <span class="op">−</span><span>eat <b>${nf(d.target_kcal)}</b></span>
+    ${rbChip}
     <span class="def">${nf(d.target_deficit_kcal)} deficit</span></div>`;
   // EA breakdown (#3: expose the components so the number is auditable):
   // EA = (intake − exercise) / FFM. Intake includes TEF (canonical definition).
