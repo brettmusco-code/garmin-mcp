@@ -1544,6 +1544,7 @@ def set_fueling_goal(
     units: str | None = None,
     notes: str | None = None,
     aggressive: bool | None = None,
+    rebalance_deficit_only: bool | None = None,
 ) -> dict:
     """Persist the athlete's fueling goal to R2 (single active goal, keyed
     'current'). This is the target weight + timeline the fueling plan is built
@@ -1582,6 +1583,11 @@ def set_fueling_goal(
         Default false — the date-paced, ahead-of-schedule-easing behavior.
         The per-day energy-availability floor still applies, so "aggressive"
         can never push a day below the safe EA minimum.
+      rebalance_deficit_only: make the rolling rebalance one-directional. When
+        true, rebalancing may only TIGHTEN the coming days' targets to pay back
+        an overage (you ate more than the adjusted target) — it will never RAISE
+        them to give calories back after you undereat. Keeps the deficit from
+        being eroded by good days. Default false (two-way rebalance).
 
     goal_type: 'lose' | 'gain' | 'maintain'. For 'lose'/'gain' provide
     target_weight_kg and target_date so a daily deficit/surplus can be computed.
@@ -1635,6 +1641,7 @@ def set_fueling_goal(
         "home_lon": round(float(home_lon), 4) if home_lon is not None else None,
         "skip_breakfast_weekdays": bool(skip_breakfast_weekdays) if skip_breakfast_weekdays is not None else None,
         "aggressive": bool(aggressive) if aggressive is not None else None,
+        "rebalance_deficit_only": bool(rebalance_deficit_only) if rebalance_deficit_only is not None else None,
         # Manual current-weight override — used when Garmin's synced weight is
         # stale or wrong. Wins over the Garmin reading everywhere (progress,
         # BMR, EA, projection) until cleared. Stamped with the date it was set.
@@ -3102,6 +3109,8 @@ def generate_fueling_plan(
     # against their expenditure-adjusted targets and spread the accumulated
     # error across this window. rebalance=True looks at the current week to
     # date (Mon..yesterday); an integer looks back that many days.
+    rebalance_adj = 0          # per-day kcal shift applied by rebalancing (surfaced in output)
+    rebalance_detail = None    # human-readable breakdown for the target math
     if rebalance and not carb_load:
         if rebalance is True:
             rb_days = _local_today().weekday()  # Monday -> 0: fresh week, skip
@@ -3125,12 +3134,36 @@ def generate_fueling_plan(
                     if r.get("actual_kcal") is not None and tgt_adj is not None:
                         drift += r["actual_kcal"] - tgt_adj
                         counted += 1
-                if counted and abs(drift) > 100:
-                    goal_adj = round(goal_adj - drift / days)
+                # One-directional rebalance: only tighten to pay back an
+                # overage (drift>0), never loosen to give calories back after
+                # undereating (drift<0). Protects the deficit on good days.
+                deficit_only = bool(goal.get("rebalance_deficit_only"))
+                if counted and deficit_only and drift < 0:
+                    rebalance_detail = {
+                        "logged_days": counted,
+                        "net_drift_kcal": round(drift),
+                        "per_day_kcal": 0,
+                        "deficit_only_suppressed": True,
+                    }
+                    notes.append(
+                        f"Rebalance: you ate {round(-drift)} kcal UNDER your "
+                        f"adjusted targets over {counted} logged day(s), but "
+                        "deficit-only rebalancing is on, so targets aren't being "
+                        "raised to give it back — your deficit stands."
+                    )
+                elif counted and abs(drift) > 100:
+                    rebalance_adj = round(-drift / days)
+                    goal_adj = goal_adj + rebalance_adj
+                    rebalance_detail = {
+                        "logged_days": counted,
+                        "net_drift_kcal": round(drift),
+                        "per_day_kcal": rebalance_adj,
+                        "deficit_only_suppressed": False,
+                    }
                     notes.append(
                         f"Rebalanced from the last {counted} logged day(s): net "
                         f"{round(drift):+} kcal vs expenditure-adjusted targets — "
-                        f"spreading {round(-drift / days):+} kcal/day across this "
+                        f"spreading {rebalance_adj:+} kcal/day across this "
                         "window. Floors still apply."
                     )
             except Exception as ex:  # noqa: BLE001
@@ -3447,6 +3480,13 @@ def generate_fueling_plan(
         target_pre = max(round(p["base_target"] + day_adjs[i]), round(floors[i]), 0)
         pre_def = exp_pre - target_pre
 
+        # This day's share of the rolling rebalance. rebalance_adj was added
+        # into goal_adj before periodization split the total across days, so
+        # attribute it proportionally to each day's share of goal_adj (flat
+        # days: the full rebalance_adj; on a periodized week it scales).
+        _day_rebalance = (rebalance_adj * (day_adjs[i] / goal_adj)
+                          if (rebalance_adj and goal_adj) else 0.0)
+
         # Protein anchored to GOAL weight on a cut (not current scale weight),
         # so it holds steady as you lean out instead of drifting down; nudged
         # up on hard/long days and in a steep deficit to spare lean mass.
@@ -3582,6 +3622,17 @@ def generate_fueling_plan(
             "target_kcal": target_kcal,
             "target_deficit_kcal": target_deficit,
             "kcal_adjustment": day_adjs[i],
+            # How the day's calorie adjustment breaks down, so the target math
+            # is legible: the base goal deficit vs the rolling rebalance shift.
+            # rebalance_adj was folded into goal_adj *before* periodization, so
+            # on periodized days the rebalance portion scales with that day's
+            # share of the total (day_adjs[i]/goal_adj), not a flat amount.
+            "adjustment_breakdown": {
+                "base_deficit_kcal": round(day_adjs[i] - _day_rebalance),
+                "rebalance_kcal": round(_day_rebalance),
+                "total_adjustment_kcal": day_adjs[i],
+                "floored": target_pre > round(p["base_target"] + day_adjs[i]),
+            },
             "protein_g": protein_g, "carbs_g": carbs_g, "fat_g": fat_g,
             "protein_g_per_kg": protein_per_kg_day,
             "carb_g_per_kg": carb_ratio,
@@ -3700,6 +3751,14 @@ def generate_fueling_plan(
         "fat_free_mass_kg": ffm_kg,
         "body_fat_pct": body.get("body_fat_pct"),
         "daily_kcal_adjustment": goal_adj,
+        # Decompose the daily adjustment: base goal deficit vs the rolling
+        # rebalance shift, so the target math is auditable at the top level.
+        "adjustment_breakdown": {
+            "base_deficit_kcal": goal_adj - rebalance_adj,
+            "rebalance_kcal": rebalance_adj,
+            "total_kcal": goal_adj,
+        },
+        "rebalance": rebalance_detail,
         "protein_g_per_kg": protein_per_kg,
         "carb_load": carb_load,
         "config": {
