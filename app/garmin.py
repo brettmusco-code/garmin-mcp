@@ -2286,6 +2286,77 @@ def _recent_days(n: int = 2) -> list[dict]:
     return out
 
 
+def _logging_suggestions(protein_target_g: float | None = None,
+                         lookback_days: int = 7) -> list[str]:
+    """Mine the last week of logged days for actionable coaching notes.
+
+    Draws on nutrition_plan_vs_actual (which already computes per-day actuals
+    vs the expenditure-adjusted target and macro deltas) and surfaces the
+    handful of patterns worth acting on: chronic under/over-eating vs the
+    adjusted target, protein routinely short of the goal, and logging gaps
+    that make the plan's self-correction unreliable. Returns [] when there
+    isn't enough logged history to say anything honest."""
+    try:
+        pva = nutrition_plan_vs_actual(days_back=min(max(lookback_days, 2), 14))
+    except Exception:  # noqa: BLE001
+        return []
+    today_iso = _local_today().isoformat()
+    rows = [r for r in (pva.get("rows") or []) if (r.get("date") or "") < today_iso]
+    if not rows:
+        return []
+
+    logged = [r for r in rows if r.get("foods_logged")]
+    n_rows, n_logged = len(rows), len(logged)
+    out: list[str] = []
+
+    # 1) Logging consistency — the plan's rebalance and trend only work on
+    #    logged days. Flag gaps before making calorie claims.
+    if n_rows >= 3 and n_logged < n_rows:
+        missed = n_rows - n_logged
+        if n_logged == 0:
+            return [f"No food logged in the last {n_rows} days — log meals so the "
+                    "plan can self-correct from your actual intake (targets below "
+                    "are model-only until then)."]
+        if missed >= 2 or missed / n_rows >= 0.4:
+            out.append(f"Logging gap: {missed} of the last {n_rows} days have no "
+                       "food logged. The plan rebalances from logged days only, so "
+                       "gaps let drift accumulate silently — aim to log every day.")
+
+    # 2) Calorie drift vs the expenditure-adjusted target (the honest
+    #    'what you should have eaten given what you actually did' number).
+    drifts = [r["delta_kcal_vs_adjusted"] for r in logged
+              if r.get("delta_kcal_vs_adjusted") is not None]
+    if len(drifts) >= 2:
+        avg = sum(drifts) / len(drifts)
+        over_days = sum(1 for d in drifts if d > 150)
+        under_days = sum(1 for d in drifts if d < -150)
+        if avg >= 200 and over_days >= max(2, len(drifts) // 2):
+            out.append(f"You've averaged {round(avg):+} kcal/day over your "
+                       f"adjusted target across {len(drifts)} logged days — the deficit "
+                       "is smaller than planned, which slows the trajectory. Tighten "
+                       "portions on the highest days rather than every meal.")
+        elif avg <= -200 and under_days >= max(2, len(drifts) // 2):
+            out.append(f"You've averaged {round(avg)} kcal/day UNDER your adjusted "
+                       f"target across {len(drifts)} logged days. Under-eating on a "
+                       "heavy training block risks energy availability and muscle loss "
+                       "— eat closer to target, especially post-workout.")
+
+    # 3) Protein adherence — the macro that protects lean mass on a cut.
+    if protein_target_g:
+        p_actuals = [r["actual_p"] for r in logged if r.get("actual_p") is not None]
+        if len(p_actuals) >= 2:
+            avg_p = sum(p_actuals) / len(p_actuals)
+            short_days = sum(1 for p in p_actuals if p < protein_target_g * 0.85)
+            if avg_p < protein_target_g * 0.85 and short_days >= max(2, len(p_actuals) // 2):
+                out.append(f"Protein has averaged ~{round(avg_p)} g/day vs your "
+                           f"~{round(protein_target_g)} g target ({short_days} of "
+                           f"{len(p_actuals)} logged days short). On a cut this is the "
+                           "macro to hit — add a lean protein source to the meal you "
+                           "most often miss it in.")
+
+    return out
+
+
 def _is_outdoor_session(sport: str, title: str) -> bool:
     """Best-effort: is this planned session likely outdoors (so heat matters)?
     Pools and indoor-trainer/treadmill cues are indoor; other runs/rides are
@@ -3597,6 +3668,19 @@ def generate_fueling_plan(
                          f"{_fmt_weight(tgt, goal.get('units'))} around "
                          f"{projection['projected_finish_date']} — later than the "
                          f"{projection['target_date']} target.")
+
+    # Coaching suggestions mined from the last week of actual logging (calorie
+    # drift vs the adjusted target, protein adherence, logging gaps). Appended
+    # after the model notes so the actionable "based on what you actually did"
+    # guidance sits alongside the plan.
+    try:
+        protein_target_g = (round(protein_per_kg * weight_kg)
+                            if (protein_per_kg and weight_kg) else None)
+        for s in _logging_suggestions(protein_target_g=protein_target_g):
+            if s not in notes:
+                notes.append(s)
+    except Exception:  # noqa: BLE001
+        pass
 
     result = {
         "window": {"start": start.isoformat(), "end": end.isoformat(), "days": days},
