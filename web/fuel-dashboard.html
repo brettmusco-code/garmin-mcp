@@ -289,6 +289,14 @@
   .flag.urgent{border-left-color:var(--warn);color:var(--ink);
     background:color-mix(in srgb,var(--warn) 6%,var(--panel));}
   .flag.urgent .ic{color:var(--warn);}
+  /* Collapsed "N more" tier — plan settings & context, quiet by default. */
+  .flag-more{font-size:12px;}
+  .flag-more > summary{cursor:pointer;color:var(--ink-faint);padding:4px 2px;
+    list-style:none;user-select:none;font-size:12px;}
+  .flag-more > summary::-webkit-details-marker{display:none;}
+  .flag-more > summary::before{content:'▸ ';font-size:10px;}
+  .flag-more[open] > summary::before{content:'▾ ';}
+  .flag-more > summary:hover{color:var(--ink-dim);}
   footer{margin-top:26px;text-align:center;color:var(--ink-faint);font-size:11.5px;}
   footer b{color:var(--ink-dim);}
 </style>
@@ -1400,13 +1408,27 @@ function render(){
 
   const notes = PLAN.notes||[];
   if(notes.length){
-    // Rank the urgent ones first (RED-S / under-fuelling / below-BMR) and give
-    // them a stronger colour than informational trend/pace notes.
-    const urgent = n => /low energy|red-s|under-fuel|below bmr|too low|could not absorb/i.test(n);
-    const sorted = [...notes].sort((a,b)=>(urgent(b)?1:0)-(urgent(a)?1:0));
-    $('flags').innerHTML = sorted.map(n=>
-      `<div class="flag${urgent(n)?' urgent':''}"><span class="ic">${urgent(n)?'▲':'ℹ'}</span><span>${n}</span></div>`
-    ).join('');
+    // Tier the notes to cut noise: only things you can ACT on stay visible.
+    //  - urgent : safety — RED-S / under-fuelling / below-BMR / carbs cut
+    //  - action : worth doing something about (protein short, logging gaps)
+    //  - status : mode echoes + context (aggressive/rebalance settings you
+    //             turned on, modeled adaptation, assumed-training filler,
+    //             the weigh-in nudge) — collapsed behind a toggle by default.
+    const urgent = n => /low energy|red-s|under-fuel|below bmr|too low|could not absorb|carbs (were )?cut/i.test(n);
+    const status = n => /aggressive mode|metabolic adaptation|neat trimmed|deficit stands|deficit-only|assumed training|not yet scheduled|nothing is scheduled|trend check|not enough recent weigh-ins|sync weigh/i.test(n);
+    const tier = n => urgent(n) ? 0 : (status(n) ? 2 : 1);
+    const sorted = [...notes].sort((a,b)=>tier(a)-tier(b));
+    const shown = sorted.filter(n=>tier(n)<2);
+    const hidden = sorted.filter(n=>tier(n)===2);
+    const flagHTML = n =>
+      `<div class="flag${urgent(n)?' urgent':''}"><span class="ic">${urgent(n)?'▲':'ℹ'}</span><span>${n}</span></div>`;
+    let html = shown.map(flagHTML).join('');
+    if(!shown.length && hidden.length)
+      html = `<div class="flag" style="color:var(--ink-faint)"><span class="ic">✓</span><span>Nothing to flag — plan's on track. See plan settings &amp; context below.</span></div>`;
+    if(hidden.length)
+      html += `<details class="flag-more"><summary>${hidden.length} more · plan settings &amp; context</summary>`
+            + `<div class="flags" style="margin-top:7px">${hidden.map(flagHTML).join('')}</div></details>`;
+    $('flags').innerHTML = html;
   } else $('flagBlock').style.display='none';
 
   drawProjection();
