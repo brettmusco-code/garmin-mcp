@@ -1182,8 +1182,8 @@ function renderRecent(){
       <div class="dc-nums">
         <div class="dc-num"><span class="lab">Eaten</span><span class="v">${eaten!=null?nf(eaten):'—'}</span></div>
         <div class="dc-num"><span class="lab">Burned</span><span class="v">${d.expenditure_kcal!=null?nf(d.expenditure_kcal):'—'}</span></div>
-        <div class="dc-num"><span class="lab">Deficit</span><span class="v" style="color:${defColor}">${defTxt}</span></div>
-        ${pl!=null ? `<div class="dc-num"><span class="lab">vs plan</span><span class="v" style="color:${vsColor}">${vsPlan==null?'—':(vsPlan>0?'+':'')+nf(vsPlan)}</span></div>` : ''}
+        <div class="dc-num" title="What you actually ran: burned minus eaten. Differs from the plan's target deficit when you eat off-target."><span class="lab">Actual deficit</span><span class="v" style="color:${defColor}">${defTxt}</span></div>
+        ${pl!=null ? `<div class="dc-num" title="Eaten minus the day's plan target (${nf(pl)}). Negative = under target, positive = over."><span class="lab">vs plan</span><span class="v" style="color:${vsColor}">${vsPlan==null?'—':(vsPlan>0?'+':'')+nf(vsPlan)}</span></div>` : ''}
       </div>
     </div>`;
   }).join('') + `</div>`;
@@ -1235,7 +1235,7 @@ function renderDay(d, targetId){
     <span class="op">=</span><span>burn <b>${nf(d.expected_expenditure_kcal)}</b></span>
     <span class="op">−</span><span>eat <b>${nf(d.target_kcal)}</b></span>
     ${rbChip}
-    <span class="def">${nf(d.target_deficit_kcal)} deficit</span></div>`;
+    <span class="def" title="Deficit if you eat exactly to target. Your actual deficit (in the recent-days card) will differ when you eat off-target.">${nf(d.target_deficit_kcal)} target deficit</span></div>`;
   // EA breakdown (#3: expose the components so the number is auditable):
   // EA = (intake − exercise) / FFM. Intake includes TEF (canonical definition).
   // EA's unit is intrinsically kcal/kg-FFM (sports-science standard) and is
@@ -1375,7 +1375,7 @@ function render(){
       <div class="dc-nums">
         <div class="dc-num"><span class="lab">Burn</span><span class="v">${d.est_burn_kcal?nf(d.est_burn_kcal):'—'}</span></div>
         <div class="dc-num"><span class="lab">Target</span><span class="v">${nf(d.target_kcal)}</span></div>
-        <div class="dc-num"><span class="lab">Deficit</span><span class="v" style="color:${defColor}">${defTxt}</span></div>
+        <div class="dc-num" title="Deficit if you eat exactly to target (burn − target). Actual deficit differs when you eat off-target."><span class="lab">Target deficit</span><span class="v" style="color:${defColor}">${defTxt}</span></div>
       </div>
       <div class="dc-macro">
         <span class="pcf">${seg(d.protein_g,'protein')}${seg(d.carbs_g,'carbs')}${seg(d.fat_g,'fat')}</span>
