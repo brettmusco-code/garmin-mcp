@@ -2814,6 +2814,7 @@ def _weight_trend_calibration(goal: dict, weight_kg: float) -> dict | None:
 _AHEAD_EASE_THRESHOLD_WEEKS = 2.0
 _AHEAD_EASE_PER_WEEK = 0.10        # 10% ease per week ahead beyond the threshold
 _AHEAD_EASE_MAX = 0.50             # never ease more than 50%
+_AGGR_EASE_WEIGHT_KG = 157 / 2.20462   # <157 lb (~71.2 kg): gate for easing even in aggressive mode
 
 
 def _schedule_lead(goal: dict, weight_kg: float | None,
@@ -3061,7 +3062,7 @@ def generate_fueling_plan(
             # Aggressive: hold the max sustainable deficit (bounded by the
             # deficit cap; the per-day EA/BMR floors below still clamp it), so
             # being ahead pulls the finish date earlier instead of easing the
-            # cut. No date-pacing, no ahead-of-schedule ease.
+            # cut. No date-pacing.
             raw = deficit_cap if (deficit_cap and not uncapped) else 1500.0
             goal_adj = -round(raw)
             notes.append(
@@ -3070,6 +3071,22 @@ def generate_fueling_plan(
                 "than pacing to the target date — losing faster pulls your finish "
                 "date earlier. Turn it off via set_fueling_goal (aggressive=false)."
             )
+            # Safety valve on top of aggressive: once you're both lean enough
+            # (< 157 lb / 71.2 kg) AND banking a real lead (>2 weeks ahead of
+            # the straight-line schedule), ease the cut so you don't grind out
+            # the last stretch at max deficit while already ahead. Both gates
+            # must hold — being ahead while still heavier keeps full aggression.
+            lead = _schedule_lead(goal, weight_kg, trend_cal)
+            if (weight_kg is not None and weight_kg < _AGGR_EASE_WEIGHT_KG
+                    and lead and lead["ease_factor"] < 1.0):
+                goal_adj = round(goal_adj * lead["ease_factor"])
+                notes.append(
+                    f"Lean + ahead: under {_fmt_weight(_AGGR_EASE_WEIGHT_KG, goal.get('units'))} "
+                    f"and ~{lead['lead_weeks']:.1f} weeks ahead of schedule"
+                    f"{' by trend' if lead['source'] == 'trend' else ''} — eased the "
+                    f"aggressive deficit {round((1 - lead['ease_factor']) * 100)}% for a "
+                    "gentler finish. It re-tightens automatically if you drift back to schedule."
+                )
         else:
             kg_to_lose = (weight_kg - tgt) if tgt else None
             if kg_to_lose and kg_to_lose > 0 and wr:
