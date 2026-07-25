@@ -2620,7 +2620,8 @@ def get_adaptive_tdee(weeks: int = 6) -> dict:
 
 def _project_trajectory(weight_kg, target, start_w, target_date, front_load_val,
                         bmr, mean_expenditure, ffm_kg, ea_min_val, floor_mult,
-                        min_kcal_val, deficit_cap, uncapped, aggressive=False) -> dict:
+                        min_kcal_val, deficit_cap, uncapped, aggressive=False,
+                        non_ex_base=None) -> dict:
     """Simulate the weight curve forward week by week under the SAME deficit
     logic the plan uses (front-load + floors), so the taper is visible and we
     can report a realistic finish date. FFM held constant (slightly
@@ -2634,10 +2635,13 @@ def _project_trajectory(weight_kg, target, start_w, target_date, front_load_val,
 
     # Max sustainable daily deficit under the active floors. The EA floor's
     # allowance is burn-independent: expenditure − (ea_min·FFM + burn) =
-    # bmr·1.3 − ea_min·FFM.
+    # non_exercise_base − ea_min·FFM. Use the plan's real modeled base (RMR ×
+    # NEAT + adaptation) so the projected rate matches the per-day targets;
+    # fall back to bmr·1.3 only when the base wasn't supplied.
+    ne_base = non_ex_base if non_ex_base else bmr * 1.3
     caps = []
     if ea_min_val and ffm_kg:
-        caps.append(bmr * 1.3 - ea_min_val * ffm_kg)
+        caps.append(ne_base - ea_min_val * ffm_kg)
     if floor_mult and floor_mult > 0:
         caps.append(bmr * (1.3 - floor_mult))
     if min_kcal_val:
@@ -3713,6 +3717,7 @@ def generate_fueling_plan(
             weight_kg, tgt, goal.get("start_weight_kg"), goal.get("target_date"),
             front_load_val, bmr, mean_exp, ffm_kg, ea_min_val, floor_mult,
             min_kcal_val, deficit_cap, uncapped, aggressive=aggressive,
+            non_ex_base=neat_base,
         )
         if projection.get("projected_finish_date") and projection.get("beats_target_date") is False:
             notes.append(f"At the sustainable rate you reach "

@@ -520,6 +520,16 @@ def main():
           abs(day0["kcal_adjustment"]) <= abs(plan["daily_kcal_adjustment"]) + 1)
     check("projection reports a finish date when floors bind",
           plan["projection"].get("projected_finish_date") is not None)
+    # The projection's sustainable deficit must not exceed what the per-day
+    # targets actually deliver: both are bound by the SAME EA floor
+    # (non_exercise_base − ea_min·FFM), so the projected rate can't outrun the
+    # plan. Guards against the projection using bmr·1.3 as a NEAT proxy when
+    # the real modeled base is lower (overstated finish date).
+    _msd = plan["projection"].get("max_sustainable_deficit_kcal")
+    _max_day_def = max(d["target_deficit_kcal"] for d in plan["days"])
+    if _msd is not None:
+        check("projected sustainable deficit doesn't exceed the deepest per-day deficit",
+              _msd <= _max_day_def + 2)
     plan_flat = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7,
                                         periodize_deficit=False)
     check("flat override: every day same adjustment",
