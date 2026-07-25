@@ -929,10 +929,11 @@ def main():
     check("ahead-of-schedule note surfaced",
           any("ahead of schedule" in n.lower() for n in plan_ahead["notes"]))
 
-    print("aggressive mode: earlier finish when lighter, no ahead-ease:")
+    print("aggressive mode: earlier finish when lighter; ease only when lean AND ahead:")
     # Same well-ahead goal, but aggressive=true: holds the max deficit, so the
     # projected finish must move EARLIER as current weight drops (the whole
-    # point), and the ahead-of-schedule ease must NOT fire.
+    # point). The lean+ahead ease must NOT fire while still above 157 lb
+    # (~71.2 kg), even when well ahead of schedule.
     _agg_tgt = (TODAY + timedelta(weeks=20)).isoformat()
     def _agg_finish(cur_w):
         # Floors mirroring a real aggressive goal (EA-enforced, no BMR-mult
@@ -947,14 +948,38 @@ def main():
     _p_light = _agg_finish(73.0)   # 5kg lighter
     check("aggressive: plan surfaces the aggressive-mode note",
           any("aggressive mode" in n.lower() for n in _p_heavy["notes"]))
-    check("aggressive: ahead-of-schedule ease does NOT fire",
-          not any("ahead of schedule" in n.lower() for n in _p_light["notes"]))
+    check("aggressive: lean+ahead ease does NOT fire while still >157 lb",
+          not any("lean + ahead" in n.lower() for n in _p_light["notes"]))
     _fh = _p_heavy["projection"].get("projected_finish_date")
     _fl = _p_light["projection"].get("projected_finish_date")
     check("aggressive: lighter current weight -> earlier finish date",
           _fh and _fl and _fl < _fh)
     check("aggressive: deficit holds the cap (2 lb/wk = 1000 kcal), not date-paced",
           _p_heavy["daily_kcal_adjustment"] == -1000)
+
+    # Lean (<157 lb / 71.2 kg) AND >2 weeks ahead: the aggressive deficit now
+    # eases. 70.0 kg is under the gate; on an 80->68 kg / 24-week schedule
+    # started 4 weeks ago the expected weight is ~78 kg, so 70 is ~13 kg /
+    # >2 weeks ahead. The eased goal must be a SMALLER deficit than the same
+    # goal at the same lead but still-heavy (72.0 kg, above the gate).
+    _agg_lean_tgt = (TODAY + timedelta(weeks=20)).isoformat()
+    _agg_lean_set = (TODAY - timedelta(weeks=4)).isoformat()
+    def _agg_lean_plan(cur_w):
+        g.set_fueling_goal(goal_type="lose", target_weight_kg=68.0, target_date=_agg_lean_tgt,
+                           sex="male", height_cm=178, age=40, start_weight_kg=80.0,
+                           current_weight_kg=cur_w, max_loss_lb_per_week=2.0,
+                           ea_min=17.0, bmr_floor_mult=0, aggressive=True)
+        _gg = g.get_fueling_goal()["goal"]; _gg["set_date"] = _agg_lean_set
+        cache.put("fueling_goal", {"key": "current"}, _gg, key_parts=["current"])
+        return g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7)
+    _p_lean = _agg_lean_plan(70.0)   # under 71.2 kg gate, well ahead
+    _p_gate = _agg_lean_plan(72.0)   # above the gate, same lead posture
+    check("aggressive: lean+ahead surfaces the ease note",
+          any("lean + ahead" in n.lower() for n in _p_lean["notes"]))
+    check("aggressive: lean+ahead eases the deficit below full aggression",
+          abs(_p_lean["daily_kcal_adjustment"]) < abs(_p_gate["daily_kcal_adjustment"]))
+    check("aggressive: still-heavy (>157 lb) holds full aggression, no ease note",
+          not any("lean + ahead" in n.lower() for n in _p_gate["notes"]))
 
     # restore the default goal
     g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
