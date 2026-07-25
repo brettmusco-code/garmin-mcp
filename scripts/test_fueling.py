@@ -1113,6 +1113,66 @@ def main():
     check("rebalance off by default: adjustment unchanged",
           g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7)["daily_kcal_adjustment"] == base_adj)
 
+    print("logging suggestions from past days:")
+    def _sugg_pva(days_back=7):
+        # 4 logged days: consistently over the adjusted target and short on protein.
+        return {"rows": [
+            {"date": (TODAY - timedelta(days=i)).isoformat(), "foods_logged": 6,
+             "actual_kcal": 2900, "adjusted_target_kcal": 2500,
+             "delta_kcal_vs_adjusted": 400, "actual_p": 110}
+            for i in range(4, 0, -1)
+        ] + [
+            {"date": TODAY.isoformat(), "foods_logged": 1, "actual_kcal": 300,
+             "adjusted_target_kcal": 2500, "delta_kcal_vs_adjusted": -2200,
+             "actual_p": 20},  # in-progress today: excluded
+        ]}
+    g.nutrition_plan_vs_actual = _sugg_pva
+    sugg = g._logging_suggestions(protein_target_g=160)
+    check("flags chronic overeating vs adjusted target",
+          any("over your adjusted target" in s for s in sugg))
+    check("flags protein routinely short",
+          any("Protein has averaged" in s for s in sugg))
+    check("today's in-progress day excluded from suggestions",
+          not any("2200" in s for s in sugg))
+
+    def _gap_pva(days_back=7):
+        # Mostly unlogged week -> logging-gap flag.
+        return {"rows": [
+            {"date": (TODAY - timedelta(days=i)).isoformat(),
+             "foods_logged": (6 if i == 1 else 0),
+             "actual_kcal": (2400 if i == 1 else None),
+             "adjusted_target_kcal": 2500,
+             "delta_kcal_vs_adjusted": (-100 if i == 1 else None),
+             "actual_p": (150 if i == 1 else None)}
+            for i in range(5, 0, -1)
+        ]}
+    g.nutrition_plan_vs_actual = _gap_pva
+    gap = g._logging_suggestions(protein_target_g=160)
+    check("flags a logging gap", any("Logging gap" in s for s in gap))
+
+    def _nolog_pva(days_back=7):
+        return {"rows": [
+            {"date": (TODAY - timedelta(days=i)).isoformat(), "foods_logged": 0,
+             "actual_kcal": None, "adjusted_target_kcal": 2500}
+            for i in range(4, 0, -1)
+        ]}
+    g.nutrition_plan_vs_actual = _nolog_pva
+    nolog = g._logging_suggestions(protein_target_g=160)
+    check("nothing logged -> single log-your-meals nudge",
+          len(nolog) == 1 and "No food logged" in nolog[0])
+
+    def _ontrack_pva(days_back=7):
+        return {"rows": [
+            {"date": (TODAY - timedelta(days=i)).isoformat(), "foods_logged": 6,
+             "actual_kcal": 2480, "adjusted_target_kcal": 2500,
+             "delta_kcal_vs_adjusted": -20, "actual_p": 165}
+            for i in range(4, 0, -1)
+        ]}
+    g.nutrition_plan_vs_actual = _ontrack_pva
+    check("on-track logging -> no nagging suggestions",
+          g._logging_suggestions(protein_target_g=160) == [])
+    g.nutrition_plan_vs_actual = _fake_pva  # restore for any later use
+
     print("garmin push (experimental, offline):")
     class _FailClient:
         def connectapi(self, *a, **k):
