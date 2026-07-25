@@ -1173,10 +1173,7 @@ function renderRecent(){
     const def = d.deficit_kcal;
     const defTxt = def==null ? '—' : (def>0 ? nf(def) : (def<0 ? '+'+nf(-def) : '0'));
     const defColor = def==null?'var(--ink-faint)':(def>0?'var(--good)':(def<0?'var(--warn)':'var(--ink-dim)'));
-    // Plan's target deficit for the same day, holding actual burn constant
-    // (burn − plan target intake) — apples-to-apples vs the actual deficit.
-    const planDef = (d.expenditure_kcal!=null && pl!=null) ? d.expenditure_kcal - pl : null;
-    const planDefTxt = planDef==null ? null : (planDef>=0 ? nf(planDef) : '+'+nf(-planDef));
+    const vsTxt = vsPlan==null ? null : (vsPlan>0?'+':'')+nf(vsPlan);
     const noLog = !d.foods_logged;
     return `<div class="daycard nolink">
       <div class="dc-top">
@@ -1185,9 +1182,9 @@ function renderRecent(){
       </div>
       <div class="dc-nums">
         <div class="dc-num"><span class="lab">Eaten</span><span class="v">${eaten!=null?nf(eaten):'—'}</span></div>
+        <div class="dc-num" title="The plan's calorie target for this day."><span class="lab">Planned</span><span class="v">${pl!=null?nf(pl):'—'}</span></div>
         <div class="dc-num"><span class="lab">Burned</span><span class="v">${d.expenditure_kcal!=null?nf(d.expenditure_kcal):'—'}</span></div>
-        <div class="dc-num" title="What you actually ran (burned − eaten), vs the plan's target deficit for the day (burned − target intake). They differ when you eat off-target."><span class="lab">Actual deficit</span><span class="v" style="color:${defColor}">${defTxt}${planDefTxt!=null?`<small>/ ${planDefTxt} plan</small>`:''}</span></div>
-        ${pl!=null ? `<div class="dc-num" title="Eaten minus the day's plan target (${nf(pl)}). Negative = under target, positive = over."><span class="lab">vs plan</span><span class="v" style="color:${vsColor}">${vsPlan==null?'—':(vsPlan>0?'+':'')+nf(vsPlan)}</span></div>` : ''}
+        <div class="dc-num" title="Actual deficit = burned − eaten (what you really ran). vs plan = eaten − planned target: negative means you ate under target, positive means over."><span class="lab">Actual deficit</span><span class="v" style="color:${defColor}">${defTxt}${vsTxt!=null?`<small style="color:${vsColor}">/ ${vsTxt} vs plan</small>`:''}</span></div>
       </div>
     </div>`;
   }).join('') + `</div>`;
