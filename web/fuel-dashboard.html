@@ -299,6 +299,20 @@
   .flag-more > summary:hover{color:var(--ink-dim);}
   footer{margin-top:26px;text-align:center;color:var(--ink-faint);font-size:11.5px;}
   footer b{color:var(--ink-dim);}
+  /* Manual weigh-in form (served page only; hidden in the Artifact sandbox). */
+  #logWeight{display:none;margin-top:12px;}
+  #logWeight form{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px;}
+  #logWeight .fld{display:flex;flex-direction:column;gap:4px;}
+  #logWeight label{font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+    color:var(--ink-faint);font-weight:700;}
+  #logWeight input,#logWeight select{font:inherit;font-size:14px;background:var(--panel-2);
+    color:var(--ink);border:1px solid var(--line);border-radius:9px;padding:8px 10px;min-width:0;}
+  #logWeight input[type=number]{width:96px;font-family:var(--mono);font-variant-numeric:tabular-nums;}
+  #logWeight button{font:inherit;font-size:14px;font-weight:600;cursor:pointer;color:#0e1520;
+    background:var(--good);border:0;border-radius:9px;padding:9px 16px;
+    -webkit-tap-highlight-color:transparent;}
+  #logWeight button:hover{filter:brightness(1.06);}
+  #logWeight .hint{width:100%;font-size:11.5px;color:var(--ink-faint);margin-top:2px;}
 </style>
 
 <div class="wrap">
@@ -367,6 +381,25 @@
       <div class="lead"><h2>Weight &rarr; target</h2><span id="paceNote"></span></div>
       <div class="card progress">
         <div class="track" id="wtrack"></div>
+        <div id="logWeight">
+          <form method="post" action="{{LOG_WEIGHT_ACTION}}">
+            <div class="fld">
+              <label for="lwWeight">Log weigh-in</label>
+              <input type="number" id="lwWeight" name="weight" step="0.1" min="20" required
+                     inputmode="decimal" placeholder="0.0">
+            </div>
+            <div class="fld">
+              <label for="lwUnit">Unit</label>
+              <select id="lwUnit" name="unit"><option value="kg">kg</option><option value="lb">lb</option></select>
+            </div>
+            <div class="fld">
+              <label for="lwDate">Date</label>
+              <input type="date" id="lwDate" name="entry_date">
+            </div>
+            <button type="submit">Save</button>
+            <div class="hint">A manual weigh-in overrides Garmin's for that day and feeds the trend, projection and targets.</div>
+          </form>
+        </div>
       </div>
     </section>
 
@@ -1571,6 +1604,19 @@ function drawProjection(){
     ctx.fillStyle=dim; ctx.fillText('projected', padL+63, padT+3);
   }
 }
+// Manual weigh-in form: only usable on the server-rendered page, where the
+// route substitutes the form action. In the Artifact sandbox the placeholder
+// is left intact (and network POSTs are blocked by CSP), so keep it hidden.
+function initLogWeight(){
+  const box = $('logWeight'); if(!box) return;
+  const form = box.querySelector('form');
+  const action = form && form.getAttribute('action') || '';
+  if(action.indexOf('{{') !== -1 || !action){ box.style.display='none'; return; }
+  box.style.display='block';
+  const unit = $('lwUnit'); if(unit) unit.value = IMPERIAL ? 'lb' : 'kg';
+  const dt = $('lwDate'); if(dt && !dt.value) dt.value = todayISO;
+}
 render();
+initLogWeight();
 window.addEventListener('resize', drawProjection);
 </script>

@@ -376,6 +376,42 @@ def main():
     # downstream generate_fueling_plan checks see the fixture they expect.
     g.refresh_weigh_in_snapshot()
 
+    print("manual weigh-in logging (dashboard form -> log_weight):")
+    # Seed a known Garmin series: TODAY-2 and TODAY-1.
+    _save_bc3 = g.get_body_composition
+    _d1 = (TODAY - timedelta(days=1)).isoformat()
+    _d2 = (TODAY - timedelta(days=2)).isoformat()
+    g.get_body_composition = lambda startdate=None, enddate=None, **k: {"dateWeightList": [
+        {"calendarDate": _d2, "weight": 75000},
+        {"calendarDate": _d1, "weight": 74600}]}
+    g.refresh_weigh_in_snapshot()
+    cache.put("manual_weigh_in", {}, {}, key_parts=["log"])   # start with no manual log
+    # Log today (a gap Garmin doesn't have) — should append and be current.
+    _r = g.log_weight(74.2, entry_date=TODAY.isoformat())
+    check("log_weight reports saved", _r.get("saved") is True and _r.get("count") == 1)
+    check("manual entry fills today's gap and becomes the current weight",
+          g._weigh_in_entries()[-1] == {"date": TODAY.isoformat(), "weight_kg": 74.2, "source": "manual"})
+    # Log a correction for a day Garmin already covers — manual must WIN.
+    g.log_weight(73.9, entry_date=_d1)
+    _by = {e["date"]: e["weight_kg"] for e in g._weigh_in_entries()}
+    check("manual entry overrides Garmin's reading for the same day", _by[_d1] == 73.9)
+    check("untouched Garmin day is preserved in the merge", _by[_d2] == 75.0)
+    # Re-logging the same day overwrites rather than duplicating.
+    g.log_weight(74.0, entry_date=_d1)
+    _dates = [e["date"] for e in g._weigh_in_entries()]
+    check("re-logging a day overwrites (no duplicate dates)",
+          len(_dates) == len(set(_dates)) and {e["date"]: e["weight_kg"] for e in g._weigh_in_entries()}[_d1] == 74.0)
+    # The engine validates kg sanity bounds (20–400) to catch garbage input.
+    check("out-of-range weight is rejected",
+          g.log_weight(450.0).get("saved") is False)
+    check("non-numeric weight is rejected", g.log_weight("heavy").get("saved") is False)
+    check("future-dated weigh-in is rejected",
+          g.log_weight(74.0, entry_date=(TODAY + timedelta(days=1)).isoformat()).get("saved") is False)
+    # Clean up so downstream tests see only Garmin data again.
+    cache.put("manual_weigh_in", {}, {}, key_parts=["log"])
+    g.get_body_composition = _save_bc3
+    g.refresh_weigh_in_snapshot()
+
     print("generate_fueling_plan (Katch-McArdle BMR from body-fat):")
     plan = g.generate_fueling_plan(start_date=TODAY.isoformat(), days=7)
     check("no error", "error" not in plan and not plan.get("no_goal_available"))

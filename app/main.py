@@ -1147,6 +1147,10 @@ def dashboard(request: Request) -> HTMLResponse:
             _DASH_TEMPLATE.read_text(),
             count=1,
         )
+        # Wire the manual weigh-in form to its POST endpoint (token preserved).
+        # Left as a {{placeholder}} in the standalone/Artifact copy, where the
+        # form stays hidden.
+        fragment = fragment.replace("{{LOG_WEIGHT_ACTION}}", "/dashboard/log-weight" + token_qs)
     except Exception as ex:  # noqa: BLE001
         return HTMLResponse(
             _dash_wrap(f"<h1>Fueling dashboard</h1><p>Template error: "
@@ -1156,6 +1160,47 @@ def dashboard(request: Request) -> HTMLResponse:
     page = _dash_wrap(fragment, token_qs)
     _dash_cache.update(html=page, ts=now)
     return HTMLResponse(page)
+
+
+@app.post("/dashboard/log-weight")
+def dashboard_log_weight(
+    request: Request,
+    weight: float = Form(...),
+    unit: str = Form("kg"),
+    entry_date: str | None = Form(None),
+    body_fat_pct: float | None = Form(None),
+) -> Response:
+    """Record a manual weigh-in from the dashboard form, then redirect back to
+    the dashboard so the new reading is reflected. Gated by the same
+    DASHBOARD_TOKEN as the page itself (when set)."""
+    gate = os.environ.get("DASHBOARD_TOKEN")
+    token_qs = ""
+    if gate:
+        supplied = request.query_params.get("k") or ""
+        if not secrets.compare_digest(supplied, gate):
+            raise HTTPException(status_code=404, detail="not found")
+        token_qs = "?" + urlencode({"k": gate})
+
+    # Normalise to kg — the form may submit pounds.
+    weight_kg = weight / 2.20462 if str(unit).lower() in ("lb", "lbs", "pound", "pounds") else weight
+    result = garmin.log_weight(
+        weight_kg=weight_kg,
+        entry_date=entry_date or None,
+        body_fat_pct=body_fat_pct,
+    )
+    # Bust the 2-min dashboard micro-cache so the redirect shows fresh data.
+    _dash_cache.update(html=None, ts=0.0)
+    if not result.get("saved"):
+        return HTMLResponse(
+            _dash_wrap(
+                f"<h1>Fueling dashboard</h1><p>Could not log the weigh-in: "
+                f"{result.get('error', 'unknown error')}</p>"
+                f"<p><a href='/dashboard{token_qs}'>← back to the dashboard</a></p>",
+                token_qs,
+            ),
+            status_code=400,
+        )
+    return RedirectResponse(url=f"/dashboard{token_qs}", status_code=303)
 
 
 @app.get("/cache/list")

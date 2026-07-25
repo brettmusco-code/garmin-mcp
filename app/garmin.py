@@ -800,7 +800,14 @@ def refresh_weigh_in_snapshot(force_refresh: bool = True) -> list[dict]:
 
 
 def _weigh_in_entries() -> list[dict]:
-    """Canonical recent weigh-ins (oldest first) that every reader shares.
+    """Canonical recent weigh-ins (oldest first) that every reader shares —
+    Garmin's series with any manual weigh-ins merged on top (manual wins for
+    the days it covers). Returns [] when nothing is available."""
+    return _merge_manual_weigh_ins(_garmin_weigh_in_entries())
+
+
+def _garmin_weigh_in_entries() -> list[dict]:
+    """Garmin-sourced recent weigh-ins (oldest first), before any manual merge.
     Reads the STABLE snapshot key first (written by the refresh jobs); falls
     back to a date-range fetch and, on a writer instance, seeds the snapshot so
     later reads are stable. Returns [] when nothing is available."""
@@ -827,6 +834,80 @@ def _weigh_in_entries() -> list[dict]:
     if entries and not READONLY_MODE:
         store_weigh_in_snapshot(entries)
     return entries
+
+
+# --- Manual weigh-ins: user-logged weights stored under a stable R2 key -----
+#
+# Logged from the dashboard (or an MCP tool) when the Garmin scale isn't the
+# source of truth — a manual entry fills a gap or corrects a bad reading. Kept
+# in ONE stable key (manual_weigh_in/log), a date->entry map so re-logging the
+# same day overwrites rather than duplicates. Merged into the canonical weigh-in
+# series by _weigh_in_entries, where a manual entry WINS over Garmin's for the
+# same day — so the trend, projection, BMR and EA all pick it up automatically.
+# Writable from the readonly web instance (READONLY_MODE only blocks live
+# Garmin calls, not R2 writes).
+_MANUAL_WEIGH_IN_TTL_SEC = 365 * 24 * 3600  # keep a year; readers window it down
+
+
+def _manual_weigh_ins() -> dict[str, dict]:
+    """The stored manual weigh-in map (date ISO -> entry). {} when none/unset."""
+    got = cache.get("manual_weigh_in", {}, key_parts=["log"],
+                    ttl_seconds=_MANUAL_WEIGH_IN_TTL_SEC)
+    return got if isinstance(got, dict) else {}
+
+
+def log_weight(weight_kg: float, entry_date: str | date | None = None,
+               body_fat_pct: float | None = None) -> dict:
+    """Record a manual weigh-in. Overwrites any existing manual entry for the
+    same day. Persists to R2 under the stable manual-weigh-in key, then rebuilds
+    the weigh-in snapshot so the new reading reaches every reader (current
+    weight, trend, projection, BMR, EA) on the next dashboard load.
+
+    weight_kg: the weight in KILOGRAMS (callers convert from lb before here).
+    entry_date: ISO date or date; defaults to the athlete's local today.
+    Returns {saved, date, weight_kg, count} or {saved: False, error}."""
+    try:
+        w = float(weight_kg)
+    except (TypeError, ValueError):
+        return {"saved": False, "error": "weight must be a number"}
+    if not (20.0 <= w <= 400.0):   # kg sanity bounds — catch lb entered as kg
+        return {"saved": False, "error": f"weight {w} kg is out of range (20–400 kg)"}
+    d = _coerce_date(entry_date) if entry_date else _local_today()
+    d_iso = d.isoformat()
+    if d_iso > _local_today().isoformat():
+        return {"saved": False, "error": "cannot log a weigh-in in the future"}
+    if not cache.enabled():
+        return {"saved": False, "error": "cache/storage unavailable — cannot persist the weigh-in"}
+    entry: dict = {"date": d_iso, "weight_kg": round(w, 2), "source": "manual"}
+    if body_fat_pct is not None:
+        try:
+            entry["body_fat_pct"] = round(float(body_fat_pct), 1)
+        except (TypeError, ValueError):
+            pass
+    log = _manual_weigh_ins()
+    log[d_iso] = entry
+    cache.put("manual_weigh_in", {}, log, key_parts=["log"])
+    # Rebuild the merged snapshot so readers see the entry immediately (rather
+    # than waiting for the next cron tick to reseed it).
+    try:
+        merged = _merge_manual_weigh_ins(_garmin_weigh_in_entries())
+        if merged:
+            store_weigh_in_snapshot(merged)
+    except Exception:  # noqa: BLE001
+        pass
+    return {"saved": True, "date": d_iso, "weight_kg": round(w, 2), "count": len(log)}
+
+
+def _merge_manual_weigh_ins(garmin_entries: list[dict]) -> list[dict]:
+    """Merge manual weigh-ins into a Garmin-sourced series. Manual entries WIN
+    for any day they cover; other days keep the Garmin reading. Returns the
+    combined series sorted oldest-first."""
+    manual = _manual_weigh_ins()
+    if not manual:
+        return garmin_entries
+    by_date: dict[str, dict] = {e["date"]: e for e in garmin_entries}
+    by_date.update(manual)   # manual wins on same-day collisions
+    return sorted(by_date.values(), key=lambda e: e["date"])
 
 
 def _scan_cached_weigh_ins() -> list[dict]:
