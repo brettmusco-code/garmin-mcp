@@ -3809,13 +3809,14 @@ def generate_fueling_plan(
         # FFM/day; below ~25 is a clear RED-S / under-fueling risk.
         energy_availability = round((target_kcal - total_burn) / ffm_kg, 1) if ffm_kg else None
         # Auditable breakdown so the EA number is legible on the card: how
-        # intake and exercise combine, and what one point of EA costs in kcal.
+        # intake and exercise combine. (kcal_per_ea_point was dropped — it was
+        # just FFM restated, static day to day, and the dashboard no longer
+        # renders it. ffm_kg is retained as the divisor for anyone recomputing.)
         energy_availability_detail = {
             "intake_kcal": target_kcal,
             "exercise_kcal": total_burn,
             "tef_kcal": tef_kcal,          # part of intake, shown for transparency
             "ffm_kg": ffm_kg,
-            "kcal_per_ea_point": round(ffm_kg) if ffm_kg else None,
         } if ffm_kg else None
 
         # Fuel only sessions at/above the minimum duration (default 90 min).
