@@ -71,6 +71,12 @@
   .tab-btn:hover{color:var(--ink);}
   .tab-btn.active{background:var(--panel);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.18);}
   .tab-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+  /* Icon-only tab (settings): hugs its glyph instead of taking an equal share. */
+  .tab-btn.tab-icon{flex:0 0 auto;display:flex;align-items:center;justify-content:center;
+    padding:9px 13px;color:var(--ink-faint);}
+  .tab-btn.tab-icon svg{width:17px;height:17px;display:block;}
+  .tab-btn.tab-icon:hover{color:var(--ink);}
+  .tab-btn.tab-icon.active{color:var(--ink);}
   .tabpanel{display:none;}
   .tabpanel.active{display:block;animation:tabin .18s ease;}
   @keyframes tabin{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:none;}}
@@ -336,7 +342,15 @@
     <button class="tab-btn active" role="tab" aria-selected="true" data-tab="today" onclick="showTab('today')">Today</button>
     <button class="tab-btn" role="tab" aria-selected="false" data-tab="week" onclick="showTab('week')">Week</button>
     <button class="tab-btn" role="tab" aria-selected="false" data-tab="progress" onclick="showTab('progress')">Progress</button>
-    <button class="tab-btn" role="tab" aria-selected="false" data-tab="settings" onclick="showTab('settings')">Settings</button>
+    <button class="tab-btn tab-icon" role="tab" aria-selected="false" data-tab="settings"
+            onclick="showTab('settings')" aria-label="Settings" title="Settings">
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"
+              stroke-linejoin="round" d="M12 15.4a3.4 3.4 0 1 0 0-6.8 3.4 3.4 0 0 0 0 6.8Z"/>
+        <path fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"
+              stroke-linejoin="round" d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.08a1.7 1.7 0 0 0-1.11-1.56 1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.62 15a1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.08A1.7 1.7 0 0 0 4.64 8.86a1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.88.34H9a1.7 1.7 0 0 0 1.03-1.56V3a2 2 0 1 1 4 0v.08a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.88V9a1.7 1.7 0 0 0 1.56 1.03H21a2 2 0 1 1 0 4h-.08A1.7 1.7 0 0 0 19.4 15Z"/>
+      </svg>
+    </button>
   </nav>
 
   <!-- TODAY: the combined today card + today's full detail -->
