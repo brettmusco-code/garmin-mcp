@@ -172,6 +172,44 @@ def main():
     g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
                        sex="male", height_cm=178, age=40)
 
+    print("update_fueling_goal merges partial edits without wiping the goal:")
+    # Seed a full goal with fields the dashboard form does NOT expose (BMR
+    # inputs, EA settings, manual weight override) so we can prove they survive.
+    g.set_fueling_goal(
+        goal_type="lose", target_weight_kg=72.0, target_date=target_date,
+        sex="male", height_cm=178, age=40, ea_min=25.0, current_weight_kg=77.0,
+        home_lat=40.1, home_lon=-75.2, protein_g_per_kg=1.8,
+    )
+    upd = g.update_fueling_goal(target_weight_kg=70.0, aggressive=True)
+    check("partial edit saves", upd.get("saved") is True)
+    check("edited field applied (target weight)", upd["goal"]["target_weight_kg"] == 70.0)
+    check("edited toggle applied (aggressive)", upd["goal"]["aggressive"] is True)
+    check("unshown BMR input preserved", upd["goal"]["height_cm"] == 178.0)
+    check("unshown EA setting preserved", upd["goal"]["ea_min"] == 25.0)
+    check("manual weight override preserved", upd["goal"]["current_weight_kg"] == 77.0)
+    check("home coords preserved", upd["goal"]["home_lat"] == 40.1)
+    check("untouched target_date preserved", upd["goal"]["target_date"] == target_date)
+    # Omitting a field (the KEEP sentinel) leaves it; passing None clears it.
+    upd2 = g.update_fueling_goal(protein_g_per_kg=None)
+    check("omitted fields still preserved after 2nd edit",
+          upd2["goal"]["target_weight_kg"] == 70.0 and upd2["goal"]["aggressive"] is True)
+    check("explicit None clears the field", upd2["goal"]["protein_g_per_kg"] is None)
+    # goal_type is validated on the merge path too.
+    try:
+        g.update_fueling_goal(goal_type="bulk")
+        check("invalid goal_type rejected", False)
+    except ValueError:
+        check("invalid goal_type rejected", True)
+    # Editing with no goal present is a clean refusal, not a crash.
+    _STORE.pop("fueling_goal/current", None)
+    none_edit = g.update_fueling_goal(target_weight_kg=68.0)
+    check("edit with no goal -> saved False", none_edit.get("saved") is False)
+    check("edit with no goal -> actionable error",
+          "no fueling goal" in (none_edit.get("error") or "").lower())
+    # restore a plain goal for the rest of the suite
+    g.set_fueling_goal(goal_type="lose", target_weight_kg=72.0, target_date=target_date,
+                       sex="male", height_cm=178, age=40)
+
     print("_today_actuals never falls back to an older logged day:")
     yesterday_iso = (TODAY - timedelta(days=1)).isoformat()
     def _fake_gds_stale_only(startdate, enddate, metrics=None, **k):
