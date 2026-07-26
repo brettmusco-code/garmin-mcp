@@ -110,6 +110,9 @@ def _fake_activities(startdate, enddate, *a, **k):
 
 g.get_athlete_baseline = _fake_baseline        # type: ignore[assignment]
 g.get_body_composition = _fake_body_comp       # type: ignore[assignment]
+# Keep a handle on the REAL implementation before stubbing it, so the
+# calendar-overflow dedupe can be exercised directly further down.
+_REAL_GET_SCHEDULED = g.get_scheduled_workouts
 g.get_scheduled_workouts = _fake_scheduled     # type: ignore[assignment]
 g.get_activities_in_range = _fake_activities   # type: ignore[assignment]
 
@@ -560,6 +563,50 @@ def main():
     check("future day has nothing burned yet", d4["burned_kcal"] == 0)
     check("future day's whole burn is projected",
           d4["projected_burn_kcal"] == d4["est_burn_kcal"])
+
+    print("get_scheduled_workouts dedupes calendar month-overflow copies:")
+    # Garmin's calendar-month view pads the week grid with the adjacent months'
+    # leading/trailing days, so a range crossing a month boundary returns the
+    # SAME scheduled workout from both month buckets. Both copies used to clear
+    # the date filter, so a 2-workout day rendered as "4 sessions" — once as
+    # actual, once as est. Simulate that overflow.
+    _jul26 = {"id": 1709346464, "itemType": "workout", "date": "2026-07-26",
+              "title": "30min Ironman Intensity Bike", "sportTypeKey": "cycling",
+              "workoutId": 1628759477}
+    _jul26_run = {"id": 1709348453, "itemType": "workout", "date": "2026-07-26",
+                  "title": "Aerobic Endurance Run with Strides", "sportTypeKey": "running",
+                  "workoutId": 1628761445}
+    _aug2 = {"id": 1723060394, "itemType": "workout", "date": "2026-08-02",
+             "title": "Ironman Intensity Activation Ride", "sportTypeKey": "cycling",
+             "workoutId": 1642684929}
+    _save_calmonth = g._calendar_month
+    # Both the July and August month views carry every item in the window.
+    g._calendar_month = lambda y, m: {"calendarItems": [_jul26, _jul26_run, _aug2]}
+    _save_cget, _save_cput = g.cache.get, g.cache.put
+    g.cache.get = lambda *a, **k: None      # force the stubbed fetch each month
+    g.cache.put = lambda *a, **k: None
+    _sched = _REAL_GET_SCHEDULED("2026-07-26", "2026-08-02")
+    g._calendar_month = _save_calmonth
+    g.cache.get, g.cache.put = _save_cget, _save_cput
+    check("month-overflow duplicates collapsed", len(_sched) == 3)
+    check("each scheduled id appears exactly once",
+          sorted(x["id"] for x in _sched) == [1709346464, 1709348453, 1723060394])
+    _jul26_items = [x for x in _sched if x["date"] == "2026-07-26"]
+    check("the doubled day is back to 2 sessions", len(_jul26_items) == 2)
+
+    # A null id must not collapse two genuinely different workouts.
+    _no_id_a = {"itemType": "workout", "date": "2026-07-26", "title": "Swim",
+                "sportTypeKey": "swimming", "workoutId": 1}
+    _no_id_b = {"itemType": "workout", "date": "2026-07-26", "title": "Bike",
+                "sportTypeKey": "cycling", "workoutId": 2}
+    g._calendar_month = lambda y, m: {"calendarItems": [_no_id_a, _no_id_b, _no_id_a]}
+    g.cache.get, g.cache.put = (lambda *a, **k: None), (lambda *a, **k: None)
+    _sched2 = _REAL_GET_SCHEDULED("2026-07-26", "2026-07-26")
+    g._calendar_month = _save_calmonth
+    g.cache.get, g.cache.put = _save_cget, _save_cput
+    check("null-id: distinct workouts both survive", len(_sched2) == 2)
+    check("null-id: the repeated one is still deduped",
+          sorted(x["title"] for x in _sched2) == ["Bike", "Swim"])
 
     print("_dedupe_actual_workouts collapses double-recorded sessions:")
     # Same activity_id recorded twice (e.g. watch + Strava re-import) -> one session,

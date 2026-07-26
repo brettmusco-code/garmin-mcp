@@ -4361,6 +4361,14 @@ def get_scheduled_workouts(
         )
 
     out: list[dict] = []
+    # Garmin's calendar-month view includes the leading/trailing days of the
+    # ADJACENT months (the padding cells that complete the week grid). So a range
+    # spanning a month boundary sees the same scheduled workout in two different
+    # month buckets, and both copies clear the date filter — which showed up
+    # downstream as duplicated sessions (a 2-workout day rendering as
+    # "4 sessions", each once as actual and once as est). Dedupe on the calendar
+    # item's own identity, keeping the first copy.
+    seen_keys: set = set()
     for year, month in months:
         args = {"year": year, "month": month}
         key_parts = [f"{year:04d}-{month:02d}"]
@@ -4391,6 +4399,16 @@ def get_scheduled_workouts(
                 continue
             if not (s <= d <= e):
                 continue
+            # Prefer Garmin's own item id; fall back to the fields that identify a
+            # scheduled workout when id is missing, so a null id can't collapse
+            # two genuinely different workouts into one.
+            ident = item.get("id")
+            key = (("id", ident) if ident is not None else
+                   ("fallback", date_str, item.get("workoutId"),
+                    item.get("title"), item.get("sportTypeKey")))
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
             out.append(item)
 
     out.sort(key=lambda x: x.get("date") or "")
