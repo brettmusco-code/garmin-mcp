@@ -101,7 +101,6 @@
   .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
     box-shadow:var(--shadow);padding:22px;}
   .card h2{margin:0 0 2px;font-size:14.5px;font-weight:650;letter-spacing:-.01em;}
-  .card .sub{color:var(--ink-dim);font-size:12.5px;margin-bottom:18px;}
 
   /* Macros are the headline action, right under the stat row. The burn/exercise
      context is secondary — it sits below the macros behind a tier separator. */
@@ -251,9 +250,8 @@
     font-size:12px;color:var(--ink-dim);margin:-6px 0 16px;padding:0 2px;}
   .eabreak b{font-family:var(--mono);color:var(--ink);}
   .eabreak .eab-lead{margin-right:2px;}
-  .eabreak .eab-lead small,.eabreak .eab-note{color:var(--ink-faint);font-size:11px;}
+  .eabreak .eab-lead small{color:var(--ink-faint);font-size:11px;}
   .eabreak .eab-op{color:var(--ink-faint);}
-  .eabreak .eab-note{margin-left:auto;}
 
   .progress{display:grid;grid-template-columns:1fr;gap:14px;}
   .track{position:relative;height:12px;border-radius:8px;background:var(--panel-2);margin:26px 0 8px;}
@@ -379,7 +377,6 @@
   <div class="tabpanel" id="tab-week" role="tabpanel">
     <div class="card">
       <h2>Week ahead</h2>
-      <div class="sub">Tap any day for its full fueling detail below.</div>
       <div class="daylist" id="weekBody"></div>
     </div>
 
@@ -1365,14 +1362,14 @@ function renderDay(d, targetId){
   // EA breakdown (#3: expose the components so the number is auditable):
   // EA = (intake − exercise) / FFM. Intake includes TEF (canonical definition).
   // EA's unit is intrinsically kcal/kg-FFM (sports-science standard) and is
-  // shown as-is; the raw FFM figure is dropped to keep the row scannable.
+  // shown as-is; the raw FFM figure and the kcal-per-EA-point conversion are
+  // dropped — both are static restatements of FFM, not day-to-day signal.
   const ead = d.energy_availability_detail;
   const eaBreak = ead ? `<div class="eabreak">
       <span class="eab-lead">Energy availability <b>${d.energy_availability_kcal_per_kg_ffm}</b> <small>kcal/kg FFM</small></span>
       <span class="eab-stat">eat <b>${nf(ead.intake_kcal)}</b></span>
       <span class="eab-op">−</span>
       <span class="eab-stat">exercise <b>${nf(ead.exercise_kcal)}</b></span>
-      <span class="eab-note">1 pt ≈ ${nf(ead.kcal_per_ea_point)} kcal</span>
     </div>` : '';
   const trimBadge = d.carbs_trimmed
     ? `<span class="trimflag" title="Deficit too steep to hold this day's training carbs">⚠ carbs cut</span>` : '';
@@ -1472,7 +1469,7 @@ function render(){
     eaEl.innerHTML = `<span class="dot"></span>EA ${ea0}`; }
   else eaEl.style.display='none';
   $('todaySession').innerHTML =
-    `<div class="s ${first.primary_intensity==='rest'?'rest':''}">${first.primary_intensity==='rest'?'Rest day':sess}<small>${first.needs_fuel?'tap the row for its fuel plan':'no session fuel needed'}</small></div>`;
+    `<div class="s ${first.primary_intensity==='rest'?'rest':''}">${first.primary_intensity==='rest'?'Rest day':sess}${first.needs_fuel?'':'<small>no session fuel needed</small>'}</div>`;
 
   renderActuals(haveActuals);
   renderRecent();
