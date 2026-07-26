@@ -1756,6 +1756,127 @@ def set_fueling_goal(
     return {"saved": True, "goal": goal}
 
 
+# Sentinel for update_fueling_goal: distinguishes "field not supplied, keep the
+# existing value" from "supplied as None, clear it". None can't do double duty
+# here because clearing (e.g. removing a max_deficit cap) is a real edit.
+_KEEP = object()
+
+
+def update_fueling_goal(
+    goal_type: str | object = _KEEP,
+    target_weight_kg: float | None | object = _KEEP,
+    target_date: str | None | object = _KEEP,
+    protein_g_per_kg: float | None | object = _KEEP,
+    max_deficit_kcal: float | None | object = _KEEP,
+    max_loss_lb_per_week: float | None | object = _KEEP,
+    periodize_deficit: bool | None | object = _KEEP,
+    front_load: float | None | object = _KEEP,
+    aggressive: bool | None | object = _KEEP,
+    skip_breakfast_weekdays: bool | None | object = _KEEP,
+    units: str | None | object = _KEEP,
+) -> dict:
+    """Merge a partial set of changes onto the CURRENT fueling goal and persist.
+
+    Unlike set_fueling_goal (which rewrites the whole goal and clears any param
+    the caller omits), this reads the stored goal, overlays only the fields you
+    pass, and leaves everything else — BMR inputs, EA settings, home coords, the
+    manual current_weight override and its as-of stamp — untouched. This is what
+    the dashboard's goal-edit form uses so it can expose a handful of knobs
+    without wiping the rest of the goal.
+
+    Every parameter defaults to a keep-sentinel: omit it to preserve the stored
+    value; pass None to clear it (where clearing is meaningful, e.g. removing a
+    deficit cap). set_date is refreshed so stale-goal flags reset on any edit.
+    """
+    current = cache.get(
+        "fueling_goal", {"key": "current"}, key_parts=["current"],
+        ttl_seconds=IMMUTABLE_TTL,
+    )
+    if not isinstance(current, dict) or not current.get("goal_type"):
+        return {
+            "saved": False,
+            "error": (
+                "No fueling goal exists yet to edit — create one first with "
+                "set_fueling_goal (run /fuel in Claude)."
+            ),
+        }
+    goal = dict(current)
+
+    changes = {
+        "goal_type": goal_type,
+        "target_weight_kg": target_weight_kg,
+        "target_date": target_date,
+        "protein_g_per_kg": protein_g_per_kg,
+        "max_deficit_kcal": max_deficit_kcal,
+        "max_loss_lb_per_week": max_loss_lb_per_week,
+        "periodize_deficit": periodize_deficit,
+        "front_load": front_load,
+        "aggressive": aggressive,
+        "skip_breakfast_weekdays": skip_breakfast_weekdays,
+        "units": units,
+    }
+
+    def _num(v, nd=None):
+        if v is None:
+            return None
+        f = float(v)
+        return round(f, nd) if nd is not None else round(f)
+
+    for field, val in changes.items():
+        if val is _KEEP:
+            continue
+        if field == "goal_type":
+            gt = (val or "").strip().lower()
+            if gt not in GOAL_TYPES:
+                raise ValueError(f"goal_type must be one of {GOAL_TYPES}")
+            goal["goal_type"] = gt
+        elif field == "target_date":
+            if val:
+                try:
+                    datetime.strptime(str(val)[:10], "%Y-%m-%d")
+                except (ValueError, TypeError) as ex:
+                    raise ValueError("target_date must be YYYY-MM-DD") from ex
+                goal["target_date"] = str(val)[:10]
+            else:
+                goal["target_date"] = None
+        elif field == "units":
+            un = (val or "").strip().lower() or None
+            if un and un not in ("metric", "imperial"):
+                raise ValueError("units must be 'metric' or 'imperial'")
+            goal["units"] = un
+        elif field == "target_weight_kg":
+            goal["target_weight_kg"] = _num(val, 1) if val else None
+        elif field == "protein_g_per_kg":
+            goal["protein_g_per_kg"] = _num(val, 2) if val else None
+        elif field == "front_load":
+            goal["front_load"] = _num(val, 2) if val is not None else None
+        elif field == "max_loss_lb_per_week":
+            goal["max_loss_lb_per_week"] = _num(val, 2) if val is not None else None
+        elif field == "max_deficit_kcal":
+            goal["max_deficit_kcal"] = _num(val) if val is not None else None
+        elif field in ("periodize_deficit", "aggressive", "skip_breakfast_weekdays"):
+            goal[field] = bool(val) if val is not None else None
+
+    goal["set_date"] = _local_today().isoformat()
+
+    cache.put("fueling_goal", {"key": "current"}, goal, key_parts=["current"])
+    persisted = cache.get(
+        "fueling_goal", {"key": "current"}, key_parts=["current"],
+        ttl_seconds=IMMUTABLE_TTL,
+    )
+    if not persisted:
+        return {
+            "saved": False,
+            "goal": goal,
+            "error": (
+                "Goal changes were NOT persisted — the server could not write to "
+                "the cache (R2). The web service likely has read-only S3/R2 "
+                "credentials; give it read-write keys and retry."
+            ),
+        }
+    return {"saved": True, "goal": goal}
+
+
 def skip_scheduled_session(
     date: str,
     sport: str | None = None,

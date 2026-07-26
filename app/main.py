@@ -1151,6 +1151,7 @@ def dashboard(request: Request) -> HTMLResponse:
         # Left as a {{placeholder}} in the standalone/Artifact copy, where the
         # form stays hidden.
         fragment = fragment.replace("{{LOG_WEIGHT_ACTION}}", "/dashboard/log-weight" + token_qs)
+        fragment = fragment.replace("{{SAVE_GOAL_ACTION}}", "/dashboard/save-goal" + token_qs)
     except Exception as ex:  # noqa: BLE001
         return HTMLResponse(
             _dash_wrap(f"<h1>Fueling dashboard</h1><p>Template error: "
@@ -1194,6 +1195,100 @@ def dashboard_log_weight(
         return HTMLResponse(
             _dash_wrap(
                 f"<h1>Fueling dashboard</h1><p>Could not log the weigh-in: "
+                f"{result.get('error', 'unknown error')}</p>"
+                f"<p><a href='/dashboard{token_qs}'>← back to the dashboard</a></p>",
+                token_qs,
+            ),
+            status_code=400,
+        )
+    return RedirectResponse(url=f"/dashboard{token_qs}", status_code=303)
+
+
+# Checkbox <input>s only submit when checked, so a plain Form(None) can't tell
+# "unchecked" from "field absent". The form emits a companion hidden input
+# (e.g. periodize_present=1) so the handler knows the toggle was on the page and
+# an absent checkbox means False rather than "leave unchanged".
+def _form_bool(value: str | None, present: str | None) -> bool | None:
+    if not present:
+        return garmin._KEEP  # toggle wasn't on the submitted form → keep stored
+    return value is not None
+
+
+@app.post("/dashboard/save-goal")
+async def dashboard_save_goal(request: Request) -> Response:
+    """Merge a partial goal edit from the dashboard form onto the current goal,
+    then redirect back. Only the handful of knobs the form exposes are touched;
+    everything else in the goal is preserved. Same DASHBOARD_TOKEN gating as the
+    page. Empty text fields clear their target (where clearing is meaningful);
+    checkboxes use a companion *_present hidden input to distinguish unchecked
+    from not-on-form."""
+    gate = os.environ.get("DASHBOARD_TOKEN")
+    token_qs = ""
+    if gate:
+        supplied = request.query_params.get("k") or ""
+        if not secrets.compare_digest(supplied, gate):
+            raise HTTPException(status_code=404, detail="not found")
+        token_qs = "?" + urlencode({"k": gate})
+
+    form = await request.form()
+
+    def _txt(name: str):
+        # "" from an emptied field means clear; field-absent means keep.
+        if name not in form:
+            return garmin._KEEP
+        v = str(form.get(name) or "").strip()
+        return v if v else None
+
+    def _numeric(name: str):
+        raw = _txt(name)
+        if raw is garmin._KEEP or raw is None:
+            return raw
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return garmin._KEEP  # ignore unparseable rather than corrupt the goal
+
+    kwargs = {
+        "goal_type": _txt("goal_type"),
+        "target_weight_kg": _numeric("target_weight_kg"),
+        "target_date": _txt("target_date"),
+        "protein_g_per_kg": _numeric("protein_g_per_kg"),
+        "max_deficit_kcal": _numeric("max_deficit_kcal"),
+        "max_loss_lb_per_week": _numeric("max_loss_lb_per_week"),
+        "front_load": _numeric("front_load"),
+        "units": _txt("units"),
+        "periodize_deficit": _form_bool(
+            form.get("periodize_deficit"), form.get("periodize_deficit_present")),
+        "aggressive": _form_bool(
+            form.get("aggressive"), form.get("aggressive_present")),
+        "skip_breakfast_weekdays": _form_bool(
+            form.get("skip_breakfast_weekdays"), form.get("skip_breakfast_weekdays_present")),
+    }
+
+    # target_weight is entered in the goal's display units; convert lb→kg.
+    if str(form.get("weight_unit") or "").lower() in ("lb", "lbs", "pound", "pounds"):
+        tw = kwargs["target_weight_kg"]
+        if isinstance(tw, (int, float)):
+            kwargs["target_weight_kg"] = tw / 2.20462
+
+    try:
+        result = garmin.update_fueling_goal(**kwargs)
+    except ValueError as ex:
+        _dash_cache.update(html=None, ts=0.0)
+        return HTMLResponse(
+            _dash_wrap(
+                f"<h1>Fueling dashboard</h1><p>Could not save the goal: {ex}</p>"
+                f"<p><a href='/dashboard{token_qs}'>← back to the dashboard</a></p>",
+                token_qs,
+            ),
+            status_code=400,
+        )
+
+    _dash_cache.update(html=None, ts=0.0)
+    if not result.get("saved"):
+        return HTMLResponse(
+            _dash_wrap(
+                f"<h1>Fueling dashboard</h1><p>Could not save the goal: "
                 f"{result.get('error', 'unknown error')}</p>"
                 f"<p><a href='/dashboard{token_qs}'>← back to the dashboard</a></p>",
                 token_qs,
