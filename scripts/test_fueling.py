@@ -523,6 +523,54 @@ def main():
     check("future day's whole burn is projected",
           d4["projected_burn_kcal"] == d4["est_burn_kcal"])
 
+    print("_dedupe_actual_workouts collapses double-recorded sessions:")
+    # Same activity_id recorded twice (e.g. watch + Strava re-import) -> one session,
+    # and the higher-kcal record wins.
+    _dd = g._dedupe_actual_workouts([
+        {"sport": "cycling", "activity_id": 111, "start": "2026-07-24 07:00:00",
+         "hours": 1.3, "kcal": 900},
+        {"sport": "cycling", "activity_id": 111, "start": "2026-07-24 07:00:00",
+         "hours": 1.3, "kcal": 950},
+    ])
+    check("same activity_id merges to one", len(_dd) == 1)
+    check("merge keeps the higher-kcal record", _dd[0]["kcal"] == 950)
+
+    # No activity_id, but starts within the 10-min tolerance (ROUVY + watch) -> merge.
+    _dd = g._dedupe_actual_workouts([
+        {"sport": "cycling", "activity_id": None, "start": "2026-07-24 07:00:00",
+         "hours": 1.3, "kcal": 900},
+        {"sport": "cycling", "activity_id": None, "start": "2026-07-24 07:04:00",
+         "hours": 1.3, "kcal": 820},
+    ])
+    check("near-simultaneous same-sport starts merge", len(_dd) == 1)
+    check("near-simultaneous merge keeps higher kcal", _dd[0]["kcal"] == 900)
+
+    # Two genuine same-sport sessions on the same day, hours apart -> both kept.
+    _dd = g._dedupe_actual_workouts([
+        {"sport": "cycling", "activity_id": 201, "start": "2026-07-24 07:00:00",
+         "hours": 1.0, "kcal": 700},
+        {"sport": "cycling", "activity_id": 202, "start": "2026-07-24 17:00:00",
+         "hours": 0.6, "kcal": 420},
+    ])
+    check("distinct same-sport sessions are both kept", len(_dd) == 2)
+
+    # Different sports never merge, even at identical start times.
+    _dd = g._dedupe_actual_workouts([
+        {"sport": "cycling", "activity_id": 301, "start": "2026-07-24 07:00:00",
+         "hours": 1.0, "kcal": 700},
+        {"sport": "running", "activity_id": 302, "start": "2026-07-24 07:00:00",
+         "hours": 0.8, "kcal": 600},
+    ])
+    check("different sports never merge", len(_dd) == 2)
+
+    # No start times at all: fall back to near-equal duration for the same sport.
+    _dd = g._dedupe_actual_workouts([
+        {"sport": "running", "activity_id": None, "start": "", "hours": 0.80, "kcal": 600},
+        {"sport": "running", "activity_id": None, "start": "", "hours": 0.85, "kcal": 640},
+    ])
+    check("no-start same-sport near-equal duration merges", len(_dd) == 1)
+    check("duration-merge keeps higher kcal", _dd[0]["kcal"] == 640)
+
     print("generate_fueling_plan's today session also converts to Active Calories:")
     def _fake_gds_active_for_plan(startdate, enddate, metrics=None, **k):
         return {"stats_and_body": {TODAY.isoformat(): {"restingCaloriesFromActivity": 100}}}
