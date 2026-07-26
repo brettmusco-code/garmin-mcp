@@ -2031,6 +2031,63 @@ def _to_active_calories(items: list[dict], resting_from_activity: float | None) 
     return sum(w["kcal"] for w in items)
 
 
+def _parse_activity_start(s: str) -> datetime | None:
+    """Best-effort parse of Garmin's startTimeLocal/GMT string into a naive
+    datetime. Handles 'YYYY-MM-DD HH:MM:SS' and ISO 'T'/'Z' variants; returns
+    None on anything unparseable."""
+    if not s:
+        return None
+    t = s.strip().replace("T", " ").replace("Z", "")
+    t = t.split(".")[0].split("+")[0].strip()  # drop fractional secs / tz offset
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(t, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _dedupe_actual_workouts(items: list[dict]) -> list[dict]:
+    """Collapse duplicate recordings of the SAME workout. Two entries are the
+    same session when they share a sport and start within ~10 min of each other
+    (a smart-trainer app + the watch both logging one ride, or a Strava
+    re-import). The higher-calorie record wins (the fuller recording); when
+    start times are missing we fall back to same-sport + near-equal duration so
+    a genuine second session of the same sport (hours clearly different) is
+    still kept. Order preserved. Entries carrying the same activity_id are
+    always treated as the same activity regardless of timing."""
+    START_TOL_MIN = 10.0        # starts within 10 min → same session
+    DUR_TOL_HRS = 0.20          # ~12 min: near-equal duration when no start time
+    kept: list[dict] = []
+    for it in items:
+        dup_of = None
+        for k in kept:
+            if k["sport"] != it["sport"]:
+                continue
+            aid, kid = it.get("activity_id"), k.get("activity_id")
+            if aid is not None and kid is not None and aid == kid:
+                dup_of = k
+                break
+            ts_i, ts_k = _parse_activity_start(it.get("start") or ""), _parse_activity_start(k.get("start") or "")
+            if ts_i and ts_k:
+                if abs((ts_i - ts_k).total_seconds()) <= START_TOL_MIN * 60:
+                    dup_of = k
+                    break
+            else:
+                # No usable start times: treat as the same only when the
+                # durations also match closely, so distinct same-sport sessions
+                # (e.g. a short bike + a long bike) aren't wrongly merged.
+                if abs((it.get("hours") or 0) - (k.get("hours") or 0)) <= DUR_TOL_HRS:
+                    dup_of = k
+                    break
+        if dup_of is None:
+            kept.append(it)
+        elif (it.get("kcal") or 0) > (dup_of.get("kcal") or 0):
+            # Keep the fuller recording: overwrite in place, preserving order.
+            dup_of.update(it)
+    return kept
+
+
 def _history_samples(history: list[dict]) -> dict[str, list[tuple[float, float]]]:
     """Per sport bucket, a list of (hours, kcal_per_hour) from recent
     completed activities. Retaining duration lets us match a planned session
@@ -3314,7 +3371,13 @@ def generate_fueling_plan(
             actual_today.append({
                 "sport": _sport_bucket(a.get("activityName") or "", tk),
                 "hours": hrs, "kcal": round(cal), "name": a.get("activityName") or "",
+                "start": str(a.get("startTimeLocal") or a.get("startTimeGMT") or ""),
+                "activity_id": a.get("activityId"),
             })
+        # Collapse the same session recorded twice (e.g. a smart-trainer app AND
+        # the watch both logging one ride, or a Strava re-import) before it can
+        # spawn a phantom "unplanned" duplicate in the session list.
+        actual_today = _dedupe_actual_workouts(actual_today)
         if actual_today:
             # Convert gross per-activity calories to Active Calories (see
             # _to_active_calories) so today's session list agrees with the
