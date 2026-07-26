@@ -336,6 +336,7 @@
     <button class="tab-btn active" role="tab" aria-selected="true" data-tab="today" onclick="showTab('today')">Today</button>
     <button class="tab-btn" role="tab" aria-selected="false" data-tab="week" onclick="showTab('week')">Week</button>
     <button class="tab-btn" role="tab" aria-selected="false" data-tab="progress" onclick="showTab('progress')">Progress</button>
+    <button class="tab-btn" role="tab" aria-selected="false" data-tab="settings" onclick="showTab('settings')">Settings</button>
   </nav>
 
   <!-- TODAY: the combined today card + today's full detail -->
@@ -385,10 +386,29 @@
       <div class="lead"><h2>Weight &rarr; target</h2><span id="paceNote"></span></div>
       <div class="card progress">
         <div class="track" id="wtrack"></div>
+      </div>
+    </section>
+
+    <section class="block" id="projBlock">
+      <div class="lead"><h2>Projected trajectory</h2><span id="projNote"></span></div>
+      <div class="card"><canvas id="projChart" height="220" style="width:100%;display:block"></canvas></div>
+    </section>
+
+    <section class="block" id="flagBlock">
+      <div class="lead"><h2>Flags</h2><span>read before you eat</span></div>
+      <div class="flags" id="flags"></div>
+    </section>
+  </div>
+
+  <!-- SETTINGS: weigh-in logging + goal editing -->
+  <div class="tabpanel" id="tab-settings" role="tabpanel">
+    <section class="block">
+      <div class="lead"><h2>Log weigh-in</h2><span>overrides Garmin for that day</span></div>
+      <div class="card">
         <div id="logWeight">
           <form method="post" action="{{LOG_WEIGHT_ACTION}}">
             <div class="fld">
-              <label for="lwWeight">Log weigh-in</label>
+              <label for="lwWeight">Weight</label>
               <input type="number" id="lwWeight" name="weight" step="0.1" min="20" required
                      inputmode="decimal" placeholder="0.0">
             </div>
@@ -469,16 +489,6 @@
           </form>
         </div>
       </div>
-    </section>
-
-    <section class="block" id="projBlock">
-      <div class="lead"><h2>Projected trajectory</h2><span id="projNote"></span></div>
-      <div class="card"><canvas id="projChart" height="220" style="width:100%;display:block"></canvas></div>
-    </section>
-
-    <section class="block" id="flagBlock">
-      <div class="lead"><h2>Flags</h2><span>read before you eat</span></div>
-      <div class="flags" id="flags"></div>
     </section>
   </div>
 
