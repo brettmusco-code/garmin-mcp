@@ -2123,7 +2123,8 @@ def _median(vals: list[float]) -> float:
     return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2.0
 
 
-def _to_active_calories(items: list[dict], resting_from_activity: float | None) -> int | None:
+def _to_active_calories(items: list[dict], resting_from_activity: float | None,
+                         rmr_per_hr: float | None = None) -> int | None:
     """Convert a list of {"kcal", "hours"} workout dicts from gross to Active
     Calories, in place, and return the new summed total (or None if `items`
     is empty).
@@ -2136,20 +2137,32 @@ def _to_active_calories(items: list[dict], resting_from_activity: float | None) 
     across all of the day's workout time, as restingCaloriesFromActivity.
     Subtract it, prorated by duration across `items`, so both the individual
     figures and their sum are Active Calories, matching what Garmin itself
-    shows for a workout. No-op (returns the gross sum) when
-    resting_from_activity isn't available.
+    shows for a workout.
+
+    restingCaloriesFromActivity is frequently still null for hours after a
+    workout syncs (Garmin's backend hasn't finished processing the day yet),
+    which used to make this silently fall back to gross — i.e. today's
+    freshly-logged session would show its full gross total as "Active" until
+    Garmin caught up. When that happens, net each item against rmr_per_hr x
+    hours instead — the same resting-during-exercise proxy already used for
+    scheduled-session estimates and the 30-day typical-day average. Only pure
+    gross (no correction at all) when neither figure is available.
     """
     if not items:
         return None
     gross_total = sum(w["kcal"] for w in items)
-    if not resting_from_activity:
-        return gross_total
-    resting_from_activity = min(resting_from_activity, gross_total)  # defensive clamp
-    total_hours = sum(w["hours"] for w in items) or 1.0
-    for w in items:
-        share = resting_from_activity * (w["hours"] / total_hours)
-        w["kcal"] = max(0, round(w["kcal"] - share))
-    return sum(w["kcal"] for w in items)
+    if resting_from_activity:
+        resting_from_activity = min(resting_from_activity, gross_total)  # defensive clamp
+        total_hours = sum(w["hours"] for w in items) or 1.0
+        for w in items:
+            share = resting_from_activity * (w["hours"] / total_hours)
+            w["kcal"] = max(0, round(w["kcal"] - share))
+        return sum(w["kcal"] for w in items)
+    if rmr_per_hr:
+        for w in items:
+            w["kcal"] = max(0, round(w["kcal"] - rmr_per_hr * w["hours"]))
+        return sum(w["kcal"] for w in items)
+    return gross_total
 
 
 def _parse_activity_start(s: str) -> datetime | None:
@@ -2477,7 +2490,8 @@ def _today_actuals() -> dict | None:
     resting_from_activity = None
     if isinstance(sb, dict) and "error" not in sb:
         resting_from_activity = sb.get("restingCaloriesFromActivity")
-    workout_kcal = _to_active_calories(workouts, resting_from_activity)
+    rmr_per_hr = (bmr_kcal / 24.0) if bmr_kcal else None
+    workout_kcal = _to_active_calories(workouts, resting_from_activity, rmr_per_hr)
     # Non-workout ("everyday") burn = activeKilocalories minus (now
     # active-only) workouts — movement above BMR that isn't a formal session
     # (steps/NEAT only). BMR itself is excluded here (broken out separately
@@ -3472,6 +3486,13 @@ def generate_fueling_plan(
         pass
     hist_samples = _history_samples(history)
 
+    # BMR/24 x hours: the resting-during-exercise proxy used both to net a
+    # scheduled-session estimate to Active Calories (no precise per-activity
+    # resting split exists for a session that hasn't happened yet) and, below,
+    # as the fallback for a logged workout when Garmin's own resting split
+    # (restingCaloriesFromActivity) hasn't synced yet.
+    rmr_per_hr = (bmr or 0) / 24.0
+
     # Completed activities *today* — used to swap the estimate for the real
     # burn on the current day once a session is done, so today's target and
     # energy-availability track reality instead of a projection.
@@ -3503,6 +3524,9 @@ def generate_fueling_plan(
             # Convert gross per-activity calories to Active Calories (see
             # _to_active_calories) so today's session list agrees with the
             # "today so far" card instead of showing Garmin's gross total.
+            # restingCaloriesFromActivity is frequently still null for hours
+            # after a workout syncs, in which case _to_active_calories falls
+            # back to the rmr_per_hr proxy above rather than gross.
             try:
                 sb_today = get_daily_summaries(
                     startdate=today_iso, enddate=today_iso, metrics=["stats_and_body"],
@@ -3513,7 +3537,7 @@ def generate_fueling_plan(
                 )
             except Exception:  # noqa: BLE001
                 resting_from_activity = None
-            _to_active_calories(actual_today, resting_from_activity)
+            _to_active_calories(actual_today, resting_from_activity, rmr_per_hr)
 
     last_scheduled_date = max(scheduled_by_date) if scheduled_by_date else None
 
@@ -3521,15 +3545,6 @@ def generate_fueling_plan(
     skipped_titles: list[str] = []
     fuel_trim_dates: list[str] = []
     no_show_titles: list[str] = []   # today's sessions dropped as late no-shows
-
-    # Estimated-session burn is calibrated from the athlete's own history of
-    # gross per-activity calories, so it needs the same gross-to-Active
-    # conversion as a logged workout. We don't have Garmin's precise
-    # per-activity resting split for a session that hasn't happened yet, so
-    # BMR/24 x hours is the best available proxy for "resting calories over
-    # that duration" (same idea _to_active_calories applies to real
-    # activities, just estimated instead of measured).
-    rmr_per_hr = (bmr or 0) / 24.0
 
     # Typical-day exercise (net Active Calories + hours) over the last 30 days,
     # split weekday vs weekend, for filling runs of unscheduled days that will
