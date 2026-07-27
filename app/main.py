@@ -1047,6 +1047,14 @@ def _dash_wrap(body_html: str, token_qs: str = "") -> str:
     return _DASH_DOC_HEAD_TMPL.format(qs=token_qs) + body_html + _DASH_DOC_TAIL
 
 
+def _dash_saved_redirect(token_qs: str, what: str) -> RedirectResponse:
+    """Redirect back to the dashboard flagging what was just written. The page
+    turns ?saved= into a visible confirmation — a bare redirect renders
+    identically to a no-op, so a successful save looks like nothing happened."""
+    sep = "&" if token_qs else "?"
+    return RedirectResponse(url=f"/dashboard{token_qs}{sep}saved={what}", status_code=303)
+
+
 @app.api_route("/icon.svg", methods=["GET", "HEAD"])
 def icon() -> Response:
     return Response(
@@ -1201,7 +1209,7 @@ def dashboard_log_weight(
             ),
             status_code=400,
         )
-    return RedirectResponse(url=f"/dashboard{token_qs}", status_code=303)
+    return _dash_saved_redirect(token_qs, "weight")
 
 
 # Checkbox <input>s only submit when checked, so a plain Form(None) can't tell
@@ -1295,7 +1303,7 @@ async def dashboard_save_goal(request: Request) -> Response:
             ),
             status_code=400,
         )
-    return RedirectResponse(url=f"/dashboard{token_qs}", status_code=303)
+    return _dash_saved_redirect(token_qs, "goal")
 
 
 @app.get("/cache/list")

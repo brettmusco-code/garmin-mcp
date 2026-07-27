@@ -320,7 +320,27 @@
     background:var(--good);border:0;border-radius:9px;padding:9px 16px;
     -webkit-tap-highlight-color:transparent;}
   #logWeight button:hover,#editGoal button:hover{filter:brightness(1.06);}
+  #logWeight button:disabled,#editGoal button:disabled{opacity:.55;cursor:default;filter:none;}
   #logWeight .hint,#editGoal .hint{width:100%;font-size:11.5px;color:var(--ink-faint);margin-top:2px;}
+
+  /* Save confirmation. The settings forms POST and 303-redirect back here, so
+     without this the page just silently reloads and a successful save looks
+     identical to nothing having happened. */
+  /* left/right + margin:auto rather than left:50% + translateX: a fixed box
+     offset only from the left shrink-wraps to the remaining half-viewport,
+     which wraps the message onto two lines on a phone. */
+  .toast{position:fixed;left:16px;right:16px;bottom:22px;z-index:50;
+    width:max-content;max-width:calc(100% - 32px);margin:0 auto;
+    display:flex;align-items:center;gap:9px;
+    background:var(--panel);color:var(--ink);
+    border:1px solid var(--line);border-left:3px solid var(--good);
+    border-radius:11px;padding:11px 16px;font-size:14px;font-weight:600;
+    box-shadow:var(--shadow);
+    opacity:0;visibility:hidden;transform:translateY(14px);
+    transition:opacity .18s ease,transform .18s ease,visibility .18s;}
+  .toast.show{opacity:1;visibility:visible;transform:translateY(0);}
+  .toast .ic{color:var(--good);}
+  @media (prefers-reduced-motion:reduce){ .toast{transition:none;} }
 </style>
 
 <div class="wrap">
@@ -504,6 +524,10 @@
   </div>
 
   <footer><b>generate_fueling_plan</b> &middot; session burn calibrated from your 90-day Garmin history &middot; durations from TrainingPeaks&rarr;Garmin</footer>
+
+  <div class="toast" id="toast" role="status" aria-live="polite">
+    <span class="ic" aria-hidden="true">✓</span><span class="msg"></span>
+  </div>
 </div>
 
 <script>
@@ -1734,8 +1758,48 @@ function initEditGoal(){
   chk('periodize_deficit', g.periodize_deficit);
   chk('skip_breakfast_weekdays', g.skip_breakfast_weekdays);
 }
+// Saving posts to the server, which rebuilds the whole plan before redirecting
+// back — several seconds on a cold cache. Without a pressed state the button
+// looks inert for that whole stretch, which reads as "the tap didn't register"
+// and invites a double-submit.
+function initSaveFeedback(){
+  document.querySelectorAll('#logWeight form,#editGoal form').forEach(form=>{
+    form.addEventListener('submit', ()=>{
+      const btn = form.querySelector('button[type=submit]');
+      if(!btn) return;
+      // Deferred: disabling a submit button synchronously from inside its own
+      // submit handler aborts the submission in some browsers.
+      setTimeout(()=>{ btn.disabled = true; btn.textContent = 'Saving…'; }, 0);
+    });
+  });
+}
+
+// ...and on the way back, say so. The server redirects to ?saved=<what> after a
+// successful write; the plan itself is re-rendered from fresh data, but nothing
+// on the page would otherwise confirm the save actually landed.
+const SAVED_MSG = {
+  weight: 'Weigh-in saved — plan updated',
+  goal:   'Goal saved — plan rebuilt',
+};
+function showSavedToast(){
+  const params = new URLSearchParams(location.search);
+  const msg = SAVED_MSG[params.get('saved')];
+  if(!msg) return;
+  showTab('settings');            // land back where the save was made
+  const el = $('toast');
+  el.querySelector('.msg').textContent = msg;
+  el.classList.add('show');
+  setTimeout(()=>el.classList.remove('show'), 4500);
+  // Drop ?saved= so a refresh doesn't replay a confirmation for a stale save.
+  params.delete('saved');
+  const qs = params.toString();
+  history.replaceState(null, '', location.pathname + (qs ? '?'+qs : ''));
+}
+
 render();
 initLogWeight();
 initEditGoal();
+initSaveFeedback();
+showSavedToast();
 window.addEventListener('resize', drawProjection);
 </script>
