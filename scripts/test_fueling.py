@@ -281,10 +281,14 @@ def main():
     ta3 = g._today_actuals()
     g.get_daily_summaries = _save_gds
     g.get_activities_in_range = _save_air3
-    check("no restingCaloriesFromActivity -> workout_kcal falls back to gross (300)",
-          ta3["workout_kcal"] == 300)
-    check("non_workout_kcal = active - workout (500-300=200), BMR excluded",
-          ta3["non_workout_kcal"] == 200)
+    # restingCaloriesFromActivity is frequently still null for hours after a
+    # workout syncs (Garmin hasn't finished processing the day). Rather than
+    # falling back to gross, this nets against BMR/24 x hours: 1700/24 * 0.56h
+    # = ~39.67 -> 300 - 40 = 260.
+    check("no restingCaloriesFromActivity -> workout_kcal nets via BMR/24 x hours (260, not gross 300)",
+          ta3["workout_kcal"] == 260)
+    check("non_workout_kcal = active - workout (500-260=240), BMR excluded",
+          ta3["non_workout_kcal"] == 240)
     check("expenditure_kcal is still the full bmr+active total (2200)",
           ta3["expenditure_kcal"] == 2200)
     check("bmr_kcal exposed separately (1700)", ta3["bmr_kcal"] == 1700)
@@ -524,6 +528,13 @@ def main():
           s0["burn_kcal"] < round(gross_est0))
 
     print("actual burn swaps the estimate on today's completed workouts:")
+    # get_daily_summaries here is still the real (unstubbed) implementation,
+    # which fails against the fake garminconnect client and is caught,
+    # leaving resting_from_activity None — same as a real day where Garmin
+    # hasn't backfilled restingCaloriesFromActivity yet. So today's actual
+    # workouts net via the rmr_per_hr (bmr/24) fallback, not gross:
+    #   bike: 950 - 72.75*1.3  = 950 - 94.575  -> 855
+    #   walk: 180 - 72.75*0.75 = 180 - 54.5625 -> 125
     _save_air2 = g.get_activities_in_range
     g.get_activities_in_range = lambda sd, ed, *a, **k: _fake_activities(sd, ed) + [
         {"activityType": {"typeKey": "cycling"}, "activityName": "Bike Threshold 4x8min",
@@ -540,13 +551,14 @@ def main():
     check("today's completed session tagged actual_today", s_today["burn_source"] == "actual_today")
     check("today's completed session marked done", s_today.get("done") is True)
     check("scheduled session is not flagged unplanned", s_today.get("unplanned") is False)
-    check("burn = actual 950, not the estimate", s_today["burn_kcal"] == 950)
+    check("burn = actual netted to Active Calories (855), not gross 950",
+          s_today["burn_kcal"] == 855)
     _unpl = [s for s in plan_act["days"][0]["sessions"] if s.get("unplanned")]
     check("off-plan walk folded in as an unplanned workout", len(_unpl) == 1)
-    check("unplanned workout carries its actual burn (180)",
-          _unpl and _unpl[0]["burn_kcal"] == 180)
+    check("unplanned workout carries its netted burn (125), not gross 180",
+          _unpl and _unpl[0]["burn_kcal"] == 125)
     check("est burn total picks up actual planned + unplanned",
-          plan_act["days"][0]["est_burn_kcal"] == 950 + 180)
+          plan_act["days"][0]["est_burn_kcal"] == 855 + 125)
     check("future day still uses an estimate",
           plan_act["days"][4]["sessions"][0]["burn_source"] != "actual_today")
 
@@ -554,8 +566,8 @@ def main():
     d0 = plan_act["days"][0]
     check("today exposes burned_kcal", "burned_kcal" in d0)
     check("today exposes projected_burn_kcal", "projected_burn_kcal" in d0)
-    check("completed workouts count as burned (bike 950 + walk 180)",
-          d0["burned_kcal"] == 950 + 180)
+    check("completed workouts count as burned (bike 855 + walk 125, netted)",
+          d0["burned_kcal"] == 855 + 125)
     check("no remaining session -> projected is 0", d0["projected_burn_kcal"] == 0)
     check("burned + projected == total burn",
           d0["burned_kcal"] + d0["projected_burn_kcal"] == d0["est_burn_kcal"])
