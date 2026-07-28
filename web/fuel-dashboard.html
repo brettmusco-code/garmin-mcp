@@ -1553,7 +1553,10 @@ function render(){
   // Today tab shows the lead day's full detail (days[0] is today/plan-start).
   if(days[0]) renderDay(days[0], 'todayDetail');
 
-  const notes = PLAN.notes||[];
+  // Dropped entirely (not just collapsed) — a known mode you turned on
+  // yourself and don't want re-announced every time the plan renders.
+  const suppressed = n => /^aggressive mode/i.test(n);
+  const notes = (PLAN.notes||[]).filter(n=>!suppressed(n));
   if(notes.length){
     // Tier the notes to cut noise: only things you can ACT on stay visible.
     //  - urgent : safety — RED-S / under-fuelling / below-BMR / carbs cut
