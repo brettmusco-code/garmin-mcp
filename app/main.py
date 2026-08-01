@@ -587,6 +587,48 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
+        "name": "reset_fueling_history",
+        "description": (
+            "Clear this app's own fueling history so a new goal starts from a "
+            "clean baseline — weekly snapshots, manual weigh-ins, ignored days "
+            "and skipped sessions.\n"
+            "Does NOT touch Garmin data (activities, food logs, body "
+            "composition, calendar): the app runs read-only against Garmin and "
+            "cannot re-fetch, so those are never deleted. Today's workouts and "
+            "nutrition therefore always survive.\n"
+            "Does NOT touch the active fueling goal — use set_fueling_goal to "
+            "change that.\n"
+            "DEFAULTS TO A DRY RUN: without `confirm=true` it only reports what "
+            "would be removed. Deleting is irreversible."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "scopes": {
+                    "type": "array",
+                    "items": {
+                        "type": "string",
+                        "enum": ["weekly_snapshots", "manual_weigh_ins",
+                                 "ignored_days", "skipped_sessions",
+                                 "weigh_in_snapshot"],
+                    },
+                    "description": (
+                        "which to clear; default is all except weigh_in_snapshot "
+                        "(derived, rebuilt automatically)"
+                    ),
+                },
+                "keep_today": {
+                    "type": "boolean",
+                    "description": "keep entries dated today, default true",
+                },
+                "confirm": {
+                    "type": "boolean",
+                    "description": "must be true to actually delete; default false = dry run",
+                },
+            },
+        },
+    },
+    {
         "name": "get_fueling_goal",
         "description": (
             "Return the active fueling goal plus live progress: current weight "
@@ -890,6 +932,15 @@ def _call_tool(name: str, args: dict) -> Any:
         return garmin.unignore_food_day(date=d)
     if name == "get_ignored_food_days":
         return {"ignored_days": garmin.get_ignored_food_days()}
+    if name == "reset_fueling_history":
+        scopes = args.get("scopes")
+        if scopes is not None and not isinstance(scopes, list):
+            raise ValueError("`scopes` must be a list of scope names")
+        return garmin.reset_fueling_history(
+            scopes=scopes,
+            keep_today=bool(args.get("keep_today", True)),
+            confirm=bool(args.get("confirm", False)),
+        )
     if name == "generate_fueling_plan":
         sd = args.get("start_date")
         if sd and not DATE_RE.match(sd):

@@ -2061,6 +2061,141 @@ def _load_ignored_food_days() -> dict:
     return pruned
 
 
+# --- Resetting app-owned fueling history -------------------------------------
+# Starting a fresh cut means re-baselining: the old weekly snapshots, manual
+# weigh-ins and per-day overrides describe a block that's over, and leaving them
+# in place drags the new plan's trend, projection and adaptive TDEE toward the
+# old one.
+#
+# This resets ONLY state this app wrote. Garmin-derived caches are deliberately
+# out of reach: the web instance runs GARMIN_READONLY=true and cannot re-fetch,
+# so deleting activities_month / body_composition / daily_summary / calendar_month
+# / nutrition food logs would blank the dashboard until the nightly cron and
+# permanently lose the burn-calibration history behind athlete_baseline. Today's
+# workouts and nutrition therefore survive a reset automatically — they live in
+# Garmin-derived keys this tool never touches.
+#
+# The active goal is also out of scope: it isn't history, and set_fueling_goal
+# already overwrites it wholesale.
+RESET_SCOPES: dict[str, str] = {
+    "weekly_snapshots": "weekly_snapshots",       # one object per week
+    "manual_weigh_ins": "manual_weigh_in",        # single map: date -> entry
+    "ignored_days": "fueling_ignored_days",       # single map: date -> entry
+    "skipped_sessions": "fueling_skips",          # single list
+    "weigh_in_snapshot": "weigh_in_snapshot",     # derived; rebuilt on next read
+}
+# Scopes cleared when the caller doesn't name any. weigh_in_snapshot is excluded
+# because it's derived — it gets rebuilt below whenever weigh-ins change anyway.
+_DEFAULT_RESET_SCOPES = ("weekly_snapshots", "manual_weigh_ins",
+                         "ignored_days", "skipped_sessions")
+
+
+def reset_fueling_history(
+    scopes: list[str] | None = None,
+    keep_today: bool = True,
+    confirm: bool = False,
+) -> dict:
+    """Clear this app's own fueling history so a new goal starts from a clean
+    baseline. Deletes weekly snapshots, manual weigh-ins, ignored days and
+    skipped sessions — NOT your Garmin data (activities, food logs, body
+    composition), which the app cannot re-fetch and so must never delete.
+
+    scopes: which to clear; defaults to everything except the derived weigh-in
+        snapshot. Valid: weekly_snapshots, manual_weigh_ins, ignored_days,
+        skipped_sessions, weigh_in_snapshot.
+    keep_today: keep entries dated today (default true), so a weigh-in or
+        snapshot you logged this morning survives the reset.
+    confirm: must be true to actually delete. The default is a DRY RUN that
+        reports exactly what would be removed, and changes nothing.
+
+    Returns per-scope counts. Deleting is irreversible — there is no undo."""
+    # Validate before the storage check so a typo'd scope is always reported,
+    # rather than being masked by an unconfigured cache.
+    requested = list(scopes) if scopes else list(_DEFAULT_RESET_SCOPES)
+    unknown = [s for s in requested if s not in RESET_SCOPES]
+    if unknown:
+        raise ValueError(
+            f"unknown scope(s): {', '.join(unknown)}. "
+            f"Valid: {', '.join(RESET_SCOPES)}"
+        )
+    if not cache.enabled():
+        return {"reset": False, "error": "cache/storage unavailable — nothing to reset"}
+    today_iso = _local_today().isoformat()
+    dry_run = not confirm
+    detail: dict[str, dict] = {}
+
+    def _reset_dated_map(scope: str, prefix: str, loader, args: dict,
+                         key_parts: list[str]) -> None:
+        """Scopes stored as one object holding a {date: entry} map. Rewrites the
+        object with only the surviving days, or drops it entirely if none."""
+        current = loader()
+        kept = {k: v for k, v in current.items() if keep_today and k == today_iso}
+        removing = len(current) - len(kept)
+        detail[scope] = {"removed": removing, "kept": len(kept)}
+        if dry_run or not removing:
+            return
+        if kept:
+            cache.put(prefix, args, kept, key_parts=key_parts)
+        else:
+            cache.delete_prefix(prefix)
+
+    for scope in dict.fromkeys(requested):   # de-dupe, preserve order
+        prefix = RESET_SCOPES[scope]
+        if scope == "weekly_snapshots":
+            keys = cache.list_keys(tool_prefix=prefix, limit=10000)
+            doomed = [k for k in keys
+                      if not (keep_today and k.endswith(f"/{today_iso}.json"))]
+            detail[scope] = {"removed": len(doomed), "kept": len(keys) - len(doomed)}
+            if not dry_run and doomed:
+                cache.delete_keys(doomed)
+        elif scope == "manual_weigh_ins":
+            _reset_dated_map(scope, prefix, _manual_weigh_ins, {}, ["log"])
+        elif scope == "ignored_days":
+            _reset_dated_map(scope, prefix, _load_ignored_food_days,
+                             {"key": "current"}, ["current"])
+        elif scope == "skipped_sessions":
+            current = _load_skipped_sessions()
+            detail[scope] = {"removed": len(current), "kept": 0}
+            if not dry_run and current:
+                cache.delete_prefix(prefix)
+        elif scope == "weigh_in_snapshot":
+            n = cache.count_keys(tool_prefix=prefix)
+            detail[scope] = {"removed": n, "kept": 0}
+            if not dry_run and n:
+                cache.delete_prefix(prefix)
+
+    # Manual weigh-ins feed the shared snapshot every reader uses, so a stale
+    # snapshot would keep serving weights we just deleted. Drop it and rebuild
+    # from Garmin plus whatever manual entries survived.
+    rebuilt = None
+    if not dry_run and detail.get("manual_weigh_ins", {}).get("removed"):
+        try:
+            cache.delete_prefix("weigh_in_snapshot")
+            merged = _merge_manual_weigh_ins(_garmin_weigh_in_entries())
+            store_weigh_in_snapshot(merged)
+            rebuilt = len(merged)
+        except Exception:  # noqa: BLE001
+            rebuilt = None
+
+    total = sum(d["removed"] for d in detail.values())
+    out: dict[str, Any] = {
+        "reset": not dry_run,
+        "dry_run": dry_run,
+        "kept_today": keep_today,
+        "total_removed": total,
+        "scopes": detail,
+        "garmin_data_untouched": True,
+    }
+    if rebuilt is not None:
+        out["weigh_in_snapshot_rebuilt"] = rebuilt
+    if dry_run:
+        out["message"] = (
+            f"Dry run — nothing deleted. {total} item(s) would be removed. "
+            "Re-run with confirm=true to apply."
+        )
+    return out
+
+
 def _weeks_remaining(target_date: str | None) -> int | None:
     if not target_date:
         return None

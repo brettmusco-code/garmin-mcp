@@ -151,6 +151,30 @@ def delete_prefix(tool_prefix: str) -> int:
     return deleted
 
 
+def delete_keys(keys: list[str]) -> int:
+    """Delete specific fully-qualified object keys. Returns count deleted.
+
+    Unlike delete_prefix this touches only the keys handed to it, so callers
+    that must preserve some objects under a prefix (e.g. keeping today's entry)
+    can list, filter, then delete. Keys must already include PREFIX; anything
+    outside it is refused so a bad caller can't reach other data in the bucket.
+    """
+    if not enabled() or not keys:
+        return 0
+    stray = [k for k in keys if not k.startswith(PREFIX)]
+    if stray:
+        raise ValueError(f"refusing to delete keys outside {PREFIX}: {stray[:3]}")
+    c = _client()
+    deleted = 0
+    for i in range(0, len(keys), 1000):
+        batch = keys[i:i + 1000]
+        c.delete_objects(
+            Bucket=BUCKET, Delete={"Objects": [{"Key": k} for k in batch]}
+        )
+        deleted += len(batch)
+    return deleted
+
+
 def count_keys(tool_prefix: str | None = None) -> int:
     """Count cached object keys under the configured prefix (no size limit)."""
     if not enabled():
