@@ -799,6 +799,66 @@ def refresh_weigh_in_snapshot(force_refresh: bool = True) -> list[dict]:
     return entries
 
 
+def _scale_nutrient(nc: dict, key: str, qty: float, decimals: int = 1) -> float | None:
+    """A per-serving nutrient scaled by the logged serving quantity."""
+    val = nc.get(key)
+    if val is None:
+        return None
+    try:
+        return round(float(val) * qty, decimals)
+    except (TypeError, ValueError):
+        return None
+
+
+def _logged_food_entries(fl: Any) -> list[dict]:
+    """The day's actual food-log entries, with the logged quantity applied.
+
+    Garmin splits this across two fields and only one of them is the log:
+
+    - `loggedFoodsWithServingSizes` is a reference CATALOGUE — one entry per
+      distinct food, listing every serving-size variant that food offers (an
+      egg carries large/medium/small/extra large/jumbo/100g). It records no
+      quantity at all, so there is no way to know what was eaten from it.
+    - `mealDetails[].loggedFoods[]` is the actual log: `servingQty` is how many
+      were eaten and `nutritionContent` (singular) holds the per-serving values.
+
+    Reading the catalogue and taking its first variant is how "3 eggs" came out
+    as one large egg's 74 kcal instead of 222. Returns entries in meal order
+    with quantity applied. Empty when the day has no log.
+    """
+    if not isinstance(fl, dict) or "error" in fl:
+        return []
+    out: list[dict] = []
+    for md in (fl.get("mealDetails") or []):
+        if not isinstance(md, dict):
+            continue
+        meal_name = (md.get("meal") or {}).get("mealName")
+        for it in (md.get("loggedFoods") or []):
+            if not isinstance(it, dict):
+                continue
+            meta = it.get("foodMetaData") or {}
+            name = " ".join(x for x in [meta.get("brandName"), meta.get("foodName")] if x) or "food"
+            nc = it.get("nutritionContent") or {}
+            try:
+                qty = float(it.get("servingQty"))
+            except (TypeError, ValueError):
+                qty = 1.0
+            if qty <= 0:
+                qty = 1.0
+            kcal = _scale_nutrient(nc, "calories", qty, 0)
+            out.append({
+                "name": name,
+                "qty": round(qty, 2),
+                "unit": nc.get("servingUnit"),
+                "kcal": round(kcal) if kcal is not None else None,
+                "protein_g": _scale_nutrient(nc, "protein", qty),
+                "carbs_g": _scale_nutrient(nc, "carbs", qty),
+                "fat_g": _scale_nutrient(nc, "fat", qty),
+                "meal": meal_name,
+            })
+    return out
+
+
 def _weigh_in_entries() -> list[dict]:
     """Canonical recent weigh-ins (oldest first) that every reader shares —
     Garmin's series with any manual weigh-ins merged on top (manual wins for
@@ -1116,7 +1176,7 @@ def nutrition_plan_vs_actual(days_back: int = 7) -> dict:
         garmin_goal = None
         if isinstance(fl, dict) and "error" not in fl:
             consumed = fl.get("dailyNutritionContent") or {}
-            foods_count = len(fl.get("loggedFoodsWithServingSizes") or [])
+            foods_count = len(_logged_food_entries(fl))
             goals = fl.get("dailyNutritionGoals") or {}
             garmin_goal = goals.get("adjustedCalories") or goals.get("calories")
 
@@ -1386,7 +1446,7 @@ def nutrition_trend(weeks: int = 4) -> dict:
                 # down and, through it, the adaptive-TDEE maintenance estimate.
                 if isinstance(fl, dict) and "error" not in fl and d_iso not in ignored_days:
                     content = fl.get("dailyNutritionContent") or {}
-                    foods_count = len(fl.get("loggedFoodsWithServingSizes") or [])
+                    foods_count = len(_logged_food_entries(fl))
                     k = content.get("calories")
                     p = content.get("protein")
                     if foods_count > 0 and k:
@@ -2702,21 +2762,12 @@ def _today_actuals() -> dict | None:
     chosen = today_iso
     fl = fl_all.get(chosen)
     sb = sb_all.get(chosen)
-    content, raw_foods, goals = {}, [], {}
+    content, goals = {}, {}
     if isinstance(fl, dict) and "error" not in fl:
         content = fl.get("dailyNutritionContent") or {}
-        raw_foods = fl.get("loggedFoodsWithServingSizes") or []
         goals = fl.get("dailyNutritionGoals") or {}
-    foods = []
-    for it in raw_foods[:60]:
-        md = it.get("foodMetaData") or {}
-        name = " ".join(x for x in [md.get("brandName"), md.get("foodName")] if x) or "food"
-        nc = it.get("nutritionContents") or []
-        first = nc[0] if (nc and isinstance(nc[0], dict)) else {}
-        kcal = first.get("calories")
-        foods.append({"name": name, "kcal": round(kcal) if kcal else None,
-                      "protein_g": first.get("protein"), "carbs_g": first.get("carbs"),
-                      "fat_g": first.get("fat")})
+    logged = _logged_food_entries(fl)
+    foods = logged[:60]
     expenditure = None
     bmr_kcal = active_kcal = None
     if isinstance(sb, dict) and "error" not in sb:
@@ -2769,7 +2820,7 @@ def _today_actuals() -> dict | None:
         "protein_g": content.get("protein"),
         "carbs_g": content.get("carbs"),
         "fat_g": content.get("fat"),
-        "foods_logged": len(raw_foods),
+        "foods_logged": len(logged),
         "foods": foods,
         "expenditure_kcal": round(expenditure) if expenditure else None,
         "bmr_kcal": round(bmr_kcal) if bmr_kcal else None,
@@ -2810,7 +2861,7 @@ def _recent_days(n: int = 2) -> list[dict]:
         consumed, foods = None, 0
         if isinstance(v, dict) and "error" not in v:
             consumed = (v.get("dailyNutritionContent") or {}).get("calories")
-            foods = len(v.get("loggedFoodsWithServingSizes") or [])
+            foods = len(_logged_food_entries(v))
         # Flagged as badly logged: blank the intake so the card can't imply a
         # real number, and mark it so the UI shows "ignored" rather than a
         # scary red "0 foods logged".

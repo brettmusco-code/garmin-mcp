@@ -1338,7 +1338,7 @@ function renderActuals(show){
   $('todayBurn').innerHTML = burnLine;
   const foods = a.foods||[];
   $('actFoods').innerHTML = foods.length
-    ? foods.map(f=>`<div class="f"><span class="fn">${f.name}</span><span class="fk">${f.kcal!=null?nf(f.kcal)+' kcal':''}</span></div>`).join('')
+    ? foods.map(f=>`<div class="f"><span class="fn">${f.qty!=null&&f.qty!==1?`${(+f.qty).toLocaleString()}× `:''}${f.name}</span><span class="fk">${f.kcal!=null?nf(f.kcal)+' kcal':''}</span></div>`).join('')
     : `<div class="empty">Nothing logged yet today — log meals to unlock adaptive targets and rebalancing.</div>`;
 }
 
