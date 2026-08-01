@@ -1759,6 +1759,13 @@ def set_fueling_goal(
         "current_weight_as_of": _local_today().isoformat() if current_weight_kg else None,
         "units": units_n,
         "notes": notes,
+        # When this block started — the day start_weight_kg was established.
+        # set_fueling_goal is a re-anchor, so it moves; update_fueling_goal is a
+        # tweak to the block in progress, so it preserves it. Distinct from
+        # set_date, which both stamp and therefore only means "last edited".
+        # The weight chart windows on this, so re-anchoring drops the previous
+        # block's weigh-ins from the plot.
+        "start_date": _local_today().isoformat(),
         "set_date": _local_today().isoformat(),
     }
     cache.put("fueling_goal", {"key": "current"}, goal, key_parts=["current"])
@@ -1886,6 +1893,12 @@ def update_fueling_goal(
         elif field in ("periodize_deficit", "aggressive", "skip_breakfast_weekdays"):
             goal[field] = bool(val) if val is not None else None
 
+    # A tweak, not a re-anchor: keep the block's start_date. Goals stored before
+    # start_date existed get it backfilled from their set_date — at that point
+    # set_date still means "when the goal was set", so it's the right anchor,
+    # and capturing it here stops the stamp below from losing it.
+    if not goal.get("start_date"):
+        goal["start_date"] = goal.get("set_date") or _local_today().isoformat()
     goal["set_date"] = _local_today().isoformat()
 
     cache.put("fueling_goal", {"key": "current"}, goal, key_parts=["current"])
@@ -3239,12 +3252,28 @@ def _project_trajectory(weight_kg, target, start_w, target_date, front_load_val,
     return out
 
 
-def _weight_series() -> list[tuple[str, float]]:
+def _goal_baseline_date(goal: dict | None) -> str | None:
+    """The day the current block's baseline was set, for windowing the weight
+    chart. Prefers start_date; falls back to set_date for goals stored before
+    start_date existed (on those, set_date still means "when the goal was set").
+    None when there's no goal, which leaves the chart unwindowed."""
+    if not goal:
+        return None
+    anchor = goal.get("start_date") or goal.get("set_date")
+    return str(anchor)[:10] if anchor else None
+
+
+def _weight_series(since: str | None = None) -> list[tuple[str, float]]:
     """Recent (date, weight_kg) points, oldest first, from the shared weigh-in
     snapshot — the same source as the current-weight reader, so a new weigh-in
-    appears in the history/trend/chart the moment the refresh job writes it."""
+    appears in the history/trend/chart the moment the refresh job writes it.
+
+    `since` (ISO date) drops readings from before the current block started, so
+    a re-anchored goal doesn't plot the previous block's weights. Callers that
+    want the full window — trend calibration, adaptive TDEE — omit it."""
     return [(e["date"], e["weight_kg"]) for e in _weigh_in_entries()
-            if e.get("weight_kg") is not None]
+            if e.get("weight_kg") is not None
+            and (since is None or e["date"] >= since)]
 
 
 # Modeled adaptive thermogenesis: on a sustained cut the body downregulates
@@ -4312,7 +4341,11 @@ def generate_fueling_plan(
                                  else "measured maintenance + net exercise"},
         "adaptive_tdee": adaptive,
         "weight_trend": trend_cal,
-        "weight_history": [{"date": d, "weight_kg": w} for d, w in _weight_series()],
+        # Windowed to the current block. Trend calibration and adaptive TDEE
+        # above deliberately still read the full series — narrowing those would
+        # change the calorie targets, not just the picture.
+        "weight_history": [{"date": d, "weight_kg": w}
+                           for d, w in _weight_series(_goal_baseline_date(goal))],
         "fat_free_mass_kg": ffm_kg,
         "body_fat_pct": body.get("body_fat_pct"),
         "daily_kcal_adjustment": goal_adj,
