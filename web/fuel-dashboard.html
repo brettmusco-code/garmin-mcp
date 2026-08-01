@@ -304,24 +304,36 @@
   footer{margin-top:26px;text-align:center;color:var(--ink-faint);font-size:11.5px;}
   footer b{color:var(--ink-dim);}
   /* Manual weigh-in form (served page only; hidden in the Artifact sandbox). */
-  #logWeight,#editGoal{display:none;margin-top:12px;}
-  #logWeight form,#editGoal form{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px;}
-  #logWeight .fld,#editGoal .fld{display:flex;flex-direction:column;gap:4px;}
-  #logWeight label,#editGoal label{font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+  #logWeight,#editGoal,#ignoreDay{display:none;margin-top:12px;}
+  #logWeight form,#editGoal form,#ignoreDay form{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px;}
+  #logWeight .fld,#editGoal .fld,#ignoreDay .fld{display:flex;flex-direction:column;gap:4px;}
+  #logWeight label,#editGoal label,#ignoreDay label{font-size:10px;letter-spacing:.12em;text-transform:uppercase;
     color:var(--ink-faint);font-weight:700;}
-  #logWeight input,#logWeight select,#editGoal input,#editGoal select{font:inherit;font-size:14px;
+  #logWeight input,#logWeight select,#editGoal input,#editGoal select,
+  #ignoreDay input{font:inherit;font-size:14px;
     background:var(--panel-2);color:var(--ink);border:1px solid var(--line);border-radius:9px;padding:8px 10px;min-width:0;}
   #logWeight input[type=number],#editGoal input[type=number]{width:96px;font-family:var(--mono);font-variant-numeric:tabular-nums;}
+  /* Currently-ignored days: compact reversible rows under the form. */
+  #ignoredList{margin-top:14px;display:flex;flex-direction:column;gap:6px;}
+  #ignoredList .igrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+    background:var(--panel-2);border:1px solid var(--line);border-radius:9px;padding:7px 11px;}
+  #ignoredList .igd{font-weight:600;font-size:13.5px;}
+  #ignoredList .igr{font-size:12.5px;color:var(--ink-dim);flex:1 1 auto;}
+  #ignoredList form{display:inline;margin:0;}
+  #ignoredList button{background:transparent;color:var(--ink-dim);border:1px solid var(--line);
+    padding:5px 11px;font-size:12.5px;font-weight:600;border-radius:8px;cursor:pointer;}
+  #ignoredList button:hover{color:var(--ink);filter:none;}
+  #ignoredList .none{font-size:12.5px;color:var(--ink-faint);}
   #editGoal .fld.chk{justify-content:flex-end;}
   #editGoal .fld.chk label{display:flex;align-items:center;gap:7px;font-size:12.5px;letter-spacing:0;
     text-transform:none;font-weight:600;color:var(--ink);cursor:pointer;}
   #editGoal .fld.chk input[type=checkbox]{width:16px;height:16px;padding:0;accent-color:var(--good);cursor:pointer;}
-  #logWeight button,#editGoal button{font:inherit;font-size:14px;font-weight:600;cursor:pointer;color:#0e1520;
+  #logWeight button,#editGoal button,#ignoreDay > form button{font:inherit;font-size:14px;font-weight:600;cursor:pointer;color:#0e1520;
     background:var(--good);border:0;border-radius:9px;padding:9px 16px;
     -webkit-tap-highlight-color:transparent;}
-  #logWeight button:hover,#editGoal button:hover{filter:brightness(1.06);}
-  #logWeight button:disabled,#editGoal button:disabled{opacity:.55;cursor:default;filter:none;}
-  #logWeight .hint,#editGoal .hint{width:100%;font-size:11.5px;color:var(--ink-faint);margin-top:2px;}
+  #logWeight button:hover,#editGoal button:hover,#ignoreDay > form button:hover{filter:brightness(1.06);}
+  #logWeight button:disabled,#editGoal button:disabled,#ignoreDay button:disabled{opacity:.55;cursor:default;filter:none;}
+  #logWeight .hint,#editGoal .hint,#ignoreDay .hint{width:100%;font-size:11.5px;color:var(--ink-faint);margin-top:2px;}
 
   /* Save confirmation. The settings forms POST and 303-redirect back here, so
      without this the page just silently reloads and a successful save looks
@@ -518,6 +530,27 @@
             <button type="submit">Save goal</button>
             <div class="hint">Only these knobs change; BMR inputs, EA floors and your manual-weight override are preserved. Blank a field to clear it.</div>
           </form>
+        </div>
+      </div>
+    </section>
+
+    <section class="block" id="ignoreDayBlock">
+      <div class="lead"><h2>Ignore a day's food log</h2><span>for days you logged badly</span></div>
+      <div class="card">
+        <div id="ignoreDay">
+          <form method="post" action="{{IGNORE_DAY_ACTION}}">
+            <div class="fld">
+              <label for="igDate">Date</label>
+              <input type="date" id="igDate" name="entry_date" required>
+            </div>
+            <div class="fld" style="flex:1 1 180px">
+              <label for="igReason">Reason (optional)</label>
+              <input type="text" id="igReason" name="reason" placeholder="ate out, forgot dinner…">
+            </div>
+            <button type="submit">Ignore day</button>
+            <div class="hint">Drops that day's <b>intake</b> from the rebalance, adaptive-TDEE and coaching maths — treated as unlogged rather than as a real low-calorie day. The day's burn still counts, and it's reversible.</div>
+          </form>
+          <div id="ignoredList"></div>
         </div>
       </div>
     </section>
@@ -1224,6 +1257,10 @@ const todayISO = (()=>{const d=new Date();
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;})();
 const dow = (iso)=>{const d=new Date(iso+'T00:00:00');return d.toLocaleDateString(undefined,{weekday:'short'});};
 const dmd = (iso)=>{const d=new Date(iso+'T00:00:00');return d.toLocaleDateString(undefined,{month:'short',day:'numeric'});};
+// Free text the athlete typed (e.g. an ignore-day reason) is interpolated into
+// innerHTML, so it has to be escaped rather than trusted.
+const esc = (s)=>String(s==null?'':s).replace(/[&<>"']/g, c=>(
+  {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function renderUpdated(iso){
   const el = $('updated');
   if(!iso){ el.innerHTML=''; return; }
@@ -1761,12 +1798,45 @@ function initEditGoal(){
   chk('periodize_deficit', g.periodize_deficit);
   chk('skip_breakfast_weekdays', g.skip_breakfast_weekdays);
 }
+// Ignore-a-day form: same server-only gating as the other two. Lists what's
+// currently ignored, each row with its own un-ignore submit.
+function initIgnoreDay(){
+  const box = $('ignoreDay'); if(!box) return;
+  const form = box.querySelector('form');
+  const action = form && form.getAttribute('action') || '';
+  if(action.indexOf('{{') !== -1 || !action){ $('ignoreDayBlock').style.display='none'; return; }
+  box.style.display='block';
+  const dt = $('igDate');
+  // Default to yesterday — the day you're most likely to be correcting — and
+  // stop anyone picking a future day that can't have a log yet.
+  if(dt){
+    const y = new Date(); y.setDate(y.getDate()-1);
+    if(!dt.value) dt.value = y.toISOString().slice(0,10);
+    dt.max = todayISO;
+  }
+  const list = $('ignoredList');
+  const days = PLAN.ignored_food_days || [];
+  if(!days.length){
+    list.innerHTML = `<div class="none">No days ignored — everything you've logged is counting.</div>`;
+    return;
+  }
+  list.innerHTML = days.map(d=>`
+    <div class="igrow">
+      <span class="igd">${dmd(d.date)}</span>
+      <span class="igr">${d.reason ? esc(d.reason) : 'no reason given'}</span>
+      <form method="post" action="${action.replace('/ignore-day','/unignore-day')}">
+        <input type="hidden" name="entry_date" value="${d.date}">
+        <button type="submit">Un-ignore</button>
+      </form>
+    </div>`).join('');
+}
+
 // Saving posts to the server, which rebuilds the whole plan before redirecting
 // back — several seconds on a cold cache. Without a pressed state the button
 // looks inert for that whole stretch, which reads as "the tap didn't register"
 // and invites a double-submit.
 function initSaveFeedback(){
-  document.querySelectorAll('#logWeight form,#editGoal form').forEach(form=>{
+  document.querySelectorAll('#logWeight form,#editGoal form,#ignoreDay form').forEach(form=>{
     form.addEventListener('submit', ()=>{
       const btn = form.querySelector('button[type=submit]');
       if(!btn) return;
@@ -1781,8 +1851,10 @@ function initSaveFeedback(){
 // successful write; the plan itself is re-rendered from fresh data, but nothing
 // on the page would otherwise confirm the save actually landed.
 const SAVED_MSG = {
-  weight: 'Weigh-in saved — plan updated',
-  goal:   'Goal saved — plan rebuilt',
+  weight:   'Weigh-in saved — plan updated',
+  goal:     'Goal saved — plan rebuilt',
+  ignored:  "Day ignored — its food log no longer counts",
+  unignored:"Day restored — its food log counts again",
 };
 function showSavedToast(){
   const params = new URLSearchParams(location.search);
@@ -1802,6 +1874,7 @@ function showSavedToast(){
 render();
 initLogWeight();
 initEditGoal();
+initIgnoreDay();
 initSaveFeedback();
 showSavedToast();
 window.addEventListener('resize', drawProjection);

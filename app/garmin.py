@@ -1097,6 +1097,9 @@ def nutrition_plan_vs_actual(days_back: int = 7) -> dict:
                 weight_kg = round(w / 1000.0, 1) if w > 500 else round(w, 1)
                 break
 
+    # Days the athlete flagged as inaccurately/incompletely logged.
+    ignored_days = _load_ignored_food_days()
+
     # First pass: collect per-day raw data (no adjusted target yet —
     # need a fallback expected-expenditure baseline computed from the
     # window for days where the plan didn't store one).
@@ -1117,6 +1120,14 @@ def nutrition_plan_vs_actual(days_back: int = 7) -> dict:
             goals = fl.get("dailyNutritionGoals") or {}
             garmin_goal = goals.get("adjustedCalories") or goals.get("calories")
 
+        # Explicitly ignored: present the day as unlogged so every consumer of
+        # these rows (rebalance drift, coaching suggestions, window totals)
+        # skips it, and carry the marker so the UI can explain the gap rather
+        # than reading it as a day the athlete simply forgot to log.
+        ignored_entry = ignored_days.get(d_iso)
+        if ignored_entry:
+            consumed, foods_count = {}, 0
+
         sb = stats.get(d_iso) or {}
         expenditure = None
         if isinstance(sb, dict) and "error" not in sb:
@@ -1129,6 +1140,8 @@ def nutrition_plan_vs_actual(days_back: int = 7) -> dict:
             "date": d_iso, "day": day_name, "day_plan": day_plan,
             "consumed": consumed, "foods_count": foods_count,
             "garmin_goal": garmin_goal, "expenditure": expenditure,
+            "ignored": bool(ignored_entry),
+            "ignored_reason": (ignored_entry or {}).get("reason"),
         })
 
     # Fallback "expected expenditure" for adjustment: median actual
@@ -1194,6 +1207,10 @@ def nutrition_plan_vs_actual(days_back: int = 7) -> dict:
             "actual_f": consumed.get("fat"),
             "foods_logged": foods_count,
             "expenditure_kcal": expenditure,
+            # True when the athlete flagged this day as badly logged — its
+            # intake is deliberately excluded, not merely missing.
+            "ignored": raw["ignored"],
+            "ignored_reason": raw["ignored_reason"],
         }
 
         # Deltas — both against the static plan AND against the adjusted target
@@ -1310,6 +1327,7 @@ def nutrition_trend(weeks: int = 4) -> dict:
     week_rows = []
     baseline = get_athlete_baseline()
     weight_kg_current = (baseline.get("weight_kg") if isinstance(baseline, dict) else None)
+    ignored_days = _load_ignored_food_days()
 
     for ws in week_starts:
         we = ws + timedelta(days=6)
@@ -1328,6 +1346,13 @@ def nutrition_trend(weeks: int = 4) -> dict:
             if ws <= sd <= we:
                 snap_match = s
                 break
+
+        # A snapshot's intake totals were computed before the athlete flagged
+        # any of its days as badly logged, so it still bakes in the bad day.
+        # Re-synthesise the week from raw data instead, where the exclusion
+        # can actually be applied.
+        if snap_match and any(d in ignored_days for d in week_days):
+            snap_match = None
 
         if snap_match:
             # Use pre-computed values
@@ -1355,7 +1380,11 @@ def nutrition_trend(weeks: int = 4) -> dict:
             protein_target_per_day = (weight_kg_current * 1.6) if weight_kg_current else None
             for d_iso in week_days:
                 fl = food_log.get(d_iso)
-                if isinstance(fl, dict) and "error" not in fl:
+                # Ignored days contribute no intake (the burn below still
+                # counts — the flag is about what was eaten, not what was
+                # spent), so a badly-logged day can't drag the week's average
+                # down and, through it, the adaptive-TDEE maintenance estimate.
+                if isinstance(fl, dict) and "error" not in fl and d_iso not in ignored_days:
                     content = fl.get("dailyNutritionContent") or {}
                     foods_count = len(fl.get("loggedFoodsWithServingSizes") or [])
                     k = content.get("calories")
@@ -1945,6 +1974,91 @@ def _is_session_skipped(skips: list[dict], d_iso: str, sport: str, title: str) -
             continue
         return True
     return False
+
+
+# --- Retroactively ignoring a day's food log ---------------------------------
+# A day you know you logged badly — forgot dinner, ate out and guessed, gave up
+# halfway — is worse than a day you didn't log at all. Every intake-derived
+# calculation reads a half-logged day as a genuine low-intake day: the rebalance
+# spreads a phantom deficit across the coming week, adaptive TDEE pulls your
+# measured maintenance down, and the coaching notes scold you for under-eating.
+# Marking the day ignored drops it from all of them — treated exactly like an
+# unlogged day — while leaving Garmin's raw data untouched and the decision
+# reversible. Expenditure/burn for that day is unaffected; only intake is.
+_IGNORED_DAYS_RETENTION_DAYS = 400   # outlives the 366-day max query window
+
+
+def ignore_food_day(date: str, reason: str | None = None) -> dict:
+    """Retroactively exclude one day's food log from every intake-derived
+    calculation: rebalance drift, adaptive-TDEE maintenance, trend averages and
+    the logging/coaching suggestions. Use it for a day you know wasn't logged
+    accurately or completely, so a partial log doesn't masquerade as a real
+    low-intake day and skew the plan.
+
+    date: YYYY-MM-DD (today or earlier).
+    reason: optional free-text note, for your own reference later.
+
+    The day's burn/expenditure still counts — only intake is dropped. Reversible
+    with unignore_food_day. Persisted to R2."""
+    try:
+        datetime.strptime(str(date)[:10], "%Y-%m-%d")
+    except (ValueError, TypeError) as ex:
+        raise ValueError("date must be YYYY-MM-DD") from ex
+    d_iso = str(date)[:10]
+    if d_iso > _local_today().isoformat():
+        return {"saved": False, "error": "cannot ignore a future day"}
+    if not cache.enabled():
+        return {"saved": False, "error": "cache/storage unavailable — cannot persist"}
+    ignored = _load_ignored_food_days()
+    ignored[d_iso] = {
+        "date": d_iso,
+        "reason": (reason or "").strip() or None,
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    cache.put("fueling_ignored_days", {"key": "current"}, ignored, key_parts=["current"])
+    return {"saved": True, "date": d_iso, "ignored_days": get_ignored_food_days()}
+
+
+def unignore_food_day(date: str) -> dict:
+    """Undo ignore_food_day — the day's logged food counts again everywhere."""
+    try:
+        datetime.strptime(str(date)[:10], "%Y-%m-%d")
+    except (ValueError, TypeError) as ex:
+        raise ValueError("date must be YYYY-MM-DD") from ex
+    d_iso = str(date)[:10]
+    if not cache.enabled():
+        return {"saved": False, "error": "cache/storage unavailable — cannot persist"}
+    ignored = _load_ignored_food_days()
+    if d_iso not in ignored:
+        return {"saved": False, "error": f"{d_iso} is not currently ignored",
+                "ignored_days": get_ignored_food_days()}
+    ignored.pop(d_iso)
+    cache.put("fueling_ignored_days", {"key": "current"}, ignored, key_parts=["current"])
+    return {"saved": True, "date": d_iso, "ignored_days": get_ignored_food_days()}
+
+
+def get_ignored_food_days() -> list[dict]:
+    """Days whose food log is currently being ignored, newest first."""
+    return sorted(_load_ignored_food_days().values(),
+                  key=lambda e: e.get("date") or "", reverse=True)
+
+
+def _load_ignored_food_days() -> dict:
+    """Stored {date_iso: entry} map of ignored days. Unlike skipped sessions
+    (which prune once their date is past), these are retroactive by design and
+    must survive — pruning is by age only, so the list can't grow unbounded."""
+    raw = cache.get(
+        "fueling_ignored_days", {"key": "current"}, key_parts=["current"],
+        ttl_seconds=IMMUTABLE_TTL,
+    ) or {}
+    if not isinstance(raw, dict):
+        return {}
+    cutoff = (_local_today() - timedelta(days=_IGNORED_DAYS_RETENTION_DAYS)).isoformat()
+    pruned = {k: v for k, v in raw.items()
+              if isinstance(k, str) and isinstance(v, dict) and k >= cutoff}
+    if len(pruned) != len(raw):
+        cache.put("fueling_ignored_days", {"key": "current"}, pruned, key_parts=["current"])
+    return pruned
 
 
 def _weeks_remaining(target_date: str | None) -> int | None:
@@ -2539,6 +2653,7 @@ def _recent_days(n: int = 2) -> list[dict]:
             plan.update(snap.get("nutrition_plan") or {})
     except Exception:  # noqa: BLE001
         pass
+    ignored_days = _load_ignored_food_days()
     out = []
     for i in range(n, 0, -1):
         d = (today - timedelta(days=i)).isoformat()
@@ -2548,6 +2663,12 @@ def _recent_days(n: int = 2) -> list[dict]:
         if isinstance(v, dict) and "error" not in v:
             consumed = (v.get("dailyNutritionContent") or {}).get("calories")
             foods = len(v.get("loggedFoodsWithServingSizes") or [])
+        # Flagged as badly logged: blank the intake so the card can't imply a
+        # real number, and mark it so the UI shows "ignored" rather than a
+        # scary red "0 foods logged".
+        ignored_entry = ignored_days.get(d)
+        if ignored_entry:
+            consumed, foods = None, 0
         exp = None
         if isinstance(s, dict) and "error" not in s:
             exp = s.get("totalKilocalories") or (
@@ -2562,6 +2683,8 @@ def _recent_days(n: int = 2) -> list[dict]:
             # from "vs plan" (eaten vs the planned target), and available even
             # on days with no saved plan.
             "deficit_kcal": (round(exp - consumed) if (exp is not None and consumed is not None) else None),
+            "ignored": bool(ignored_entry),
+            "ignored_reason": (ignored_entry or {}).get("reason"),
         })
     return out
 
@@ -2581,7 +2704,11 @@ def _logging_suggestions(protein_target_g: float | None = None,
     except Exception:  # noqa: BLE001
         return []
     today_iso = _local_today().isoformat()
-    rows = [r for r in (pva.get("rows") or []) if (r.get("date") or "") < today_iso]
+    # Drop deliberately-ignored days entirely rather than letting them count as
+    # unlogged — otherwise flagging a badly-logged day would trade a bogus
+    # calorie claim for a bogus "you're not logging" nag.
+    rows = [r for r in (pva.get("rows") or [])
+            if (r.get("date") or "") < today_iso and not r.get("ignored")]
     if not rows:
         return []
 
@@ -4080,6 +4207,9 @@ def generate_fueling_plan(
         "projection": projection,
         "today_actuals": _today_actuals(),
         "recent_days": _recent_days(2),
+        # Days whose food log the athlete flagged as inaccurate — excluded from
+        # rebalance, adaptive TDEE, trend averages and coaching suggestions.
+        "ignored_food_days": get_ignored_food_days(),
         "days": day_rows,
         "totals": totals,
         "notes": notes,

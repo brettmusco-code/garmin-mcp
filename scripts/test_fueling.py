@@ -115,6 +115,11 @@ g.get_body_composition = _fake_body_comp       # type: ignore[assignment]
 _REAL_GET_SCHEDULED = g.get_scheduled_workouts
 g.get_scheduled_workouts = _fake_scheduled     # type: ignore[assignment]
 g.get_activities_in_range = _fake_activities   # type: ignore[assignment]
+# The rebalance/suggestion blocks below swap these out for canned fakes and
+# don't put them back, so stash the real ones here for the tests that need to
+# exercise the genuine implementation afterwards.
+_REAL_PVA = g.nutrition_plan_vs_actual
+_REAL_TREND = g.nutrition_trend
 
 
 def check(label, cond):
@@ -1475,6 +1480,82 @@ def main():
     g.skip_scheduled_session(date=(TODAY - timedelta(days=1)).isoformat(), sport="running")
     check("past-dated skips are pruned, not accumulated",
           all(s["date"] >= TODAY.isoformat() for s in g.get_skipped_sessions()))
+
+    print("ignore_food_day drops a badly-logged day from the intake maths:")
+    _ig1, _ig2 = (TODAY - timedelta(days=2)).isoformat(), (TODAY - timedelta(days=1)).isoformat()
+
+    def _fake_gds_ignore(startdate, enddate, metrics=None, **k):
+        def _food(cal, protein):
+            return {"dailyNutritionContent": {"calories": cal, "protein": protein},
+                    "loggedFoodsWithServingSizes": [{"foodMetaData": {"foodName": "x"},
+                                                     "nutritionContents": [{"calories": cal}]}],
+                    "dailyNutritionGoals": {}}
+        # _ig2 is the badly-logged day: only 900 kcal recorded because dinner
+        # never got entered. _ig1 is a genuine, fully-logged 2600 kcal day.
+        return {
+            "nutrition_food_log": {_ig1: _food(2600, 180), _ig2: _food(900, 60)},
+            "stats_and_body": {
+                _ig1: {"bmrKilocalories": 1700, "activeKilocalories": 600, "totalKilocalories": 2300},
+                _ig2: {"bmrKilocalories": 1700, "activeKilocalories": 600, "totalKilocalories": 2300},
+            },
+        }
+    _save_gds_ig = g.get_daily_summaries
+    g.get_daily_summaries = _fake_gds_ignore
+    # Earlier blocks left canned fakes in place for these — this block needs the
+    # genuine implementations, since the exclusion happens inside them.
+    g.nutrition_plan_vs_actual, g.nutrition_trend = _REAL_PVA, _REAL_TREND
+
+    pva_before = g.nutrition_plan_vs_actual(days_back=3)
+    _row_before = next(r for r in pva_before["rows"] if r["date"] == _ig2)
+    check("baseline: the badly-logged day counts as logged",
+          _row_before["foods_logged"] > 0 and _row_before["actual_kcal"] == 900)
+    check("baseline: 2 days counted as logged", pva_before["totals"]["days_logged"] == 2)
+
+    ig_res = g.ignore_food_day(date=_ig2, reason="forgot dinner")
+    check("ignore_food_day reports saved", ig_res.get("saved") is True)
+    check("get_ignored_food_days lists it", [d["date"] for d in g.get_ignored_food_days()] == [_ig2])
+    check("the stored reason is kept", g.get_ignored_food_days()[0]["reason"] == "forgot dinner")
+    check("future days are rejected",
+          g.ignore_food_day(date=(TODAY + timedelta(days=1)).isoformat()).get("saved") is False)
+
+    pva_after = g.nutrition_plan_vs_actual(days_back=3)
+    _row_after = next(r for r in pva_after["rows"] if r["date"] == _ig2)
+    check("ignored day is flagged in the row", _row_after["ignored"] is True)
+    check("ignored day carries its reason", _row_after["ignored_reason"] == "forgot dinner")
+    check("ignored day reads as unlogged (no actual_kcal)", _row_after["actual_kcal"] is None)
+    check("ignored day contributes no foods_logged", _row_after["foods_logged"] == 0)
+    check("ignored day drops out of days_logged", pva_after["totals"]["days_logged"] == 1)
+    check("ignored day's intake drops out of the actual_kcal total",
+          pva_after["totals"]["actual_kcal"] == 2600)
+    check("the genuinely-logged day is untouched",
+          next(r for r in pva_after["rows"] if r["date"] == _ig1)["actual_kcal"] == 2600)
+    check("expenditure still counts on an ignored day — only intake is dropped",
+          _row_after["expenditure_kcal"] == 2300)
+
+    # The whole point: an under-logged day must not be able to drag the
+    # measured-maintenance estimate down through nutrition_trend.
+    _trend_ig = g.nutrition_trend(weeks=1)
+    _wk = _trend_ig["weeks"][0]
+    if _wk.get("source") != "snapshot":
+        check("trend's intake average excludes the ignored day (2600, not 1750)",
+              _wk["avg_daily_kcal_intake"] == 2600)
+        check("trend counts only the one genuine logged day", _wk["days_logged"] == 1)
+
+    # ...and must not be re-reported as a "you're not logging" nag either.
+    _sugg = g._logging_suggestions(lookback_days=3)
+    check("an ignored day isn't scolded as a logging gap",
+          not any("logging gap" in s.lower() or "no food logged" in s.lower() for s in _sugg))
+
+    unig = g.unignore_food_day(date=_ig2)
+    check("unignore_food_day reports saved", unig.get("saved") is True)
+    check("un-ignoring empties the list", g.get_ignored_food_days() == [])
+    _row_restored = next(r for r in g.nutrition_plan_vs_actual(days_back=3)["rows"]
+                         if r["date"] == _ig2)
+    check("restored day counts again", _row_restored["actual_kcal"] == 900
+          and _row_restored["ignored"] is False)
+    check("un-ignoring a day that isn't ignored is reported, not silent",
+          g.unignore_food_day(date=_ig2).get("saved") is False)
+    g.get_daily_summaries = _save_gds_ig
 
     print("no goal -> no_goal_available:")
     _STORE.pop(_key("fueling_goal", ["current"]), None)

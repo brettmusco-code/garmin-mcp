@@ -552,6 +552,41 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
+        "name": "ignore_food_day",
+        "description": (
+            "Retroactively exclude one day's food log from every intake-derived "
+            "calculation: the rebalance drift, the adaptive-TDEE maintenance "
+            "estimate, trend averages, and the logging/coaching suggestions. Use "
+            "it for a day you know wasn't logged accurately or completely (forgot "
+            "dinner, ate out and guessed, gave up halfway) so a partial log "
+            "doesn't masquerade as a genuine low-intake day and skew the plan. "
+            "The day's burn/expenditure still counts — only intake is dropped. "
+            "Reversible via unignore_food_day; persisted to R2."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "date": {"type": "string", "description": "YYYY-MM-DD, today or earlier"},
+                "reason": {"type": "string", "description": "optional free-text note for your own reference"},
+            },
+            "required": ["date"],
+        },
+    },
+    {
+        "name": "unignore_food_day",
+        "description": "Undo ignore_food_day — the day's logged food counts again everywhere.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"date": {"type": "string", "description": "YYYY-MM-DD"}},
+            "required": ["date"],
+        },
+    },
+    {
+        "name": "get_ignored_food_days",
+        "description": "List the days whose food log is currently being ignored (set via ignore_food_day), newest first.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "get_fueling_goal",
         "description": (
             "Return the active fueling goal plus live progress: current weight "
@@ -843,6 +878,18 @@ def _call_tool(name: str, args: dict) -> Any:
         )
     if name == "get_skipped_sessions":
         return {"skips": garmin.get_skipped_sessions()}
+    if name == "ignore_food_day":
+        d = args.get("date")
+        if not d or not DATE_RE.match(d):
+            raise ValueError("`date` must be YYYY-MM-DD")
+        return garmin.ignore_food_day(date=d, reason=args.get("reason"))
+    if name == "unignore_food_day":
+        d = args.get("date")
+        if not d or not DATE_RE.match(d):
+            raise ValueError("`date` must be YYYY-MM-DD")
+        return garmin.unignore_food_day(date=d)
+    if name == "get_ignored_food_days":
+        return {"ignored_days": garmin.get_ignored_food_days()}
     if name == "generate_fueling_plan":
         sd = args.get("start_date")
         if sd and not DATE_RE.match(sd):
@@ -1160,6 +1207,9 @@ def dashboard(request: Request) -> HTMLResponse:
         # form stays hidden.
         fragment = fragment.replace("{{LOG_WEIGHT_ACTION}}", "/dashboard/log-weight" + token_qs)
         fragment = fragment.replace("{{SAVE_GOAL_ACTION}}", "/dashboard/save-goal" + token_qs)
+        # The un-ignore action is derived client-side from this one by swapping
+        # the path segment, so both must share the /dashboard/{ }-day shape.
+        fragment = fragment.replace("{{IGNORE_DAY_ACTION}}", "/dashboard/ignore-day" + token_qs)
     except Exception as ex:  # noqa: BLE001
         return HTMLResponse(
             _dash_wrap(f"<h1>Fueling dashboard</h1><p>Template error: "
@@ -1304,6 +1354,70 @@ async def dashboard_save_goal(request: Request) -> Response:
             status_code=400,
         )
     return _dash_saved_redirect(token_qs, "goal")
+
+
+def _dash_gate(request: Request) -> str:
+    """Shared DASHBOARD_TOKEN check for the dashboard's POST handlers. Returns
+    the token query-string to carry into the redirect (empty when ungated)."""
+    gate = os.environ.get("DASHBOARD_TOKEN")
+    if not gate:
+        return ""
+    supplied = request.query_params.get("k") or ""
+    if not secrets.compare_digest(supplied, gate):
+        raise HTTPException(status_code=404, detail="not found")
+    return "?" + urlencode({"k": gate})
+
+
+@app.post("/dashboard/ignore-day")
+def dashboard_ignore_day(
+    request: Request,
+    entry_date: str = Form(...),
+    reason: str | None = Form(None),
+) -> Response:
+    """Flag a day's food log as inaccurate so it stops feeding the rebalance,
+    adaptive TDEE and coaching maths, then redirect back to the dashboard."""
+    token_qs = _dash_gate(request)
+    try:
+        result = garmin.ignore_food_day(date=entry_date, reason=reason)
+    except ValueError as ex:
+        result = {"saved": False, "error": str(ex)}
+    _dash_cache.update(html=None, ts=0.0)
+    if not result.get("saved"):
+        return HTMLResponse(
+            _dash_wrap(
+                f"<h1>Fueling dashboard</h1><p>Could not ignore that day: "
+                f"{result.get('error', 'unknown error')}</p>"
+                f"<p><a href='/dashboard{token_qs}'>← back to the dashboard</a></p>",
+                token_qs,
+            ),
+            status_code=400,
+        )
+    return _dash_saved_redirect(token_qs, "ignored")
+
+
+@app.post("/dashboard/unignore-day")
+def dashboard_unignore_day(
+    request: Request,
+    entry_date: str = Form(...),
+) -> Response:
+    """Undo /dashboard/ignore-day — the day's food log counts again."""
+    token_qs = _dash_gate(request)
+    try:
+        result = garmin.unignore_food_day(date=entry_date)
+    except ValueError as ex:
+        result = {"saved": False, "error": str(ex)}
+    _dash_cache.update(html=None, ts=0.0)
+    if not result.get("saved"):
+        return HTMLResponse(
+            _dash_wrap(
+                f"<h1>Fueling dashboard</h1><p>Could not restore that day: "
+                f"{result.get('error', 'unknown error')}</p>"
+                f"<p><a href='/dashboard{token_qs}'>← back to the dashboard</a></p>",
+                token_qs,
+            ),
+            status_code=400,
+        )
+    return _dash_saved_redirect(token_qs, "unignored")
 
 
 @app.get("/cache/list")
