@@ -587,6 +587,41 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
+        "name": "update_fueling_goal",
+        "description": (
+            "Change a few fields on the EXISTING fueling goal, leaving everything "
+            "else exactly as stored. Prefer this over set_fueling_goal for edits: "
+            "set_fueling_goal rewrites the whole goal, clears any field you omit, "
+            "and re-stamps start_date — which re-anchors the block and re-windows "
+            "the weight chart.\n"
+            "Omit a field to keep it. Pass it as null to clear it (where clearing "
+            "means something, e.g. removing a deficit cap).\n"
+            "Notably `current_weight_kg: null` clears the manual current-weight "
+            "override once Garmin syncs a real weigh-in, without re-anchoring the "
+            "block. Clearing it also drops its as-of stamp."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "goal_type": {"type": "string", "enum": ["lose", "maintain", "gain", "perform"]},
+                "target_weight_kg": {"type": ["number", "null"]},
+                "target_date": {"type": ["string", "null"], "description": "YYYY-MM-DD"},
+                "protein_g_per_kg": {"type": ["number", "null"]},
+                "max_deficit_kcal": {"type": ["number", "null"]},
+                "max_loss_lb_per_week": {"type": ["number", "null"]},
+                "front_load": {"type": ["number", "null"]},
+                "periodize_deficit": {"type": ["boolean", "null"]},
+                "aggressive": {"type": ["boolean", "null"]},
+                "skip_breakfast_weekdays": {"type": ["boolean", "null"]},
+                "units": {"type": ["string", "null"], "enum": ["metric", "imperial", None]},
+                "current_weight_kg": {
+                    "type": ["number", "null"],
+                    "description": "null clears the manual override (and its as-of stamp)",
+                },
+            },
+        },
+    },
+    {
         "name": "reset_fueling_history",
         "description": (
             "Clear this app's own fueling history so a new goal starts from a "
@@ -932,6 +967,22 @@ def _call_tool(name: str, args: dict) -> Any:
         return garmin.unignore_food_day(date=d)
     if name == "get_ignored_food_days":
         return {"ignored_days": garmin.get_ignored_food_days()}
+    if name == "update_fueling_goal":
+        # Key PRESENCE is the signal: absent means keep the stored value, an
+        # explicit null means clear it. Defaulting to None instead would clear
+        # every field the caller didn't mention.
+        allowed = (
+            "goal_type", "target_weight_kg", "target_date", "protein_g_per_kg",
+            "max_deficit_kcal", "max_loss_lb_per_week", "periodize_deficit",
+            "front_load", "aggressive", "skip_breakfast_weekdays", "units",
+            "current_weight_kg",
+        )
+        kw = {k: args[k] for k in allowed if k in args}
+        if not kw:
+            raise ValueError(
+                f"pass at least one field to change; one of: {', '.join(allowed)}"
+            )
+        return garmin.update_fueling_goal(**kw)
     if name == "reset_fueling_history":
         scopes = args.get("scopes")
         if scopes is not None and not isinstance(scopes, list):
