@@ -1870,6 +1870,7 @@ def update_fueling_goal(
     aggressive: bool | None | object = _KEEP,
     skip_breakfast_weekdays: bool | None | object = _KEEP,
     units: str | None | object = _KEEP,
+    current_weight_kg: float | None | object = _KEEP,
 ) -> dict:
     """Merge a partial set of changes onto the CURRENT fueling goal and persist.
 
@@ -1883,6 +1884,12 @@ def update_fueling_goal(
     Every parameter defaults to a keep-sentinel: omit it to preserve the stored
     value; pass None to clear it (where clearing is meaningful, e.g. removing a
     deficit cap). set_date is refreshed so stale-goal flags reset on any edit.
+
+    current_weight_kg is the one field here that is normally left alone but can
+    now be cleared: pass None once Garmin syncs a real weigh-in, so the override
+    stops standing in for it. Clearing it through set_fueling_goal instead would
+    also re-stamp start_date and so re-anchor the block — which is a different
+    decision, and not one that clearing a stale override should make for you.
     """
     current = cache.get(
         "fueling_goal", {"key": "current"}, key_parts=["current"],
@@ -1910,6 +1917,7 @@ def update_fueling_goal(
         "aggressive": aggressive,
         "skip_breakfast_weekdays": skip_breakfast_weekdays,
         "units": units,
+        "current_weight_kg": current_weight_kg,
     }
 
     def _num(v, nd=None):
@@ -1942,6 +1950,18 @@ def update_fueling_goal(
             goal["units"] = un
         elif field == "target_weight_kg":
             goal["target_weight_kg"] = _num(val, 1) if val else None
+        elif field == "current_weight_kg":
+            # The as-of stamp only means something while an override exists, so
+            # the two move together.
+            if val:
+                w = float(val)
+                if not (20.0 <= w <= 400.0):
+                    raise ValueError(f"current_weight_kg {w} is out of range (20-400 kg)")
+                goal["current_weight_kg"] = round(w, 1)
+                goal["current_weight_as_of"] = _local_today().isoformat()
+            else:
+                goal["current_weight_kg"] = None
+                goal["current_weight_as_of"] = None
         elif field == "protein_g_per_kg":
             goal["protein_g_per_kg"] = _num(val, 2) if val else None
         elif field == "front_load":
