@@ -1789,11 +1789,35 @@ def set_fueling_goal(
         except Exception:  # noqa: BLE001
             pass
 
+    # start_date marks when the BASELINE was set, not when the goal was last
+    # written. Re-anchor only if start_weight_kg actually moved; otherwise carry
+    # the stored anchor forward. Stamping it unconditionally meant rewriting a
+    # goal with unchanged values silently re-anchored the block and re-windowed
+    # the weight chart (see _goal_baseline_date), discarding history for an edit
+    # that didn't touch the baseline at all.
+    start_w = round(float(start_weight_kg), 1) if start_weight_kg else None
+    start_date = _local_today().isoformat()
+    prior = cache.get(
+        "fueling_goal", {"key": "current"}, key_parts=["current"],
+        ttl_seconds=IMMUTABLE_TTL,
+    )
+    if isinstance(prior, dict) and start_w is not None:
+        prior_w = prior.get("start_weight_kg")
+        # Goals written before start_date existed keep their anchor in set_date,
+        # which at that point still meant "when the goal was set".
+        prior_anchor = prior.get("start_date") or prior.get("set_date")
+        if prior_anchor and prior_w is not None:
+            try:
+                if abs(float(prior_w) - start_w) < 0.05:
+                    start_date = str(prior_anchor)[:10]
+            except (TypeError, ValueError):
+                pass
+
     goal = {
         "goal_type": gt,
         "target_weight_kg": round(float(target_weight_kg), 1) if target_weight_kg else None,
         "target_date": target_date,
-        "start_weight_kg": round(float(start_weight_kg), 1) if start_weight_kg else None,
+        "start_weight_kg": start_w,
         "sex": sex_n,
         "height_cm": round(float(height_cm), 1) if height_cm else None,
         "age": int(age) if age else None,
@@ -1824,8 +1848,9 @@ def set_fueling_goal(
         # tweak to the block in progress, so it preserves it. Distinct from
         # set_date, which both stamp and therefore only means "last edited".
         # The weight chart windows on this, so re-anchoring drops the previous
-        # block's weigh-ins from the plot.
-        "start_date": _local_today().isoformat(),
+        # block's weigh-ins from the plot — which is why it moves only when
+        # start_weight_kg does (resolved above).
+        "start_date": start_date,
         "set_date": _local_today().isoformat(),
     }
     cache.put("fueling_goal", {"key": "current"}, goal, key_parts=["current"])
