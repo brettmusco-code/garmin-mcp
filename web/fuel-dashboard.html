@@ -304,15 +304,15 @@
   footer{margin-top:26px;text-align:center;color:var(--ink-faint);font-size:11.5px;}
   footer b{color:var(--ink-dim);}
   /* Manual weigh-in form (served page only; hidden in the Artifact sandbox). */
-  #logWeight,#editGoal,#ignoreDay{display:none;margin-top:12px;}
-  #logWeight form,#editGoal form,#ignoreDay form{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px;}
-  #logWeight .fld,#editGoal .fld,#ignoreDay .fld{display:flex;flex-direction:column;gap:4px;}
-  #logWeight label,#editGoal label,#ignoreDay label{font-size:10px;letter-spacing:.12em;text-transform:uppercase;
+  #logWeight,#editGoal,#ignoreDay,#races{display:none;margin-top:12px;}
+  #logWeight form,#editGoal form,#ignoreDay form,#races form{display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px;}
+  #logWeight .fld,#editGoal .fld,#ignoreDay .fld,#races .fld{display:flex;flex-direction:column;gap:4px;}
+  #logWeight label,#editGoal label,#ignoreDay label,#races label{font-size:10px;letter-spacing:.12em;text-transform:uppercase;
     color:var(--ink-faint);font-weight:700;}
   #logWeight input,#logWeight select,#editGoal input,#editGoal select,
-  #ignoreDay input{font:inherit;font-size:14px;
+  #ignoreDay input,#races input,#races select{font:inherit;font-size:14px;
     background:var(--panel-2);color:var(--ink);border:1px solid var(--line);border-radius:9px;padding:8px 10px;min-width:0;}
-  #logWeight input[type=number],#editGoal input[type=number]{width:96px;font-family:var(--mono);font-variant-numeric:tabular-nums;}
+  #logWeight input[type=number],#editGoal input[type=number],#races input[type=number]{width:96px;font-family:var(--mono);font-variant-numeric:tabular-nums;}
   /* Currently-ignored days: compact reversible rows under the form. */
   #ignoredList{margin-top:14px;display:flex;flex-direction:column;gap:6px;}
   #ignoredList .igrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
@@ -324,16 +324,34 @@
     padding:5px 11px;font-size:12.5px;font-weight:600;border-radius:8px;cursor:pointer;}
   #ignoredList button:hover{color:var(--ink);filter:none;}
   #ignoredList .none{font-size:12.5px;color:var(--ink-faint);}
-  #editGoal .fld.chk{justify-content:flex-end;}
-  #editGoal .fld.chk label{display:flex;align-items:center;gap:7px;font-size:12.5px;letter-spacing:0;
+  /* Stored races: one row each, with what the plan derived from it. */
+  #raceList{margin-top:14px;display:flex;flex-direction:column;gap:6px;}
+  #raceList .rcrow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+    background:var(--panel-2);border:1px solid var(--line);border-radius:9px;padding:7px 11px;}
+  #raceList .rcn{font-weight:600;font-size:13.5px;}
+  #raceList .rcm{font-size:12.5px;color:var(--ink-dim);flex:1 1 auto;}
+  #raceList .rcw{font-size:11.5px;color:var(--ink-faint);width:100%;}
+  #raceList .rcp{font-size:10px;font-weight:700;letter-spacing:.08em;padding:2px 6px;border-radius:5px;
+    background:var(--line);color:var(--ink-dim);}
+  #raceList form{display:inline;margin:0;}
+  #raceList button{background:transparent;color:var(--ink-dim);border:1px solid var(--line);
+    padding:5px 11px;font-size:12.5px;font-weight:600;border-radius:8px;cursor:pointer;}
+  #raceList button:hover{color:var(--ink);filter:none;}
+  #raceList .none{font-size:12.5px;color:var(--ink-faint);}
+  #editGoal .fld.chk,#races .fld.chk{justify-content:flex-end;}
+  #editGoal .fld.chk label,#races .fld.chk label{display:flex;align-items:center;gap:7px;font-size:12.5px;letter-spacing:0;
     text-transform:none;font-weight:600;color:var(--ink);cursor:pointer;}
-  #editGoal .fld.chk input[type=checkbox]{width:16px;height:16px;padding:0;accent-color:var(--good);cursor:pointer;}
-  #logWeight button,#editGoal button,#ignoreDay > form button{font:inherit;font-size:14px;font-weight:600;cursor:pointer;color:#0e1520;
+  #editGoal .fld.chk input[type=checkbox],#races .fld.chk input[type=checkbox]{width:16px;height:16px;padding:0;accent-color:var(--good);cursor:pointer;}
+  #logWeight button,#editGoal button,#ignoreDay > form button,#races > form button{font:inherit;font-size:14px;font-weight:600;cursor:pointer;color:#0e1520;
     background:var(--good);border:0;border-radius:9px;padding:9px 16px;
     -webkit-tap-highlight-color:transparent;}
-  #logWeight button:hover,#editGoal button:hover,#ignoreDay > form button:hover{filter:brightness(1.06);}
-  #logWeight button:disabled,#editGoal button:disabled,#ignoreDay button:disabled{opacity:.55;cursor:default;filter:none;}
-  #logWeight .hint,#editGoal .hint,#ignoreDay .hint{width:100%;font-size:11.5px;color:var(--ink-faint);margin-top:2px;}
+  #logWeight button:hover,#editGoal button:hover,#ignoreDay > form button:hover,#races > form button:hover{filter:brightness(1.06);}
+  #logWeight button:disabled,#editGoal button:disabled,#ignoreDay button:disabled,#races button:disabled{opacity:.55;cursor:default;filter:none;}
+  #logWeight .hint,#editGoal .hint,#ignoreDay .hint,#races .hint{width:100%;font-size:11.5px;color:var(--ink-faint);margin-top:2px;}
+  /* Race-phase badge on the week strip and the day detail. */
+  .racetag{font-size:10px;font-weight:700;letter-spacing:.04em;padding:2px 7px;border-radius:6px;
+    background:color-mix(in srgb, var(--warn) 20%, transparent);color:var(--warn);white-space:nowrap;}
+  .racetag.is-race{background:color-mix(in srgb, var(--good) 22%, transparent);color:var(--good);}
 
   /* Save confirmation. The settings forms POST and 303-redirect back here, so
      without this the page just silently reloads and a successful save looks
@@ -551,6 +569,89 @@
             <div class="hint">Drops that day's <b>intake</b> from the rebalance, adaptive-TDEE and coaching maths — treated as unlogged rather than as a real low-calorie day. The day's burn still counts, and it's reversible.</div>
           </form>
           <div id="ignoredList"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="block" id="racesBlock">
+      <div class="lead"><h2>Races</h2><span>the plan loads and tapers around these</span></div>
+      <div class="card">
+        <div id="races">
+          <form method="post" action="{{SAVE_RACE_ACTION}}">
+            <div class="fld" style="flex:1 1 190px">
+              <label for="rcName">Race</label>
+              <input type="text" id="rcName" name="name" placeholder="Chicago Marathon">
+            </div>
+            <div class="fld">
+              <label for="rcDate">Date</label>
+              <input type="date" id="rcDate" name="date" required>
+            </div>
+            <div class="fld">
+              <label for="rcDist">Distance</label>
+              <select id="rcDist" name="distance_label" onchange="onRaceDistChange()">
+                <optgroup label="Run">
+                  <option value="5k">5K</option>
+                  <option value="10k">10K</option>
+                  <option value="half">Half marathon</option>
+                  <option value="marathon" selected>Marathon</option>
+                  <option value="50k">50K</option>
+                  <option value="50 mile">50 mile</option>
+                  <option value="100k">100K</option>
+                  <option value="100 mile">100 mile</option>
+                </optgroup>
+                <optgroup label="Tri">
+                  <option value="sprint">Sprint tri</option>
+                  <option value="olympic">Olympic tri</option>
+                  <option value="70.3">70.3</option>
+                  <option value="ironman">Ironman</option>
+                </optgroup>
+                <optgroup label="Bike">
+                  <option value="metric century">Metric century</option>
+                  <option value="gran fondo">Gran fondo</option>
+                  <option value="century">Century</option>
+                </optgroup>
+                <option value="">Other (enter below)</option>
+              </select>
+            </div>
+            <div class="fld" id="rcOtherWrap" style="display:none">
+              <label for="rcOther">Other distance</label>
+              <input type="number" id="rcOther" name="distance" step="0.1" min="0"
+                     inputmode="decimal" placeholder="—">
+            </div>
+            <div class="fld" id="rcOtherUnitWrap" style="display:none">
+              <label for="rcUnit">Unit</label>
+              <select id="rcUnit" name="distance_unit">
+                <option value="km">km</option><option value="mi">mi</option><option value="m">m</option>
+              </select>
+            </div>
+            <div class="fld" id="rcSportWrap" style="display:none">
+              <label for="rcSport">Sport</label>
+              <select id="rcSport" name="sport">
+                <option value="running">running</option><option value="cycling">cycling</option>
+                <option value="triathlon">triathlon</option><option value="swimming">swimming</option>
+                <option value="other">other</option>
+              </select>
+            </div>
+            <div class="fld">
+              <label for="rcPriority">Priority</label>
+              <select id="rcPriority" name="priority">
+                <option value="A">A · full taper</option>
+                <option value="B">B · short taper</option>
+                <option value="C">C · train through</option>
+              </select>
+            </div>
+            <div class="fld">
+              <label for="rcTime">Goal time (h)</label>
+              <input type="number" id="rcTime" name="target_time_hours" step="0.05" min="0"
+                     inputmode="decimal" placeholder="estimate">
+            </div>
+            <div class="fld chk">
+              <label><input type="checkbox" name="hot" value="1"> Expect heat</label>
+            </div>
+            <button type="submit">Save race</button>
+            <div class="hint">The deficit is suspended across the carb load, race day and the first recovery day, and eased through the taper; carbs ramp to 8–10 g/kg over the loading days. How many loading days a race earns comes from its expected duration — estimated from your race predictions or recent pace, unless you set a goal time.</div>
+          </form>
+          <div id="raceList"></div>
         </div>
       </div>
     </section>
@@ -1373,6 +1474,15 @@ function renderRecent(){
   }).join('') + `</div>`;
 }
 
+// Which race window a day sits in. Race day is the good-news colour; the load,
+// taper and recovery days share the warn colour because each one is the plan
+// deliberately NOT running the deficit you'd otherwise expect to see.
+function raceTag(d){
+  const r = d.race; if(!r) return '';
+  return `<span class="racetag${r.phase==='race_day'?' is-race':''}"
+    title="${esc(r.name||'Race')} · ${r.date}">${esc(r.label||r.phase)}</span>`;
+}
+
 function renderDay(d, targetId){
   targetId = targetId || 'detail';
   const rest = d.primary_intensity==='rest';
@@ -1436,7 +1546,7 @@ function renderDay(d, targetId){
     ? `<span class="trimflag" title="Deficit too steep to hold this day's training carbs">⚠ carbs cut</span>` : '';
   $(targetId).innerHTML = `
     <div class="detail-head"><div class="t">${dow(d.date)} ${dmd(d.date)}<small>${sess}</small></div>
-      <div class="dc-tags">${trimBadge}<div class="chip ${eaPill(d.energy_availability_kcal_per_kg_ffm)}"><span class="dot"></span>EA ${d.energy_availability_kcal_per_kg_ffm}</div></div></div>
+      <div class="dc-tags">${raceTag(d)}${trimBadge}<div class="chip ${eaPill(d.energy_availability_kcal_per_kg_ffm)}"><span class="dot"></span>EA ${d.energy_availability_kcal_per_kg_ffm}</div></div></div>
     ${sessList ? `<div style="margin-bottom:14px">${sessList}</div>` : ''}
     ${energy}
     ${eaBreak}
@@ -1550,6 +1660,7 @@ function render(){
       <div class="dc-top">
         <div class="dc-day">${dow(d.date)}<small>${dmd(d.date)}</small></div>
         <div class="dc-tags">
+          ${raceTag(d)}
           ${d.carbs_trimmed?`<span class="trimflag" title="Deficit too steep to hold this day's training carbs — carbs cut to fit; the session(s) will be under-fuelled">⚠ carbs cut</span>`:''}
           <span class="eapill ${eaPill(e)}">EA ${e??'—'}</span>
           <span class="fuelmark${d.needs_fuel?' on':''}" title="${d.needs_fuel?'fuel plan':'no fuel needed'}"></span>
@@ -1831,12 +1942,66 @@ function initIgnoreDay(){
     </div>`).join('');
 }
 
+// Race calendar: same server-only gating as the other forms. The distance
+// select doubles as an "other" escape hatch — picking it reveals a raw
+// distance + unit + sport, since a preset already implies all three.
+function onRaceDistChange(){
+  const other = !$('rcDist').value;
+  ['rcOtherWrap','rcOtherUnitWrap','rcSportWrap'].forEach(id=>{
+    $(id).style.display = other ? 'flex' : 'none';
+  });
+  // A preset and a raw distance are mutually exclusive server-side, so make
+  // sure a stale number can't ride along with a preset.
+  if(!other) $('rcOther').value = '';
+}
+function initRaces(){
+  const box = $('races'); if(!box) return;
+  const form = box.querySelector('form');
+  const action = form && form.getAttribute('action') || '';
+  if(action.indexOf('{{') !== -1 || !action){ $('racesBlock').style.display='none'; return; }
+  box.style.display='block';
+  const dt = $('rcDate');
+  if(dt) dt.min = todayISO;   // a race in the past can't be planned for
+  onRaceDistChange();
+
+  const list = $('raceList');
+  const races = PLAN.races || [];
+  if(!races.length){
+    list.innerHTML = `<div class="none">No races saved. Add one and the plan will build the carb load, taper and recovery around it.</div>`;
+    return;
+  }
+  list.innerHTML = races.map(r=>{
+    const d = r.days_until;
+    const when = d==null ? '' : (d===0 ? 'today' : d>0 ? `in ${d}d` : `${-d}d ago`);
+    // Say where the duration came from — a number resting on a default pace
+    // table should not read the same as one off a real race prediction.
+    const src = {race_predictions:'from your race predictions', history_pace:'from your recent pace',
+                 user:'your goal time', default_pace:'rough default — set a goal time'}[r.duration_source] || '';
+    const load = r.carb_load_days ? `${r.carb_load_days} carb-load day${r.carb_load_days>1?'s':''}` : 'no carb load (too short)';
+    return `
+    <div class="rcrow">
+      <span class="rcn">${esc(r.name||'Race')}</span>
+      <span class="rcp">${esc(r.priority||'A')}</span>
+      <span class="rcm">${dmd(r.date)}${when?` · ${when}`:''}</span>
+      <form method="post" action="${action.replace('/save-race','/delete-race')}">
+        <input type="hidden" name="race_id" value="${esc(r.id)}">
+        <button type="submit">Remove</button>
+      </form>
+      <span class="rcw">${esc(r.distance_label||'')} · est ${fmtHrs(r.duration_hours)}${src?` (${src})`:''} · ${load}${r.hot?' · heat':''}</span>
+    </div>`;}).join('');
+}
+function fmtHrs(h){
+  if(h==null) return '—';
+  const m = Math.round(h*60);
+  return `${Math.floor(m/60)}h ${String(m%60).padStart(2,'0')}m`;
+}
+
 // Saving posts to the server, which rebuilds the whole plan before redirecting
 // back — several seconds on a cold cache. Without a pressed state the button
 // looks inert for that whole stretch, which reads as "the tap didn't register"
 // and invites a double-submit.
 function initSaveFeedback(){
-  document.querySelectorAll('#logWeight form,#editGoal form,#ignoreDay form').forEach(form=>{
+  document.querySelectorAll('#logWeight form,#editGoal form,#ignoreDay form,#races form').forEach(form=>{
     form.addEventListener('submit', ()=>{
       const btn = form.querySelector('button[type=submit]');
       if(!btn) return;
@@ -1855,6 +2020,8 @@ const SAVED_MSG = {
   goal:     'Goal saved — plan rebuilt',
   ignored:  "Day ignored — its food log no longer counts",
   unignored:"Day restored — its food log counts again",
+  race:     'Race saved — plan built around it',
+  race_deleted: 'Race removed — plan rebuilt without it',
 };
 function showSavedToast(){
   const params = new URLSearchParams(location.search);
@@ -1875,6 +2042,7 @@ render();
 initLogWeight();
 initEditGoal();
 initIgnoreDay();
+initRaces();
 initSaveFeedback();
 showSavedToast();
 window.addEventListener('resize', drawProjection);
