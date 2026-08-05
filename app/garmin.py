@@ -859,6 +859,32 @@ def _logged_food_entries(fl: Any) -> list[dict]:
     return out
 
 
+def _logged_food_count(fl: Any) -> int:
+    """How many food entries a day has — the "did the athlete log anything"
+    gate, as distinct from the itemised list.
+
+    Prefers the real log (mealDetails[].loggedFoods[]). Falls back to the
+    length of the loggedFoodsWithServingSizes catalogue when a response carries
+    no mealDetails at all, because this count decides whether a day counts as
+    logged *anywhere*: the rebalance skips unlogged days outright, adaptive
+    TDEE scores its confidence on how many there are, and the coaching notes
+    read them as gaps. A day with a genuine calorie total must not read as
+    never-logged just because its itemised breakdown is missing.
+
+    The catalogue is only ever counted here, never read for nutrients — it
+    lists a food's available serving-size variants and records no quantity, so
+    taking values from it is what made three eggs weigh one. Its presence still
+    tells us something was eaten, which is all this gate needs.
+    """
+    if not isinstance(fl, dict) or "error" in fl:
+        return 0
+    n = len(_logged_food_entries(fl))
+    if n:
+        return n
+    catalogue = fl.get("loggedFoodsWithServingSizes")
+    return len(catalogue) if isinstance(catalogue, list) else 0
+
+
 def _weigh_in_entries() -> list[dict]:
     """Canonical recent weigh-ins (oldest first) that every reader shares —
     Garmin's series with any manual weigh-ins merged on top (manual wins for
@@ -1176,7 +1202,7 @@ def nutrition_plan_vs_actual(days_back: int = 7) -> dict:
         garmin_goal = None
         if isinstance(fl, dict) and "error" not in fl:
             consumed = fl.get("dailyNutritionContent") or {}
-            foods_count = len(_logged_food_entries(fl))
+            foods_count = _logged_food_count(fl)
             goals = fl.get("dailyNutritionGoals") or {}
             garmin_goal = goals.get("adjustedCalories") or goals.get("calories")
 
@@ -1446,7 +1472,7 @@ def nutrition_trend(weeks: int = 4) -> dict:
                 # down and, through it, the adaptive-TDEE maintenance estimate.
                 if isinstance(fl, dict) and "error" not in fl and d_iso not in ignored_days:
                     content = fl.get("dailyNutritionContent") or {}
-                    foods_count = len(_logged_food_entries(fl))
+                    foods_count = _logged_food_count(fl)
                     k = content.get("calories")
                     p = content.get("protein")
                     if foods_count > 0 and k:
@@ -3193,7 +3219,7 @@ def _today_actuals() -> dict | None:
         "protein_g": content.get("protein"),
         "carbs_g": content.get("carbs"),
         "fat_g": content.get("fat"),
-        "foods_logged": len(logged),
+        "foods_logged": _logged_food_count(fl),
         "foods": foods,
         "expenditure_kcal": round(expenditure) if expenditure else None,
         "bmr_kcal": round(bmr_kcal) if bmr_kcal else None,
@@ -3234,7 +3260,7 @@ def _recent_days(n: int = 2) -> list[dict]:
         consumed, foods = None, 0
         if isinstance(v, dict) and "error" not in v:
             consumed = (v.get("dailyNutritionContent") or {}).get("calories")
-            foods = len(_logged_food_entries(v))
+            foods = _logged_food_count(v)
         # Flagged as badly logged: blank the intake so the card can't imply a
         # real number, and mark it so the UI shows "ignored" rather than a
         # scary red "0 foods logged".
@@ -3706,10 +3732,25 @@ def _weight_series(since: str | None = None) -> list[tuple[str, float]]:
 
     `since` (ISO date) drops readings from before the current block started, so
     a re-anchored goal doesn't plot the previous block's weights. Callers that
-    want the full window — trend calibration, adaptive TDEE — omit it."""
-    return [(e["date"], e["weight_kg"]) for e in _weigh_in_entries()
-            if e.get("weight_kg") is not None
-            and (since is None or e["date"] >= since)]
+    want the full window — trend calibration, adaptive TDEE — omit it.
+
+    The block's own starting weigh-in is kept even when it predates `since`.
+    A goal is almost always anchored to a reading taken *before* the day it was
+    set — start_weight_kg comes from the baseline, i.e. the most recent scale
+    reading — so a strict cutoff drops the one point the chart is drawn from
+    and leaves it empty for the whole first day of every goal. Exactly one
+    prior reading is carried, and only when nothing already sits on the anchor
+    date, so a re-anchor still sheds the previous block's history."""
+    pts = [(e["date"], e["weight_kg"]) for e in _weigh_in_entries()
+           if e.get("weight_kg") is not None]
+    if since is None:
+        return pts
+    inside = [p for p in pts if p[0] >= since]
+    if not any(p[0] == since for p in inside):
+        before = [p for p in pts if p[0] < since]
+        if before:
+            inside.insert(0, before[-1])
+    return inside
 
 
 # Modeled adaptive thermogenesis: on a sustained cut the body downregulates

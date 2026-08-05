@@ -473,9 +473,22 @@ def main():
           abs(plan["fat_free_mass_kg"] - round(74.1 * (1 - 0.14), 1)) <= 0.2)
     check("Katch BMR = 370 + 21.6*FFM",
           plan["bmr"]["value"] == round(370 + 21.6 * plan["fat_free_mass_kg"]))
+    # The chart windows on the goal's start_date, but the goal is anchored to a
+    # weigh-in taken BEFORE that day (start_weight_kg comes from the baseline,
+    # i.e. the latest scale reading). A strict cutoff therefore drops the one
+    # point the chart is drawn from, leaving it empty for the whole first day
+    # of every goal — which is exactly what happened once windowing landed.
     check("weight_history carries the logged weigh-in for the chart",
           plan.get("weight_history") == [{"date": (TODAY - timedelta(days=1)).isoformat(),
                                           "weight_kg": 74.1}])
+    check("the chart's anchor point survives the block window",
+          g._weight_series(TODAY.isoformat())
+          == [((TODAY - timedelta(days=1)).isoformat(), 74.1)])
+    check("only ONE pre-anchor reading is carried, not the old block",
+          g._weight_series((TODAY + timedelta(days=30)).isoformat())
+          == [((TODAY - timedelta(days=1)).isoformat(), 74.1)])
+    check("an unwindowed series is unaffected",
+          g._weight_series() == [((TODAY - timedelta(days=1)).isoformat(), 74.1)])
     bmr = plan["bmr"]["value"]
     floor = round(bmr * 1.2)
     check("7 day rows", len(plan["days"]) == 7)
@@ -1480,6 +1493,30 @@ def main():
     g.skip_scheduled_session(date=(TODAY - timedelta(days=1)).isoformat(), sport="running")
     check("past-dated skips are pruned, not accumulated",
           all(s["date"] >= TODAY.isoformat() for s in g.get_skipped_sessions()))
+
+    print("foods_logged survives a response with no itemised breakdown:")
+    # foods_logged is the "did they log anything" gate: the rebalance skips
+    # unlogged days outright, adaptive TDEE scores confidence on how many there
+    # are, and the coaching notes read them as gaps. Reading it only from
+    # mealDetails made a day with a real calorie total but no per-item
+    # breakdown vanish from all three.
+    _real_log = {"mealDetails": [{"meal": {"mealName": "Breakfast"}, "loggedFoods": [
+        {"foodMetaData": {"foodName": "egg"}, "servingQty": 3,
+         "nutritionContent": {"calories": 74, "protein": 6}}]}]}
+    check("the real log is counted per entry", g._logged_food_count(_real_log) == 1)
+    check("...and quantity still scales the nutrients",
+          g._logged_food_entries(_real_log)[0]["kcal"] == 222)
+    _catalogue_only = {"dailyNutritionContent": {"calories": 2600},
+                       "loggedFoodsWithServingSizes": [{"foodMetaData": {"foodName": "x"}},
+                                                       {"foodMetaData": {"foodName": "y"}}]}
+    check("a catalogue-only day still reads as logged",
+          g._logged_food_count(_catalogue_only) == 2)
+    check("...but the catalogue is never mined for nutrients",
+          g._logged_food_entries(_catalogue_only) == [])
+    check("the real log wins when both are present",
+          g._logged_food_count({**_real_log, **_catalogue_only}) == 1)
+    check("an empty/errored day is still zero",
+          g._logged_food_count({"error": "nope"}) == 0 and g._logged_food_count({}) == 0)
 
     print("ignore_food_day drops a badly-logged day from the intake maths:")
     _ig1, _ig2 = (TODAY - timedelta(days=2)).isoformat(), (TODAY - timedelta(days=1)).isoformat()
