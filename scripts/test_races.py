@@ -225,6 +225,17 @@ def test_phases():
     check("short race recovery is 1 day", R.phase_for(-2, 1.2) is None)
     check("nothing 30 days out", R.phase_for(30, 3.5) is None)
 
+    # Loading tops out because glycogen supercompensation does — an Ironman and
+    # a marathon load identically. Recovery is what has to keep scaling.
+    check("loading tops out at 3 days for any duration",
+          R.load_days_for(3.5) == R.load_days_for(12.0) == 3)
+    check("an ironman recovers for a week, not 3 days",
+          R.recovery_days_for(12.0) == 7 and R.recovery_days_for(3.5) == 3)
+    check("a 6 h event sits between the two", R.recovery_days_for(6.0) == 5)
+    check("ironman recovery still eased 5 days out",
+          R.phase_for(-5, 12.0)["phase"] == "post_race")
+    check("marathon recovery is over by then", R.phase_for(-5, 3.5) is None)
+
 
 def test_store():
     print("race calendar store:")
@@ -331,6 +342,20 @@ def test_plan_integration():
     check("loading carbs hit 10 g/kg", load1["carb_g_per_kg"] >= 10.0)
     check("carbs ramp toward the race",
           load1["carb_g_per_kg"] > load3["carb_g_per_kg"])
+    # The directive is worthless if _fill_macros trims it back to fit a
+    # maintenance-sized target — which is exactly what happened before the
+    # loading days got a floor sized to hold their own macros. The ramp has to
+    # show up in GRAMS, not just in the g/kg label.
+    check("the ramp moves actual grams, not just the label",
+          load1["carbs_g"] > load3["carbs_g"])
+    check("loading days deliver the prescribed carbs (within rounding)",
+          abs(load1["carbs_g"] - load1["carb_g_per_kg"] * plan["bmr"]["weight_kg"]) <= 2)
+    check("carbs are never flagged trimmed while loading",
+          not load1["carbs_trimmed"] and not load3["carbs_trimmed"])
+    check("a real load runs above maintenance",
+          load1["target_kcal"] > load1["expected_expenditure_kcal"])
+    check("...and the plan says so",
+          any("ABOVE maintenance" in n for n in plan["notes"]))
     check("race-day carbs exceed a normal training day",
           rd["carb_g_per_kg"] > max(d["carb_g_per_kg"] for d in baseline))
     check("recovery carbs raised", rec1["carb_g_per_kg"] >= 6.0)
@@ -359,7 +384,28 @@ def test_plan_integration():
     rd2 = {d["date"]: d for d in _plan_days(14)}[race_day.isoformat()]
     check("an already-scheduled race is not injected twice",
           len([s for s in rd2["sessions"] if s["hours"] > 2]) == 1)
-    g.get_scheduled_workouts = lambda startdate, enddate, **k: []  # type: ignore[assignment]
+
+    # ...but an unrelated training session of the same sport must NOT suppress
+    # the race. The first heuristic here ("same sport, at least half as long")
+    # matched the athlete's routine 90-min ride against a sprint triathlon and
+    # dropped the race entirely, leaving race day planned as a normal Tuesday.
+    g.get_scheduled_workouts = _fake_scheduled   # back to the daily 90-min ride
+    _STORE.pop("fueling_races/current", None)
+    g.set_race(date=race_day.isoformat(), name="Cove Sprint Tri",
+               distance_label="sprint", priority="A", target_time_hours=1.27)
+    tri_days = {d["date"]: d for d in _plan_days(14)}
+    tri = tri_days[race_day.isoformat()]
+    ordinary = tri_days[(race_day - timedelta(days=6)).isoformat()]
+    check("a training ride does not stand in for a sprint triathlon",
+          any(s.get("race") for s in tri["sessions"]))
+    check("the triathlon's burn lands on top of the ride's",
+          tri["est_burn_kcal"] > ordinary["est_burn_kcal"])
+    check("a short tri still gets on-course fuel",
+          next(c for c in tri["fuel"] if c.get("race"))["during_carbs_g_per_hr"] > 0)
+
+    _STORE.pop("fueling_races/current", None)
+    g.set_race(date=race_day.isoformat(), name="Autumn Marathon",
+               distance_label="marathon", priority="A", target_time_hours=3.5)
 
     print("breakfast-skip yields to loading:")
     g.update_fueling_goal(skip_breakfast_weekdays=True)

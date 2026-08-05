@@ -2438,6 +2438,38 @@ def _race_phases_for_window(start: date, days: int) -> dict[str, tuple[dict, dic
     return out
 
 
+_RACE_TITLE_STOPWORDS = frozenset((
+    "the", "a", "an", "of", "and", "race", "run", "ride", "swim", "marathon",
+    "half", "triathlon", "tri", "10k", "5k", "century", "ironman",
+))
+
+
+def _is_the_race(session: dict, race: dict, burn_sport: str, r_hours: float) -> bool:
+    """Whether a session already on the calendar IS the race, so the plan
+    shouldn't add a second copy of it.
+
+    The naive test — same sport, at least half the race's length — is far too
+    loose. It matches a routine 90-minute training ride against a sprint
+    triathlon and suppresses the race entirely, leaving race day planned as an
+    ordinary Tuesday. So: a distinctive word from the race name matching the
+    session title is decisive (a race put on the calendar almost always carries
+    its own name), and failing that we require same sport AND a duration within
+    25% of the estimate — close enough that it can't be that day's easy spin.
+    Multisport gets no duration-only path at all, since one leg of a triathlon
+    is indistinguishable from a single-sport session by sport and length.
+    """
+    title = (session.get("title") or "").lower()
+    name = (race.get("name") or "").lower()
+    words = {w for w in re.split(r"[^a-z0-9]+", name)
+             if len(w) > 3 and w not in _RACE_TITLE_STOPWORDS}
+    if words and any(w in title for w in words):
+        return True
+    if race.get("sport") == "triathlon":
+        return False
+    return (session.get("sport") == burn_sport
+            and abs((session.get("hours") or 0) - r_hours) <= 0.25 * r_hours)
+
+
 def _safe_races() -> list[dict]:
     """get_races that can't fail the plan — the race calendar is context, not
     a dependency, so a storage hiccup should cost the races section and
@@ -4300,8 +4332,7 @@ def generate_fueling_plan(
             # Triathlon has no burn history of its own; price it off cycling,
             # which dominates the day in both duration and calories.
             burn_sport = "cycling" if r_sport == "triathlon" else r_sport
-            already = any(s["sport"] == burn_sport and s["hours"] >= 0.5 * r_hours
-                          for s in sessions)
+            already = any(_is_the_race(s, race, burn_sport, r_hours) for s in sessions)
             if not already:
                 base_hr, burn_src = _kcal_per_hour_for(burn_sport, r_hours, hist_samples)
                 # Race intensity: the shorter the event the closer to all-out.
@@ -4520,12 +4551,31 @@ def generate_fueling_plan(
     # Per-day floors: BMR multiple (if active), enforced EA minimum (scales
     # with each day's burn), and the absolute min_kcal — whichever is highest.
     floors: list[float] = []
+    load_surplus_dates: list[str] = []
     for p in prelim:
         f = float(floor_val)
         if ea_min_val and ffm_kg:
             f = max(f, ea_min_val * ffm_kg + p["total_burn"])
         if min_kcal_val:
             f = max(f, min_kcal_val)
+        # Carb loading is a calorie surplus by construction: 10 g/kg for a 74 kg
+        # athlete is 740 g of carbohydrate — ~2,960 kcal before a gram of
+        # protein or fat, which on a tapered week exceeds maintenance outright.
+        # Without a floor sized to hold it, _fill_macros just trims the carbs
+        # back to whatever fits and the loading protocol silently doesn't
+        # happen: every loading day lands on the same carb number and the ramp
+        # is cosmetic. Floor these days at what the prescribed macros actually
+        # cost so the surplus is granted rather than quietly refused.
+        entry = race_phases.get(p["date"])
+        if entry and entry[1]["phase"] in ("carb_load", "race_day"):
+            protein_ref = tgt if (gt == "lose" and tgt) else weight_kg
+            macro_cost = (p["carb_ratio"] * weight_kg * 4
+                          + protein_ref * (protein_per_kg + 0.3) * 4
+                          + weight_kg * 0.5 * 9)          # the _fill_macros fat floor
+            if macro_cost > f:
+                if macro_cost > p["base_target"]:
+                    load_surplus_dates.append(p["date"])
+                f = macro_cost
         floors.append(f)
 
     # Per-day deficit: flat, or periodized toward rest/easy days (hard days
@@ -4787,6 +4837,16 @@ def generate_fueling_plan(
 
     if race_notes:
         notes.extend(race_notes)
+
+    if load_surplus_dates:
+        notes.append(
+            f"On {', '.join(load_surplus_dates)} the target runs ABOVE maintenance "
+            "on purpose — a real carb load can't be eaten at maintenance, so the "
+            "day is sized to hold the prescribed carbs rather than trimming them "
+            "back to fit. Lean on low-fat, low-fibre, energy-dense carbs (rice, "
+            "pasta, white bread, juice, sports drink); trying to hit these numbers "
+            "on vegetables and whole grains is how loading weeks go wrong."
+        )
 
     if skipped_titles:
         notes.append("Skipped (per skip_scheduled_session): " + "; ".join(skipped_titles) + ".")

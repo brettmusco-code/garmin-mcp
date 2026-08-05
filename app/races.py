@@ -285,7 +285,18 @@ def load_days_for(duration_hours: float) -> int:
 
 
 def recovery_days_for(duration_hours: float) -> int:
-    """How many days after the race the deficit stays off or eased."""
+    """How many days after the race the deficit stays off or eased.
+
+    Unlike loading — which tops out at 3 days because glycogen supercompensation
+    does, so an Ironman and a marathon load identically — recovery keeps scaling
+    with the size of the day. A 10-hour race does muscle damage and immune
+    suppression a 3-hour race doesn't, and resuming a cut 4 days later is how
+    athletes turn one hard day into a month of flat training.
+    """
+    if duration_hours >= 8.0:
+        return 7      # ironman, 100-miler: a full week before the cut resumes
+    if duration_hours >= 5.0:
+        return 5      # long ultras, gran fondos
     if duration_hours >= 3.0:
         return 3
     if duration_hours >= 1.5:
