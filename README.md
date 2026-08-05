@@ -73,12 +73,22 @@ Every window is sized by duration; priority only caps the taper (A ≤ 7 days, B
 | Event | est | taper | load | recovery |
 |---|---|---|---|---|
 | 10K | 0h46m | 1 | 0 | 1 |
-| Sprint tri | 1h18m | 2 | 1 | 1 |
-| Half | 1h41m | 3 | 2 | 2 |
-| Marathon | 3h30m | 7 | 3 | 3 |
-| Ironman | 10h38m | 7 | 3 | 7 |
+| Sprint tri | 1h18m | 2 | 0 | 1 |
+| Half | 1h41m | 3 | 1 | 2 |
+| Marathon | 3h30m | 7 | 2 | 3 |
+| Ironman | 10h38m | 7 | 2 | 7 |
 
-Loading tops out at 3 days / 10 g/kg because glycogen supercompensation does — an Ironman and a marathon load identically. What keeps scaling with the event is recovery and race-day intake (~0 g/hr for a 5K, 45 g/hr for a sprint tri, 90 g/hr × 10.6 h for an Ironman).
+Loading tops out at 2 days at a flat 10 g/kg, and nothing under ~90 min loads at all. That's shorter than the classic protocol on purpose:
+
+- **Bussau (2002)** fed trained athletes 10 g/kg and biopsied at 1 and 3 days: muscle glycogen rose 95 → 180 mmol/kg wet mass **within 24 h and then stayed flat** through two more loading days.
+- **Jones (2026)**, loading 6 / 8 / 10 g/kg over the final 48 h, found 10 g/kg beat both lower doses with **no difference between 6 and 8** — so a "ramp-in" day at 8 buys nothing an ordinary high-carb day wouldn't, while costing a surplus.
+- Below ~90 min, resting glycogen already covers the event; loading adds water and digestive load for no energy advantage.
+
+So an Ironman and a marathon load identically. What keeps scaling with the event is recovery and race-day intake (~0 g/hr for a 5K, 45 g/hr for a sprint tri, 90 g/hr × 10.6 h for an Ironman).
+
+**The taper enforces an energy-availability floor of 40 kcal/kg fat-free mass**, not just a percentage cut to the deficit. **Ishibashi (2020)** ran trained runners through three consecutive training days at EA 20 vs 45: at 20, muscle glycogen fell across days 2–4 (and fat-free mass with it); at 45, neither moved. A percentage multiplier can't guarantee anything here — where it lands depends entirely on how deep the underlying cut is — so a taper on an aggressive cut can sit at the EA shown to *deplete* glycogen. The floor scales itself, only ever raises intake, and is capped at maintenance: the surplus belongs on loading days.
+
+Taper *length* is a heuristic, not a finding. The literature on training tapers (**Bosquet 2007**: 2 weeks, volume −41–60%; **Mujika & Padilla 2003**: 4–28 days) ties duration to accumulated training load, not race distance, and doesn't address the nutritional taper directly. Scaling it by event duration is a reasonable proxy, not a derived result.
 
 **Priority defaults to B.** A is the setting that costs the most progress on a cut — a week of halved deficit — so it should be a decision rather than a default.
 
@@ -232,5 +242,6 @@ Same env vars but skip `S3_ENDPOINT_URL` and set `S3_REGION` (or `AWS_DEFAULT_RE
 - **Unofficial Garmin auth.** `python-garminconnect` uses a reverse-engineered flow. Garmin occasionally changes it; check that project's issues if something breaks.
 - **Token rotation.** Tokens auto-refresh but expire after ~1 year of non-use, or if you change your Garmin password. Re-run bootstrap to refresh.
 - **Security.** The bearer token is the only thing protecting `/mcp` — make it long and random (`openssl rand -hex 32`). Anyone with it can read your Garmin data. `/dashboard` is separate: it's ungated unless you set `DASHBOARD_TOKEN`.
+- **The evidence is small-n.** The studies behind the loading and EA rules are 6–8 subject crossover designs in trained men; Bussau's subjects were physically *inactive*, which flatters the 24-hour result. The direction is consistent across them, but treat the exact thresholds as softer than the numbers suggest.
 - **Not medical advice.** The fueling engine will happily plan a deep deficit if you ask it to. The guardrails (energy-availability floor, BMR-multiple floor, absolute calorie floor, loss-rate cap) are on by default and can all be disabled; the plan says so loudly when they are, but it won't stop you. Race-day and carb-loading numbers are population defaults, not a prescription — gut tolerance for 90 g/hr is trained, not assumed.
 - **Estimates are labelled as such.** A race duration carries a `duration_source` (`race_predictions`, `history_pace`, `user`, `default_pace`) and session burn carries a `burn_source` (`history_similar`, `history_sport`, `generic_table`, `actual_today`). When those read `default_pace` or `generic_table`, the number is a guess from a table, not from you — set a goal time or log more sessions.

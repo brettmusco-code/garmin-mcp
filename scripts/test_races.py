@@ -183,9 +183,13 @@ def test_duration_estimates():
 
 def test_phases():
     print("phase model:")
+    # Loading is short and flat by design: maximal glycogen is reached within
+    # 24 h at 10 g/kg and holds, and 8 g/kg is indistinguishable from 6 — so a
+    # 3-day 8/10/10 ramp spends two extra surplus days for no extra glycogen.
     check("sub-hour event earns no loading", R.load_days_for(0.75) == 0)
-    check("90 min -> 2 loading days", R.load_days_for(1.5) == 2)
-    check("3 h+ -> 3 loading days", R.load_days_for(3.5) == 3)
+    check("nothing under ~90 min loads at all", R.load_days_for(1.4) == 0)
+    check("90 min -> 1 loading day", R.load_days_for(1.5) == 1)
+    check("3 h+ -> 2 loading days", R.load_days_for(3.5) == 2)
 
     # An A-priority parkrun still gets a taper — priority, not distance, is what
     # says "this one matters". What it must not get is a glycogen load, which a
@@ -200,19 +204,28 @@ def test_phases():
     check("race day suspends the deficit", p["deficit_multiplier"] == 0.0)
 
     d1 = R.phase_for(1, 3.5)
+    d2 = R.phase_for(2, 3.5)
     d3 = R.phase_for(3, 3.5)
     check("day before a marathon is a carb load", d1["phase"] == "carb_load")
     check("loading suspends the deficit", d1["deficit_multiplier"] == 0.0)
-    check("loading ramps toward the race",
-          d1["carb_g_per_kg"] > d3["carb_g_per_kg"])
-    check("peak load is 10 g/kg", d1["carb_g_per_kg"] == 10.0)
+    check("both loading days sit at the 10 g/kg dose",
+          d1["carb_g_per_kg"] == d2["carb_g_per_kg"] == 10.0)
+    check("no ramp-in rung at 8 g/kg", d3["phase"] != "carb_load")
+    check("loading days need no EA floor (deficit already off)",
+          d1["ea_floor"] is None)
 
-    check("a 2 h event loads for 2 days, not 3",
-          R.phase_for(3, 2.0) is not None and R.phase_for(3, 2.0)["phase"] == "taper")
+    check("a 2 h event loads for 1 day, not 2",
+          R.phase_for(2, 2.0)["phase"] == "taper"
+          and R.phase_for(1, 2.0)["phase"] == "carb_load")
 
     t = R.phase_for(5, 3.5, "A")
     check("A race tapers 5 days out", t["phase"] == "taper")
     check("taper softens rather than suspends", 0 < t["deficit_multiplier"] < 1)
+    check("taper carries an EA floor", t["ea_floor"] == R.TAPER_EA_FLOOR)
+    check("post-race carries one too", R.phase_for(-2, 3.5)["ea_floor"] == R.TAPER_EA_FLOOR)
+    check("phases with the deficit already off carry none",
+          R.phase_for(0, 3.5)["ea_floor"] is None
+          and R.phase_for(-1, 3.5)["ea_floor"] is None)
     check("B race does not taper 5 days out", R.phase_for(5, 3.5, "B") is None)
     check("C race has no taper at all", R.phase_for(4, 3.5, "C") is None)
     check("C race still loads", R.phase_for(1, 3.5, "C")["phase"] == "carb_load")
@@ -256,8 +269,8 @@ def test_phases():
 
     # Loading tops out because glycogen supercompensation does — an Ironman and
     # a marathon load identically. Recovery is what has to keep scaling.
-    check("loading tops out at 3 days for any duration",
-          R.load_days_for(3.5) == R.load_days_for(12.0) == 3)
+    check("loading tops out at 2 days for any duration",
+          R.load_days_for(3.5) == R.load_days_for(12.0) == 2)
     check("an ironman recovers for a week, not 3 days",
           R.recovery_days_for(12.0) == 7 and R.recovery_days_for(3.5) == 3)
     check("a 6 h event sits between the two", R.recovery_days_for(6.0) == 5)
@@ -277,7 +290,7 @@ def test_store():
     check("sport inferred from the preset", r["sport"] == "running")
     check("duration estimated from Garmin predictions", abs(r["duration_hours"] - 3.5) < 0.05)
     check("estimate source recorded", r["duration_source"] == "race_predictions")
-    check("loading days derived from duration", r["carb_load_days"] == 3)
+    check("loading days derived from duration", r["carb_load_days"] == 2)
 
     again = g.set_race(date=race_date, name="Chicago Marathon",
                        distance_label="marathon", target_time_hours=3.75)
@@ -371,9 +384,18 @@ def test_plan_integration():
     check("no deficit on race day", rd["target_deficit_kcal"] <= 0)
     check("no deficit while loading", load1["target_deficit_kcal"] <= 0)
     check("no deficit the day after", rec1["target_deficit_kcal"] <= 0)
-    check("taper softens but keeps some deficit",
-          0 < taper5["target_deficit_kcal"] < max(
+    # The taper eases the cut; how far depends on which constraint binds. The
+    # multiplier alone would leave a proportional deficit, but the EA floor
+    # takes over on an aggressive cut and can remove it entirely (never
+    # exceeding maintenance — a surplus is for loading days, not the taper).
+    check("taper eases the cut",
+          taper5["target_deficit_kcal"] < max(
               d["target_deficit_kcal"] for d in baseline))
+    check("taper never forces a surplus",
+          taper5["target_deficit_kcal"] >= 0)
+    check("taper lifts energy availability",
+          taper5["energy_availability_kcal_per_kg_ffm"]
+          > baseline[0]["energy_availability_kcal_per_kg_ffm"])
 
     check("loading carbs hit 10 g/kg", load1["carb_g_per_kg"] >= 10.0)
     check("carbs ramp toward the race",
@@ -472,8 +494,13 @@ def test_plan_integration():
               sp[iso]["target_deficit_kcal"] >= base_by_date[iso]["target_deficit_kcal"])
     check("the sprint still eases 2 days out",
           sp[(race_day - timedelta(days=2)).isoformat()]["race"]["phase"] == "taper")
-    check("...and still loads the day before",
-          sp[(race_day - timedelta(days=1)).isoformat()]["race"]["phase"] == "carb_load")
+    # A 78-minute event gets NO carb load: resting glycogen already covers
+    # anything under ~90 min, so loading is a surplus bought for nothing.
+    day_before = sp[(race_day - timedelta(days=1)).isoformat()]
+    check("...but does not carb-load the day before a 78-min race",
+          day_before["race"]["phase"] == "taper")
+    check("...and so never swings into a big surplus",
+          day_before["target_deficit_kcal"] >= 0)
     # Same date, same goal, same calendar — only the event changes. This is the
     # asymmetry the fix is for: the sprint leaves 4d out alone, the marathon
     # doesn't.

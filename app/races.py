@@ -273,13 +273,27 @@ def estimate_duration_hours(
 #   3. The race itself is a training day with a very large burn, and the days
 #      after it are for repair, not for resuming a cut.
 
+# Events shorter than ~90 min get no loading at all: resting glycogen already
+# covers them, and supercompensation just adds water and digestive load for no
+# energy advantage. (Widely-held guideline; supported by reviews rather than a
+# single primary trial.)
+_LOAD_MIN_HOURS = 1.5
+
+
 def load_days_for(duration_hours: float) -> int:
-    """How many days of carb loading the event earns."""
+    """How many days of carb loading the event earns.
+
+    Deliberately short. Bussau et al. (2002) fed trained athletes 10 g/kg and
+    biopsied at 1 and 3 days: muscle glycogen rose 95 -> 180 mmol/kg wet mass
+    within 24 h and then stayed flat through two further days of loading. Jones
+    et al. (2026), loading 6 / 8 / 10 g/kg across the final 48 h, found 10 g/kg
+    beat both lower doses with no difference between 6 and 8 — so a third day,
+    and a lower "ramp-in" rung, buy nothing that ordinary high-carb eating
+    doesn't. They cost a calorie surplus, which on a cut is not free.
+    """
     if duration_hours >= 3.0:
-        return 3
-    if duration_hours >= 1.5:
         return 2
-    if duration_hours >= 1.0:
+    if duration_hours >= _LOAD_MIN_HOURS:
         return 1
     return 0
 
@@ -336,15 +350,29 @@ def taper_days_for(duration_hours: float, priority: str = "A") -> int:
         window = 1
     return min(cap, window)
 
-# g of carbohydrate per kg bodyweight on each loading day, keyed by
-# (total load days, days until the race). Loading ramps up as the race nears:
-# the last 48 h do the heavy lifting, and starting at 12 g/kg three days out
-# just means three days of feeling awful.
-_LOAD_RAMP: dict[tuple[int, int], float] = {
-    (3, 3): 8.0, (3, 2): 10.0, (3, 1): 10.0,
-    (2, 2): 8.0, (2, 1): 10.0,
-    (1, 1): 8.0,
-}
+
+# g of carbohydrate per kg bodyweight on each loading day. Flat at 10, not a
+# ramp: Jones et al. (2026) found 10 g/kg significantly out-performed both 8
+# and 6 for muscle glycogen, with *no difference between 8 and 6* — so a
+# ramp-in day at 8 is a surplus that buys nothing a normal high-carb day
+# wouldn't. Load at the dose that works or don't load.
+_LOAD_G_PER_KG = 10.0
+
+# Energy-availability floor (kcal per kg fat-free mass) enforced on race-window
+# days that still carry a deficit — the taper and the post-race window.
+#
+# This is the evidence-led part of the taper. Ishibashi et al. (2020) ran
+# trained male runners through three consecutive training days at EA 20 vs 45
+# kcal/kg FFM: at 20, muscle glycogen fell across days 2-4 (and fat-free mass
+# with it); at 45, neither moved. A taper that nominally restores glycogen
+# while sitting near EA 20 is doing the opposite of its job — and a percentage
+# multiplier on the deficit can't prevent that, because what it lands on
+# depends entirely on how aggressive the underlying cut is.
+#
+# 40 is a deliberate compromise between the classic 30 "low EA" line and
+# Ishibashi's untouched 45 arm, not a tested value. The floor only ever raises
+# intake, so an athlete already fuelling adequately never notices it.
+TAPER_EA_FLOOR = 40.0
 
 
 def phase_for(days_until: int, duration_hours: float, priority: str = "A") -> dict | None:
@@ -364,6 +392,10 @@ def phase_for(days_until: int, duration_hours: float, priority: str = "A") -> di
       post_race             the rest of the recovery window; deficit eased
 
       deficit_multiplier    scale on the day's calorie deficit (0 = none)
+      ea_floor              minimum energy availability, kcal/kg FFM (None =
+                            unconstrained). Binds on days that still carry a
+                            deficit; see TAPER_EA_FLOOR for why this and not
+                            the multiplier is the part with evidence behind it.
       carb_g_per_kg         floor on the day's carb target (None = untouched)
       protein_bump          extra g/kg protein for repair
     """
@@ -379,6 +411,7 @@ def phase_for(days_until: int, duration_hours: float, priority: str = "A") -> di
             "phase": "race_day",
             "days_until": 0,
             "deficit_multiplier": 0.0,
+            "ea_floor": None,          # deficit already off; nothing to floor
             # Race-day carbs are set from the race fuel card (pre + during +
             # post), which needs bodyweight — so the caller computes it.
             "carb_g_per_kg": None,
@@ -392,14 +425,16 @@ def phase_for(days_until: int, duration_hours: float, priority: str = "A") -> di
             "phase": "carb_load",
             "days_until": days_until,
             "deficit_multiplier": 0.0,
-            "carb_g_per_kg": _LOAD_RAMP[(load, days_until)],
+            "ea_floor": None,          # deficit already off; nothing to floor
+            "carb_g_per_kg": _LOAD_G_PER_KG,
             "protein_bump": 0.0,
             "label": f"Carb load · {days_until}d out",
             "note": (
                 f"Carb load, {days_until} day{'s' if days_until > 1 else ''} out: "
-                f"{_LOAD_RAMP[(load, days_until)]:.0f} g/kg carbs, deficit off. "
-                "Keep training light and expect 1-2 kg of water weight — it is "
-                "glycogen, not fat."
+                f"{_LOAD_G_PER_KG:.0f} g/kg carbs, deficit off. Keep training "
+                "light. Any scale rise over these days is glycogen and its bound "
+                "water, not fat — though the newest dose-response work found no "
+                "measurable body-mass change at this dose over 48 h."
             ),
         }
 
@@ -411,13 +446,16 @@ def phase_for(days_until: int, duration_hours: float, priority: str = "A") -> di
             "phase": "taper",
             "days_until": days_until,
             "deficit_multiplier": mult,
+            "ea_floor": TAPER_EA_FLOOR,
             "carb_g_per_kg": 5.0 if days_until <= 3 else None,
             "protein_bump": 0.0,
             "label": f"Taper · {days_until}d out",
             "note": (
-                f"Taper week ({days_until} days out): deficit cut to "
-                f"{round(mult * 100)}% so the taper actually restores glycogen "
-                "instead of digging the hole deeper."
+                f"Taper ({days_until} days out): deficit cut to "
+                f"{round(mult * 100)}% and energy availability held at "
+                f"{TAPER_EA_FLOOR:.0f} kcal/kg FFM, so the taper actually "
+                "restores glycogen instead of depleting it — three training "
+                "days near EA 20 measurably lower muscle glycogen."
             ),
         }
 
@@ -426,6 +464,7 @@ def phase_for(days_until: int, duration_hours: float, priority: str = "A") -> di
             "phase": "recovery",
             "days_until": -1,
             "deficit_multiplier": 0.0,
+            "ea_floor": None,          # deficit already off; nothing to floor
             "carb_g_per_kg": 6.0,
             "protein_bump": 0.3,
             "label": "Recovery · day 1",
@@ -440,6 +479,7 @@ def phase_for(days_until: int, duration_hours: float, priority: str = "A") -> di
             "phase": "post_race",
             "days_until": days_until,
             "deficit_multiplier": 0.5,
+            "ea_floor": TAPER_EA_FLOOR,
             "carb_g_per_kg": 5.0,
             "protein_bump": 0.2,
             "label": f"Recovery · day {abs(days_until)}",

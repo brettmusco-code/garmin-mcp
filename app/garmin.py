@@ -3533,12 +3533,29 @@ def get_race_fueling(
         "post": {"protein_g": round(w * 0.4), "carbs_g": round(w * 1.0),
                  "note": "within 60 min; then a full meal"},
     }
-    if dur >= 1.5:
+    # Loading only earns its place past ~90 min, and it is shorter and flatter
+    # than the classic protocol: maximal glycogen is reached within 24 h at
+    # 10 g/kg and holds there, and 8 g/kg is indistinguishable from 6 — so the
+    # traditional 3-day 8->10->12 ramp spends two extra days of surplus for no
+    # extra glycogen. See app/races.py for the studies.
+    load_days = races_lib.load_days_for(dur)
+    if load_days:
         plan["carb_load"] = {
-            "days": 2 if dur < 3 else 3,
-            "carbs_g_per_kg_per_day": "8-10" if dur < 3 else "10-12",
-            "carbs_g_per_day_example": f"{round(w * 8)}-{round(w * 12)}",
-            "note": "taper training while loading; expect +1-2 kg water weight",
+            "days": load_days,
+            "carbs_g_per_kg_per_day": round(races_lib._LOAD_G_PER_KG, 1),
+            "carbs_g_per_day": round(w * races_lib._LOAD_G_PER_KG),
+            "note": ("keep training light while loading; low-fat, low-fibre, "
+                     "energy-dense carbs. Any scale rise is glycogen and its "
+                     "bound water, not fat — though the newest dose-response "
+                     "work found no measurable body-mass change at this dose."),
+        }
+    elif dur >= 1.0:
+        plan["carb_load"] = {
+            "days": 0,
+            "note": (f"No carb load for a {dur:.1f} h event — resting glycogen "
+                     "already covers anything under ~90 min, so loading adds "
+                     "water and digestive load for no energy advantage. The "
+                     "pre-race meal above is the whole job."),
         }
     return plan
 
@@ -4597,6 +4614,7 @@ def generate_fueling_plan(
     # with each day's burn), and the absolute min_kcal — whichever is highest.
     floors: list[float] = []
     load_surplus_dates: list[str] = []
+    taper_ea_dates: list[str] = []
     for p in prelim:
         f = float(floor_val)
         if ea_min_val and ffm_kg:
@@ -4621,6 +4639,27 @@ def generate_fueling_plan(
                 if macro_cost > p["base_target"]:
                     load_surplus_dates.append(p["date"])
                 f = macro_cost
+        # Race-window days that still carry a deficit (taper, post-race) get an
+        # energy-availability floor. This is the part of the taper with evidence
+        # under it: three consecutive training days near EA 20 measurably lower
+        # muscle glycogen, while EA 45 leaves it untouched, so a taper run at a
+        # low EA depletes the very thing it exists to restore. The percentage
+        # multiplier alone can't guarantee anything here — where it lands
+        # depends entirely on how deep the underlying cut is — whereas a floor
+        # scales itself and only ever raises intake.
+        #
+        # Capped at the day's own expenditure: the floor's job is to stop the
+        # cut, not to force a surplus. EA thresholds are population norms, and
+        # for an athlete whose fat-free mass is large relative to their resting
+        # rate, EA 40 lands *above* maintenance — which would have the taper
+        # quietly overfeeding. The surplus belongs on the loading days, where
+        # it buys glycogen; here, maintenance is the ceiling.
+        elif entry and entry[1].get("ea_floor") and ffm_kg:
+            ea_need = min(entry[1]["ea_floor"] * ffm_kg + p["total_burn"],
+                          p["base_target"])
+            if ea_need > f:
+                f = ea_need
+                taper_ea_dates.append(p["date"])
         floors.append(f)
 
     # Per-day deficit: flat, or periodized toward rest/easy days (hard days
@@ -4882,6 +4921,16 @@ def generate_fueling_plan(
 
     if race_notes:
         notes.extend(race_notes)
+
+    if taper_ea_dates:
+        notes.append(
+            f"On {', '.join(taper_ea_dates)} the target was raised to hold energy "
+            f"availability at {races_lib.TAPER_EA_FLOOR:.0f} kcal/kg fat-free mass. "
+            "Tapering at a low EA depletes muscle glycogen rather than restoring "
+            "it — three consecutive training days near EA 20 measurably lower it, "
+            "while EA 45 leaves it unchanged — so the cut is held off over the "
+            "taper regardless of how aggressive it is the rest of the time."
+        )
 
     if load_surplus_dates:
         notes.append(
