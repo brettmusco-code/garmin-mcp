@@ -304,8 +304,37 @@ def recovery_days_for(duration_hours: float) -> int:
     return 1
 
 
-# Full taper length by race priority. The load days sit inside this window.
-_TAPER_DAYS = {"A": 7, "B": 4, "C": 0}
+# Longest taper each priority will grant. This is a CAP, not the window itself —
+# see taper_days_for.
+_TAPER_CAP = {"A": 7, "B": 4, "C": 0}
+
+
+def taper_days_for(duration_hours: float, priority: str = "A") -> int:
+    """How many days before the race the deficit is eased. The load days sit
+    inside this window.
+
+    Priority alone can't set this. Loading scales with duration and so does
+    recovery, but taper length keyed only off A/B/C meant a 78-minute sprint
+    got the identical 7-day easing as a 10-hour Ironman — which on an
+    aggressive cut quietly spends a week of deficit on a race that needs a
+    couple of easy days. Duration sets the window, priority caps it: an A-race
+    marathon still gets its full week, an A-race sprint gets two days.
+    """
+    prio = (priority or "A").strip().upper()
+    if prio not in PRIORITIES:
+        prio = "A"
+    cap = _TAPER_CAP[prio]
+    if not cap:
+        return 0
+    if duration_hours >= 3.0:
+        window = 7
+    elif duration_hours >= 1.5:
+        window = 3
+    elif duration_hours >= 1.0:
+        window = 2
+    else:
+        window = 1
+    return min(cap, window)
 
 # g of carbohydrate per kg bodyweight on each loading day, keyed by
 # (total load days, days until the race). Loading ramps up as the race nears:
@@ -342,7 +371,7 @@ def phase_for(days_until: int, duration_hours: float, priority: str = "A") -> di
     if prio not in PRIORITIES:
         prio = "A"
     load = load_days_for(duration_hours)
-    taper = _TAPER_DAYS[prio]
+    taper = taper_days_for(duration_hours, prio)
     recover = recovery_days_for(duration_hours)
 
     if days_until == 0:
@@ -426,8 +455,6 @@ def phase_for(days_until: int, duration_hours: float, priority: str = "A") -> di
 def window_days(duration_hours: float, priority: str = "A") -> tuple[int, int]:
     """(days before, days after) a race that carry a phase — the span over
     which this race can affect a plan at all."""
-    prio = (priority or "A").strip().upper()
-    if prio not in PRIORITIES:
-        prio = "A"
-    return (max(_TAPER_DAYS[prio], load_days_for(duration_hours)),
+    return (max(taper_days_for(duration_hours, priority),
+                load_days_for(duration_hours)),
             recovery_days_for(duration_hours))

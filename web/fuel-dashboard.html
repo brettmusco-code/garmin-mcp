@@ -634,9 +634,12 @@
             </div>
             <div class="fld">
               <label for="rcPriority">Priority</label>
+              <!-- B is the default on purpose: A is the option that costs the
+                   most cut progress, and most races entered are not goal
+                   races. Picking A should be a decision, not a default. -->
               <select id="rcPriority" name="priority">
-                <option value="A">A · full taper</option>
-                <option value="B">B · short taper</option>
+                <option value="A">A · goal race</option>
+                <option value="B" selected>B · tune-up</option>
                 <option value="C">C · train through</option>
               </select>
             </div>

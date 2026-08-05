@@ -2290,7 +2290,7 @@ def set_race(
     distance: float | None = None,
     distance_unit: str = "km",
     distance_label: str | None = None,
-    priority: str = "A",
+    priority: str = "B",
     target_time_hours: float | None = None,
     hot: bool = False,
     notes: str | None = None,
@@ -2308,8 +2308,12 @@ def set_race(
       '10k', '50k', '70.3', 'ironman', 'olympic', 'sprint', 'century',
       'gran fondo', ... A preset also fills in the sport and, for triathlon,
       the per-leg distances.
-    priority: 'A' (full 7-day taper), 'B' (4-day), 'C' (raced through, load
-      days only).
+    priority: 'A' (goal race — the longest taper the event's duration
+      supports, up to 7 days), 'B' (tune-up, capped at 4) or 'C' (trained
+      through, load days only). Default 'B': A is the setting that costs the
+      most progress on a cut, so it should be a decision rather than a
+      default. Duration sets the taper window and priority caps it, so an
+      A-race sprint tapers for 2 days, not a marathon's 7.
     target_time_hours: your own expected finish time. Overrides the estimate,
     which otherwise comes from Garmin's race predictions or your recent pace —
     and the estimate is what decides how many loading days the race earns, so

@@ -217,6 +217,35 @@ def test_phases():
     check("C race has no taper at all", R.phase_for(4, 3.5, "C") is None)
     check("C race still loads", R.phase_for(1, 3.5, "C")["phase"] == "carb_load")
 
+    # Taper length is set by DURATION and merely capped by priority. Keying it
+    # off priority alone gave a 78-minute sprint the same 7-day easing as a
+    # 10-hour Ironman, which on an aggressive cut spends a week of deficit on a
+    # race that needs a couple of easy days.
+    check("a sprint tapers for 2 days even at priority A",
+          R.taper_days_for(1.3, "A") == 2)
+    check("a marathon still gets its full week at A",
+          R.taper_days_for(3.5, "A") == 7)
+    check("an ironman doesn't get more than a marathon",
+          R.taper_days_for(10.6, "A") == 7)
+    check("priority still caps a long race (B <= 4)",
+          R.taper_days_for(3.5, "B") == 4 and R.taper_days_for(10.6, "B") == 4)
+    check("priority can only shorten, never extend",
+          all(R.taper_days_for(h, "B") <= R.taper_days_for(h, "A")
+              for h in (0.4, 0.8, 1.3, 1.7, 3.5, 10.6)))
+    check("C never tapers, whatever the duration",
+          all(R.taper_days_for(h, "C") == 0 for h in (0.4, 1.3, 3.5, 10.6)))
+    check("taper length rises monotonically with duration",
+          [R.taper_days_for(h, "A") for h in (0.4, 0.8, 1.3, 1.7, 3.5, 10.6)]
+          == sorted(R.taper_days_for(h, "A") for h in (0.4, 0.8, 1.3, 1.7, 3.5, 10.6)))
+    check("4 days out from an A sprint is no longer a taper day",
+          R.phase_for(4, 1.3, "A") is None)
+    check("...while 4 days out from an A marathon still is",
+          R.phase_for(4, 3.5, "A")["phase"] == "taper")
+    check("the sprint's own taper day survives",
+          R.phase_for(2, 1.3, "A")["phase"] == "taper")
+    check("window_days reflects the shortened taper",
+          R.window_days(1.3, "A")[0] == 2 and R.window_days(3.5, "A")[0] == 7)
+
     r1 = R.phase_for(-1, 3.5)
     check("day after is recovery", r1["phase"] == "recovery")
     check("recovery keeps the deficit off", r1["deficit_multiplier"] == 0.0)
@@ -257,6 +286,13 @@ def test_store():
     check("explicit target time wins over the estimate",
           again["race"]["duration_hours"] == 3.75
           and again["race"]["duration_source"] == "user")
+
+    # A is the setting that costs the most progress on a cut, so omitting the
+    # field must not silently opt into it.
+    dflt = g.set_race(date=(TODAY + timedelta(days=45)).isoformat(),
+                      name="Unspecified", distance_label="10k")["race"]
+    check("priority defaults to B, not A", dflt["priority"] == "B")
+    g.delete_race(dflt["id"])
 
     g.set_race(date=(TODAY + timedelta(days=60)).isoformat(), name="Club 10k",
                distance_label="10k", priority="C")
@@ -415,6 +451,40 @@ def test_plan_integration():
     check("never skip breakfast while loading",
           days[(race_day - timedelta(days=1)).isoformat()]["skip_breakfast"] is False)
     g.update_fueling_goal(skip_breakfast_weekdays=False)
+
+    print("a short race doesn't spend a week of deficit:")
+    # The regression this guards: a 78-minute sprint at priority A used to be
+    # given a marathon's 7-day taper, halving the deficit from a full week out.
+    _STORE.pop("fueling_races/current", None)
+    g.set_race(date=race_day.isoformat(), name="Cove Sprint Tri",
+               distance_label="sprint", priority="A", target_time_hours=1.3)
+    sp = {d["date"]: d for d in _plan_days(14)}
+    base_by_date = {d["date"]: d for d in baseline}
+    # Not "identical to baseline": injecting the race adds a session, and
+    # periodization then redistributes the week's deficit around it, which
+    # nudges every other day. What must hold is that no taper phase reaches
+    # back this far and the cut is not being eased on those days.
+    for n in (7, 6, 5, 4, 3):
+        iso = (race_day - timedelta(days=n)).isoformat()
+        check(f"{n}d out from an A sprint carries no race phase",
+              sp[iso].get("race") is None)
+        check(f"{n}d out from an A sprint is not eased",
+              sp[iso]["target_deficit_kcal"] >= base_by_date[iso]["target_deficit_kcal"])
+    check("the sprint still eases 2 days out",
+          sp[(race_day - timedelta(days=2)).isoformat()]["race"]["phase"] == "taper")
+    check("...and still loads the day before",
+          sp[(race_day - timedelta(days=1)).isoformat()]["race"]["phase"] == "carb_load")
+    # Same date, same goal, same calendar — only the event changes. This is the
+    # asymmetry the fix is for: the sprint leaves 4d out alone, the marathon
+    # doesn't.
+    _STORE.pop("fueling_races/current", None)
+    g.set_race(date=race_day.isoformat(), name="Same-Slot Marathon",
+               distance_label="marathon", priority="A", target_time_hours=3.5)
+    mara = {d["date"]: d for d in _plan_days(14)}
+    iso4 = (race_day - timedelta(days=4)).isoformat()
+    check("a marathon in the same slot still eases 4 days out",
+          mara[iso4]["race"]["phase"] == "taper"
+          and mara[iso4]["target_deficit_kcal"] < base_by_date[iso4]["target_deficit_kcal"])
 
     print("a C race does not suspend the cut for a week:")
     _STORE.pop("fueling_races/current", None)

@@ -62,13 +62,27 @@ Everything scales off **estimated duration**, not distance — from Garmin's rac
 
 | Phase | Deficit | Carbs |
 |---|---|---|
-| Taper (A: 7d, B: 4d, C: none) | 50%, then 25% inside 3 days | 5 g/kg floor near the end |
-| Carb load (0–3 days by duration) | **off** | ramps 8 → 10 g/kg |
+| Taper | 50%, then 25% inside 3 days | 5 g/kg floor near the end |
+| Carb load | **off** | ramps 8 → 10 g/kg |
 | Race day | **off** | set by the race fuel card |
 | Recovery (day after) | **off** | 6 g/kg, +0.3 g/kg protein |
 | Post-race | 50% | 5 g/kg |
 
-Loading tops out at 3 days / 10 g/kg because glycogen supercompensation does — an Ironman and a marathon load identically. What keeps scaling with the event is recovery (1/2/3 days, then 5 past 5 h and 7 past 8 h) and race-day intake. Loading days deliberately run **above maintenance**: 10 g/kg is ~2,960 kcal of carbohydrate for a 74 kg athlete, so the day is floored at what its own macros cost rather than trimming the carbs to fit.
+Every window is sized by duration; priority only caps the taper (A ≤ 7 days, B ≤ 4, C none). So the same date and the same goal give very different plans:
+
+| Event | est | taper | load | recovery |
+|---|---|---|---|---|
+| 10K | 0h46m | 1 | 0 | 1 |
+| Sprint tri | 1h18m | 2 | 1 | 1 |
+| Half | 1h41m | 3 | 2 | 2 |
+| Marathon | 3h30m | 7 | 3 | 3 |
+| Ironman | 10h38m | 7 | 3 | 7 |
+
+Loading tops out at 3 days / 10 g/kg because glycogen supercompensation does — an Ironman and a marathon load identically. What keeps scaling with the event is recovery and race-day intake (~0 g/hr for a 5K, 45 g/hr for a sprint tri, 90 g/hr × 10.6 h for an Ironman).
+
+**Priority defaults to B.** A is the setting that costs the most progress on a cut — a week of halved deficit — so it should be a decision rather than a default.
+
+Loading days deliberately run **above maintenance**: 10 g/kg is ~2,960 kcal of carbohydrate for a 74 kg athlete, so the day is floored at what its own macros cost rather than trimming the carbs to fit.
 
 ### Tracking
 - `nutrition_plan_vs_actual` — logged intake vs the expenditure-adjusted target, per day
