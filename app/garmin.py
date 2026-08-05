@@ -25,7 +25,7 @@ from typing import Any, Optional
 
 from garminconnect import Garmin
 
-from . import cache, thresholds, tokens, weather
+from . import cache, races as races_lib, thresholds, tokens, weather
 
 _client: Optional[Garmin] = None
 _lock = Lock()
@@ -2179,6 +2179,302 @@ def _load_ignored_food_days() -> dict:
     return pruned
 
 
+# --- The race calendar -------------------------------------------------------
+# A race is the one training event whose fueling can't be derived from the
+# Garmin calendar. The calendar knows a 4-hour ride is scheduled; it doesn't
+# know it's an A-priority gran fondo that should have suspended the cut three
+# days earlier and loaded 10 g/kg of carbs the day before.
+#
+# Storing date + sport + distance is enough to derive all of it: the distance
+# gives an expected duration (from Garmin's own race predictions where they
+# exist, else the athlete's history), the duration decides how many loading
+# days the event earns, and the priority decides how long the taper runs.
+# app/races.py owns that model; this section owns persistence and the bridge
+# into generate_fueling_plan.
+_RACE_RETENTION_DAYS = 180   # keep finished races around for context, then drop
+
+
+def _race_id(d_iso: str, name: str | None, sport: str) -> str:
+    """Stable slug for a race: date + name (or sport). Re-saving the same race
+    therefore *updates* it rather than adding a duplicate, which is what makes
+    set_race usable as an edit."""
+    tail = re.sub(r"[^a-z0-9]+", "-", (name or sport or "race").lower()).strip("-")
+    return f"{d_iso}-{tail or 'race'}"[:80]
+
+
+def _race_speed_samples(days_back: int = 120) -> dict[str, float]:
+    """Median moving speed (m/s) per sport from recent activities, used to
+    estimate a race duration when Garmin has no prediction for it (everything
+    that isn't a straight run). Best-effort: returns {} if history is
+    unavailable, and the caller falls back to a default pace table."""
+    try:
+        acts = get_activities_in_range(
+            (_local_today() - timedelta(days=days_back)).isoformat(),
+            _local_today().isoformat(),
+        ) or []
+    except Exception:  # noqa: BLE001
+        return {}
+    by_sport: dict[str, list[float]] = {}
+    for a in acts:
+        if not isinstance(a, dict):
+            continue
+        dist_m = a.get("distance")
+        dur_s = a.get("movingDuration") or a.get("duration") or a.get("elapsedDuration")
+        if not dist_m or not dur_s or dur_s < 900:   # skip <15 min efforts
+            continue
+        sport = _sport_bucket(a.get("activityName") or "",
+                              (a.get("activityType") or {}).get("typeKey") or "")
+        if sport not in ("running", "cycling", "swimming"):
+            continue
+        mps = float(dist_m) / float(dur_s)
+        # Sanity bounds per sport — drops GPS glitches and mis-typed activities
+        # that would otherwise drag the median somewhere absurd.
+        lo, hi = {"running": (1.5, 7.0), "cycling": (3.0, 20.0),
+                  "swimming": (0.4, 2.5)}[sport]
+        if lo <= mps <= hi:
+            by_sport.setdefault(sport, []).append(mps)
+    # Racing is faster than the median training session, but not by the margin
+    # a best-effort would suggest — a modest uplift keeps the estimate honest.
+    return {s: round(_median(v) * 1.08, 3) for s, v in by_sport.items() if len(v) >= 3}
+
+
+def _estimate_race_duration(sport: str, distance_km: float,
+                            legs_km: tuple | None) -> tuple[float, str]:
+    """Expected finish time for a race, with the source of the estimate.
+    Degrades gracefully: Garmin race predictions, then the athlete's own
+    median race-adjusted pace, then a generic table."""
+    preds = None
+    if sport in ("running", "triathlon"):
+        try:
+            rp = get_race_predictions()
+            if isinstance(rp, dict):
+                preds = rp
+        except Exception:  # noqa: BLE001
+            preds = None
+    return races_lib.estimate_duration_hours(
+        sport, distance_km, legs_km=tuple(legs_km) if legs_km else None,
+        race_predictions=preds, speed_mps=_race_speed_samples(),
+    )
+
+
+def set_race(
+    date: str,
+    name: str | None = None,
+    sport: str | None = None,
+    distance: float | None = None,
+    distance_unit: str = "km",
+    distance_label: str | None = None,
+    priority: str = "A",
+    target_time_hours: float | None = None,
+    hot: bool = False,
+    notes: str | None = None,
+) -> dict:
+    """Add a race to the calendar (or update one already stored for that date
+    and name). generate_fueling_plan then builds the carb load, taper, race-day
+    fuelling and post-race recovery around it automatically — no need to pass
+    carb_load by hand.
+
+    date: YYYY-MM-DD.
+    name: e.g. 'Chicago Marathon'. Optional, but it's what the plan calls it.
+    sport: running | cycling | triathlon | swimming | other.
+    distance + distance_unit: e.g. 42.2 'km', 100 'mi', 1500 'm'.
+    distance_label: a preset instead of a raw distance — 'marathon', 'half',
+      '10k', '50k', '70.3', 'ironman', 'olympic', 'sprint', 'century',
+      'gran fondo', ... A preset also fills in the sport and, for triathlon,
+      the per-leg distances.
+    priority: 'A' (full 7-day taper), 'B' (4-day), 'C' (raced through, load
+      days only).
+    target_time_hours: your own expected finish time. Overrides the estimate,
+    which otherwise comes from Garmin's race predictions or your recent pace —
+    and the estimate is what decides how many loading days the race earns, so
+    it's worth setting for anything unusual (hilly, hot, a first attempt).
+    hot: expect heat — raises race-day fluid and sodium.
+
+    Re-saving a race refreshes its duration estimate against current fitness.
+    """
+    try:
+        datetime.strptime(str(date)[:10], "%Y-%m-%d")
+    except (ValueError, TypeError) as ex:
+        raise ValueError("date must be YYYY-MM-DD") from ex
+    d_iso = str(date)[:10]
+    if not cache.enabled():
+        return {"saved": False, "error": "cache/storage unavailable — cannot persist"}
+
+    sp, km, label, legs = races_lib.resolve_distance(
+        sport=sport, distance=distance, unit=distance_unit,
+        distance_label=distance_label,
+    )
+    prio = (priority or "A").strip().upper()
+    if prio not in races_lib.PRIORITIES:
+        raise ValueError(f"priority must be one of {races_lib.PRIORITIES}")
+
+    if target_time_hours:
+        hours, source = round(float(target_time_hours), 2), "user"
+    else:
+        hours, source = _estimate_race_duration(sp, km, legs)
+
+    rid = _race_id(d_iso, name, sp)
+    entry = {
+        "id": rid,
+        "date": d_iso,
+        "name": (name or "").strip() or f"{label} {sp}",
+        "sport": sp,
+        "distance_km": km,
+        "distance_label": label,
+        "legs_km": list(legs) if legs else None,
+        "priority": prio,
+        "duration_hours": hours,
+        "duration_source": source,
+        "hot": bool(hot),
+        "notes": (notes or "").strip() or None,
+        "carb_load_days": races_lib.load_days_for(hours),
+        "saved_at": _local_today().isoformat(),
+    }
+    stored = [r for r in _load_races() if r.get("id") != rid]
+    stored.append(entry)
+    stored.sort(key=lambda r: r.get("date") or "")
+    cache.put("fueling_races", {"key": "current"}, stored, key_parts=["current"])
+    persisted = cache.get(
+        "fueling_races", {"key": "current"}, key_parts=["current"],
+        ttl_seconds=IMMUTABLE_TTL,
+    )
+    if not persisted:
+        return {
+            "saved": False,
+            "race": entry,
+            "error": (
+                "Race was NOT persisted — the server could not write it to the "
+                "cache (R2). The web service likely has read-only S3/R2 "
+                "credentials; give it read-write keys and retry."
+            ),
+        }
+    return {"saved": True, "race": entry, "races": get_races()}
+
+
+def delete_race(race_id: str) -> dict:
+    """Remove a race from the calendar by its id (see get_races)."""
+    if not cache.enabled():
+        return {"saved": False, "error": "cache/storage unavailable — cannot persist"}
+    stored = _load_races()
+    kept = [r for r in stored if r.get("id") != race_id]
+    if len(kept) == len(stored):
+        return {"saved": False, "error": f"no race with id '{race_id}'",
+                "races": get_races()}
+    cache.put("fueling_races", {"key": "current"}, kept, key_parts=["current"])
+    return {"saved": True, "deleted": race_id, "races": get_races()}
+
+
+def get_races(include_past_days: int = 21) -> list[dict]:
+    """Stored races — everything upcoming, plus those finished within the last
+    `include_past_days` (their recovery windows still shape the plan). Each
+    carries its estimated duration, the number of carb-loading days it earns,
+    and how many days out it is."""
+    today = _local_today()
+    cutoff = (today - timedelta(days=max(0, int(include_past_days)))).isoformat()
+    out = []
+    for r in _load_races():
+        if (r.get("date") or "") < cutoff:
+            continue
+        r = dict(r)
+        try:
+            r["days_until"] = (date.fromisoformat(r["date"]) - today).days
+        except (ValueError, TypeError, KeyError):
+            r["days_until"] = None
+        out.append(r)
+    return out
+
+
+def _load_races() -> list[dict]:
+    """The stored race list in its raw shape, dropping entries older than the
+    retention window (and persisting the pruned list so it can't grow
+    unbounded). get_races layers the display fields on top; the write paths and
+    the plan integration want this."""
+    raw = cache.get(
+        "fueling_races", {"key": "current"}, key_parts=["current"],
+        ttl_seconds=IMMUTABLE_TTL,
+    ) or []
+    if not isinstance(raw, list):
+        return []
+    cutoff = (_local_today() - timedelta(days=_RACE_RETENTION_DAYS)).isoformat()
+    pruned = [r for r in raw
+              if isinstance(r, dict) and (r.get("date") or "") >= cutoff]
+    if len(pruned) != len(raw):
+        cache.put("fueling_races", {"key": "current"}, pruned, key_parts=["current"])
+    return sorted(pruned, key=lambda r: r.get("date") or "")
+
+
+def _race_phases_for_window(start: date, days: int) -> dict[str, tuple[dict, dict]]:
+    """Map each date in the plan window to the (race, phase) governing it.
+
+    When two races' windows overlap — a B race inside an A race's taper, say —
+    the day takes whichever phase protects it more (the smallest deficit
+    multiplier), and among equals the nearer race. That way a tune-up race
+    can't quietly reinstate a deficit that the goal race had suspended.
+    """
+    out: dict[str, tuple[dict, dict]] = {}
+    stored = _load_races()
+    if not stored:
+        return out
+    for i in range(days):
+        d = start + timedelta(days=i)
+        best: tuple[dict, dict] | None = None
+        for r in stored:
+            try:
+                r_date = date.fromisoformat(str(r.get("date"))[:10])
+            except (ValueError, TypeError):
+                continue
+            hours = float(r.get("duration_hours") or 0)
+            phase = races_lib.phase_for((r_date - d).days, hours,
+                                        r.get("priority") or "A")
+            if not phase:
+                continue
+            if best is None or (
+                phase["deficit_multiplier"],
+                abs(phase["days_until"]),
+            ) < (best[1]["deficit_multiplier"], abs(best[1]["days_until"])):
+                best = (r, phase)
+        if best:
+            out[d.isoformat()] = best
+    return out
+
+
+def _safe_races() -> list[dict]:
+    """get_races that can't fail the plan — the race calendar is context, not
+    a dependency, so a storage hiccup should cost the races section and
+    nothing else."""
+    try:
+        return get_races()
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _race_fuel_card(race: dict, weight_kg: float) -> dict:
+    """The race-day fuel card, derived from get_race_fueling and shaped like
+    the plan's ordinary per-workout cards so the dashboard and the meal split
+    can render it without special-casing."""
+    hours = float(race.get("duration_hours") or 1.0)
+    rf = get_race_fueling(
+        race.get("sport") or "running", hours,
+        weight_kg=weight_kg, hot=bool(race.get("hot")),
+    )
+    during, pre, post = rf["during"], rf["pre_race_meal"], rf["post"]
+    return {
+        "session": race.get("name") or "Race",
+        "intensity": "race",
+        "hours": round(hours, 2),
+        "pre_carbs_g": pre["carbs_g"],
+        "during_carbs_g_per_hr": during["carbs_g_per_hr"],
+        "during_carbs_g_total": during["carbs_g_total"],
+        "post_protein_g": post["protein_g"],
+        "post_carbs_g": post["carbs_g"],
+        "fluid_ml_per_hr": during["fluid_ml_per_hr"],
+        "sodium_mg_per_hr": during["sodium_mg_per_hr"],
+        "caffeine_mg": rf["caffeine"]["pre_mg"],
+        "race": True,
+        "note": (f"{pre['timing']} pre-race meal; " + (during["note"] or "")).strip("; "),
+    }
+
+
 # --- Resetting app-owned fueling history -------------------------------------
 # Starting a fresh cut means re-baselining: the old weekly snapshots, manual
 # weigh-ins and per-day overrides describe a block that's over, and leaving them
@@ -3103,18 +3399,30 @@ def _meal_split(target_kcal: int, protein_g: int, carbs_g: int, fat_g: int,
 
 
 def get_race_fueling(
-    sport: str,
-    duration_hours: float,
+    sport: str | None = None,
+    duration_hours: float | None = None,
     intensity: str = "race",
     weight_kg: float | None = None,
     hot: bool = False,
+    race_id: str | None = None,
 ) -> dict:
     """Race-day fueling calculator: pre-race meal, carb loading (if long),
     and hour-by-hour carbs / fluid / sodium / caffeine for the event.
 
     sport: 'cycling' | 'running' | 'triathlon' | 'swimming' | ...
     duration_hours: expected event duration.
+    race_id: instead of the two above, the id of a race on the stored calendar
+      (see get_races) — its sport, estimated duration and heat flag are used.
     """
+    if race_id:
+        stored = next((r for r in _load_races() if r.get("id") == race_id), None)
+        if not stored:
+            raise ValueError(f"no race with id '{race_id}' — see get_races")
+        sport = sport or stored.get("sport")
+        duration_hours = duration_hours or stored.get("duration_hours")
+        hot = hot or bool(stored.get("hot"))
+    if duration_hours is None:
+        raise ValueError("pass duration_hours, or a race_id to read it from")
     dur = max(0.25, float(duration_hours))
     sport = (sport or "").lower()
     if weight_kg is None:
@@ -3941,6 +4249,15 @@ def generate_fueling_plan(
     # Whether any phantom-fillable average exists at all (either bucket).
     phantom_available = any(k > 0 and h > 0 for (k, h) in phantom_avg.values())
 
+    # Races in (or adjacent to) this window, and the phase each day sits in.
+    # Read once here so pass 1 can inject the race itself as a session and pass
+    # 2 can apply the loading carbs, the eased deficit and the race fuel card.
+    try:
+        race_phases = _race_phases_for_window(start, days)
+    except Exception:  # noqa: BLE001
+        race_phases = {}   # a broken race store must never take the plan down
+    race_cards: dict[str, dict] = {}
+
     # Pass 1: resolve each day's sessions, burn, and carb ratio.
     prelim: list[dict] = []
     unscheduled_idx: list[int] = []   # days with no scheduled/actual session at all
@@ -3967,6 +4284,42 @@ def generate_fueling_plan(
                 "kcal_per_hour": base_hr, "burn_source": burn_source, "done": False,
                 "unplanned": False,
             })
+
+        # Race day: the event is the day's biggest session by a wide margin and
+        # the Garmin calendar usually has nothing on it (or a placeholder), so
+        # add it explicitly — otherwise a marathon reads as a rest day and gets
+        # planned a deficit. Skipped when something of the same sport and
+        # roughly the race's length is already scheduled, which is the case
+        # when the race was built as a workout. Injected before the
+        # actual-today swap below so a finished race picks up its real burn.
+        race_day = race_phases.get(d_iso)
+        if race_day and race_day[1]["phase"] == "race_day":
+            race = race_day[0]
+            r_sport = race.get("sport") or "running"
+            r_hours = float(race.get("duration_hours") or 1.0)
+            # Triathlon has no burn history of its own; price it off cycling,
+            # which dominates the day in both duration and calories.
+            burn_sport = "cycling" if r_sport == "triathlon" else r_sport
+            already = any(s["sport"] == burn_sport and s["hours"] >= 0.5 * r_hours
+                          for s in sessions)
+            if not already:
+                base_hr, burn_src = _kcal_per_hour_for(burn_sport, r_hours, hist_samples)
+                # Race intensity: the shorter the event the closer to all-out.
+                race_mult = 1.15 if r_hours >= 3 else (1.25 if r_hours >= 1.5 else 1.35)
+                gross = base_hr * race_mult * r_hours
+                sessions = [s for s in sessions if s["intensity"] != "rest"]
+                sessions.append({
+                    "title": race.get("name") or "Race",
+                    "sport": r_sport,
+                    # Categorised for carb/deficit purposes, not for burn — the
+                    # burn above already used the race multiplier.
+                    "intensity": "long" if r_hours >= 2 else "threshold",
+                    "hours": round(r_hours, 2), "hours_source": "race",
+                    "burn_kcal": max(0, round(gross - rmr_per_hr * r_hours)),
+                    "kcal_per_hour": round(base_hr * race_mult),
+                    "burn_source": f"race_estimate_{burn_src}",
+                    "done": False, "unplanned": False, "race": True,
+                })
 
         # Today: swap the estimate for the actual burn on sessions already done,
         # and fold in any unplanned workouts, so "burned" reflects reality.
@@ -4058,6 +4411,46 @@ def generate_fueling_plan(
             "base_target": neat_base + net_burn,
         })
 
+    # Race phases: loading carbs and the race fuel card. Called after the
+    # phantom-day fill below, so an unscheduled day inside a carb load keeps
+    # its loading carbs instead of being overwritten by the typical-day
+    # defaults. (The deficit side is applied later still, once the week's
+    # deficit has been allocated across days.)
+    def _apply_race_phases() -> None:
+        for p in prelim:
+            entry = race_phases.get(p["date"])
+            if not entry:
+                continue
+            race, phase = entry
+            p["race"] = {
+                "id": race.get("id"), "name": race.get("name"),
+                "date": race.get("date"), "sport": race.get("sport"),
+                "distance_km": race.get("distance_km"),
+                "distance_label": race.get("distance_label"),
+                "priority": race.get("priority"),
+                "duration_hours": race.get("duration_hours"),
+                "duration_source": race.get("duration_source"),
+                "phase": phase["phase"], "days_until": phase["days_until"],
+                "label": phase["label"],
+            }
+            if phase["phase"] == "race_day":
+                # Race-day carbs are whatever the race fuel card prescribes —
+                # pre-race meal + everything taken on course + the post-race
+                # refuel — so the day's macro target and the fuel timeline are
+                # the same number rather than two competing ones. A malformed
+                # stored race costs the card, not the day.
+                try:
+                    card = _race_fuel_card(race, weight_kg)
+                except Exception:  # noqa: BLE001
+                    continue
+                race_cards[p["date"]] = card
+                need = (card["pre_carbs_g"] + card["during_carbs_g_total"]
+                        + card["post_carbs_g"])
+                p["carb_ratio"] = round(
+                    max(p["carb_ratio"], min(need / weight_kg, 14.0)), 1)
+            elif phase["carb_g_per_kg"]:
+                p["carb_ratio"] = max(p["carb_ratio"], phase["carb_g_per_kg"])
+
     # Phantom-day fill: a *run of 2 or more* consecutive unscheduled days is
     # almost never a genuine multi-day rest block — it's a stretch the calendar
     # just hasn't been filled in yet (workouts get synced from TrainingPeaks a
@@ -4120,6 +4513,10 @@ def generate_fueling_plan(
                 run = []
         _flush_run(run)
 
+    # After the phantom fill, so a loading day the calendar hasn't been filled
+    # in for yet keeps its loading carbs rather than a typical-day default.
+    _apply_race_phases()
+
     # Per-day floors: BMR multiple (if active), enforced EA minimum (scales
     # with each day's burn), and the absolute min_kcal — whichever is highest.
     floors: list[float] = []
@@ -4145,6 +4542,26 @@ def generate_fueling_plan(
         )
     else:
         day_adjs = [goal_adj] * days
+
+    # Race phases scale the deficit *after* it has been allocated across the
+    # week: suspended outright over the carb load, race day and the first
+    # recovery day, softened through the taper and the rest of the recovery
+    # window. Only cuts are scaled — a 'gain' goal's surplus is exactly what a
+    # loading day wants, so it passes through untouched. The per-day floors
+    # still apply below, so easing can only ever raise a day's target.
+    race_notes: list[str] = []
+    if race_phases:
+        for i, p in enumerate(prelim):
+            entry = race_phases.get(p["date"])
+            if not entry:
+                continue
+            race, phase = entry
+            mult = phase["deficit_multiplier"]
+            if day_adjs[i] < 0 and mult < 1.0:
+                day_adjs[i] = round(day_adjs[i] * mult)
+            note = f"{race.get('name') or 'Race'} ({race['date']}) — {phase['note']}"
+            if note not in race_notes:
+                race_notes.append(note)
 
     # (Readiness-aware easing removed by request — the plan no longer softens
     # the deficit on low-recovery days. The daily target is driven only by the
@@ -4185,6 +4602,12 @@ def generate_fueling_plan(
             protein_bump += 0.1
         if pre_def >= 500:
             protein_bump += 0.1
+        # Post-race repair needs more protein than the session that caused it
+        # would normally earn — race day itself is scored by its intensity
+        # above, the days after it by the recovery phase.
+        _rp = race_phases.get(d_iso)
+        if _rp:
+            protein_bump += _rp[1]["protein_bump"]
         protein_per_kg_day = round(protein_per_kg + protein_bump, 2)
         protein_ref_kg = tgt if (gt == "lose" and tgt) else weight_kg
         protein_g = round(protein_ref_kg * protein_per_kg_day)
@@ -4223,7 +4646,15 @@ def generate_fueling_plan(
 
         # Fuel only sessions at/above the minimum duration (default 90 min).
         fuel_cards = []
+        race_card = race_cards.get(d_iso)
         for s in sessions:
+            if s.get("race") and race_card:
+                # The race gets race-day numbers (60-90 g carbs/hr, race fluid
+                # and sodium), not the deliberately conservative training rates
+                # below — including for a swim, where the no-feeding rule is
+                # about pool sessions, not an open-water race.
+                fuel_cards.append(race_card)
+                continue
             if s["hours"] * 60 < fuel_min_minutes or s["intensity"] == "rest":
                 continue
             hrs = max(s["hours"], 1.0)
@@ -4296,7 +4727,10 @@ def generate_fueling_plan(
             fuel_trim_dates.append(d_iso)
         # Weekday breakfast-skip (time-restricted eating) if the athlete set it.
         is_weekday = date.fromisoformat(d_iso).weekday() < 5
-        skip_bf = bool(skip_breakfast_val and is_weekday)
+        # Never skip breakfast while loading or on race morning — the pre-race
+        # meal is the point, and a loading day can't hit 10 g/kg in two sittings.
+        no_skip = bool(_rp and _rp[1]["phase"] in ("race_day", "carb_load"))
+        skip_bf = bool(skip_breakfast_val and is_weekday and not no_skip)
 
         row = {
             "date": d_iso, "weekday": p["weekday"],
@@ -4330,6 +4764,9 @@ def generate_fueling_plan(
             "energy_availability_detail": energy_availability_detail,
             "needs_fuel": bool(fuel_cards),
             "fuel": fuel_cards,
+            # Which race window (if any) this day sits in, and what phase.
+            # None on an ordinary day.
+            "race": p.get("race"),
             "skip_breakfast": skip_bf,
             "meals": _meal_split(target_kcal, protein_g, carbs_g, fat_g,
                                  bool(fuel_cards), skip_breakfast=skip_bf,
@@ -4347,6 +4784,9 @@ def generate_fueling_plan(
             "protein_g": protein_g, "carbs_g": carbs_g, "fat_g": fat_g,
             "notes": "fuel pre/during/post" if fuel_cards else "",
         }
+
+    if race_notes:
+        notes.extend(race_notes)
 
     if skipped_titles:
         notes.append("Skipped (per skip_scheduled_session): " + "; ".join(skipped_titles) + ".")
@@ -4455,6 +4895,9 @@ def generate_fueling_plan(
         "rebalance": rebalance_detail,
         "protein_g_per_kg": protein_per_kg,
         "carb_load": carb_load,
+        # The stored race calendar (upcoming + recently finished), so the
+        # dashboard can list and edit it without a second round trip.
+        "races": _safe_races(),
         "config": {
             "deficit_cap_kcal": (None if uncapped else round(deficit_cap)),
             "max_loss_lb_per_week": (round(deficit_cap * 7 / 3500.0, 2) if not uncapped else None),

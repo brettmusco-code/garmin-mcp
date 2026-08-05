@@ -715,7 +715,8 @@ TOOLS = [
             "carb-loading protocol (for long events), and hour-by-hour carbs, "
             "fluid, sodium, and caffeine. Pass sport, expected duration_hours, "
             "optional intensity, weight_kg (defaults to baseline), and hot=true "
-            "for heat."
+            "for heat — or just race_id to read all of it off the stored race "
+            "calendar (see get_races)."
         ),
         "inputSchema": {
             "type": "object",
@@ -725,8 +726,71 @@ TOOLS = [
                 "intensity": {"type": "string"},
                 "weight_kg": {"type": "number"},
                 "hot": {"type": "boolean", "description": "hot conditions, default false"},
+                "race_id": {"type": "string", "description": "id of a stored race — supplies sport, duration and heat"},
             },
-            "required": ["sport", "duration_hours"],
+        },
+    },
+    {
+        "name": "set_race",
+        "description": (
+            "Add a race to the calendar (or update one already stored for that "
+            "date and name). generate_fueling_plan then builds the carb load, "
+            "taper, race-day fuelling and post-race recovery around it "
+            "automatically — the deficit is suspended across the load, race day "
+            "and the first recovery day, and carbs ramp to 8-10 g/kg over the "
+            "loading days. How many loading days a race earns comes from its "
+            "estimated duration, which is derived from the distance using "
+            "Garmin's race predictions (running) or the athlete's recent pace, "
+            "unless target_time_hours is given. Re-saving refreshes the estimate."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "date": {"type": "string", "description": "YYYY-MM-DD"},
+                "name": {"type": "string", "description": "e.g. 'Chicago Marathon'"},
+                "sport": {"type": "string", "description": "running | cycling | triathlon | swimming | other"},
+                "distance": {"type": "number", "description": "raw distance; use with distance_unit"},
+                "distance_unit": {"type": "string", "description": "km | mi | m | yd. Default km."},
+                "distance_label": {
+                    "type": "string",
+                    "description": (
+                        "a preset instead of a raw distance — 5k, 10k, half, "
+                        "marathon, 50k, 100k, 100 mile, sprint, olympic, 70.3, "
+                        "ironman, century, metric century, gran fondo. Also sets "
+                        "the sport, and the per-leg splits for triathlon."
+                    ),
+                },
+                "priority": {"type": "string", "description": "A (7-day taper) | B (4-day) | C (load days only). Default A."},
+                "target_time_hours": {"type": "number", "description": "your expected finish time; overrides the estimate"},
+                "hot": {"type": "boolean", "description": "expect heat — raises race-day fluid and sodium"},
+                "notes": {"type": "string"},
+            },
+            "required": ["date"],
+        },
+    },
+    {
+        "name": "get_races",
+        "description": (
+            "The stored race calendar: everything upcoming plus races finished "
+            "in the last few weeks (their recovery windows still shape the "
+            "plan). Each entry carries its id, estimated duration and where "
+            "that estimate came from, how many carb-loading days it earns, and "
+            "how many days out it is."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "include_past_days": {"type": "number", "description": "how far back to include finished races. Default 21."},
+            },
+        },
+    },
+    {
+        "name": "delete_race",
+        "description": "Remove a race from the calendar by its id (see get_races).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"race_id": {"type": "string"}},
+            "required": ["race_id"],
         },
     },
     {
@@ -1018,13 +1082,39 @@ def _call_tool(name: str, args: dict) -> Any:
     if name == "get_race_fueling":
         sport = args.get("sport")
         dur = args.get("duration_hours")
-        if not sport or dur is None:
-            raise ValueError("`sport` and `duration_hours` are required")
+        race_id = args.get("race_id")
+        if not race_id and (not sport or dur is None):
+            raise ValueError("`sport` and `duration_hours` are required (or `race_id`)")
         return garmin.get_race_fueling(
-            sport=sport, duration_hours=float(dur),
+            sport=sport, duration_hours=(float(dur) if dur is not None else None),
             intensity=args.get("intensity", "race"),
             weight_kg=args.get("weight_kg"), hot=bool(args.get("hot", False)),
+            race_id=race_id,
         )
+    if name == "set_race":
+        rd = args.get("date")
+        if not rd or not DATE_RE.match(rd):
+            raise ValueError("`date` must be YYYY-MM-DD")
+        return garmin.set_race(
+            date=rd,
+            name=args.get("name"),
+            sport=args.get("sport"),
+            distance=args.get("distance"),
+            distance_unit=args.get("distance_unit", "km"),
+            distance_label=args.get("distance_label"),
+            priority=args.get("priority", "A"),
+            target_time_hours=args.get("target_time_hours"),
+            hot=bool(args.get("hot", False)),
+            notes=args.get("notes"),
+        )
+    if name == "get_races":
+        return {"races": garmin.get_races(
+            include_past_days=int(args.get("include_past_days", 21)))}
+    if name == "delete_race":
+        rid = args.get("race_id")
+        if not rid:
+            raise ValueError("`race_id` is required")
+        return garmin.delete_race(race_id=rid)
     if name == "get_adaptive_tdee":
         return garmin.get_adaptive_tdee(weeks=int(args.get("weeks", 6)))
     if name == "push_nutrition_targets_to_garmin":
@@ -1312,6 +1402,9 @@ def dashboard(request: Request) -> HTMLResponse:
         # The un-ignore action is derived client-side from this one by swapping
         # the path segment, so both must share the /dashboard/{ }-day shape.
         fragment = fragment.replace("{{IGNORE_DAY_ACTION}}", "/dashboard/ignore-day" + token_qs)
+        # The delete action is derived client-side by swapping the path segment,
+        # so both must share the /dashboard/{ }-race shape.
+        fragment = fragment.replace("{{SAVE_RACE_ACTION}}", "/dashboard/save-race" + token_qs)
     except Exception as ex:  # noqa: BLE001
         return HTMLResponse(
             _dash_wrap(f"<h1>Fueling dashboard</h1><p>Template error: "
@@ -1520,6 +1613,80 @@ def dashboard_unignore_day(
             status_code=400,
         )
     return _dash_saved_redirect(token_qs, "unignored")
+
+
+@app.post("/dashboard/save-race")
+async def dashboard_save_race(request: Request) -> Response:
+    """Add or update a race from the dashboard form. The plan rebuilds around
+    it on the redirect — carb load, taper and recovery all follow from the
+    date, sport and distance."""
+    token_qs = _dash_gate(request)
+    form = await request.form()
+
+    def _txt(name: str) -> str | None:
+        return str(form.get(name) or "").strip() or None
+
+    def _num(name: str) -> float | None:
+        raw = _txt(name)
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
+    # The form offers presets and a raw distance in one control: a preset value
+    # goes in distance_label, anything else is a number the athlete typed.
+    try:
+        result = garmin.set_race(
+            date=_txt("date") or "",
+            name=_txt("name"),
+            sport=_txt("sport"),
+            distance=_num("distance"),
+            distance_unit=_txt("distance_unit") or "km",
+            distance_label=_txt("distance_label"),
+            priority=_txt("priority") or "A",
+            target_time_hours=_num("target_time_hours"),
+            hot=form.get("hot") is not None,
+            notes=_txt("notes"),
+        )
+    except ValueError as ex:
+        result = {"saved": False, "error": str(ex)}
+
+    _dash_cache.update(html=None, ts=0.0)
+    if not result.get("saved"):
+        return HTMLResponse(
+            _dash_wrap(
+                f"<h1>Fueling dashboard</h1><p>Could not save the race: "
+                f"{result.get('error', 'unknown error')}</p>"
+                f"<p><a href='/dashboard{token_qs}'>← back to the dashboard</a></p>",
+                token_qs,
+            ),
+            status_code=400,
+        )
+    return _dash_saved_redirect(token_qs, "race")
+
+
+@app.post("/dashboard/delete-race")
+def dashboard_delete_race(request: Request, race_id: str = Form(...)) -> Response:
+    """Remove a race from the calendar; the plan drops its phases on rebuild."""
+    token_qs = _dash_gate(request)
+    try:
+        result = garmin.delete_race(race_id=race_id)
+    except ValueError as ex:
+        result = {"saved": False, "error": str(ex)}
+    _dash_cache.update(html=None, ts=0.0)
+    if not result.get("saved"):
+        return HTMLResponse(
+            _dash_wrap(
+                f"<h1>Fueling dashboard</h1><p>Could not remove that race: "
+                f"{result.get('error', 'unknown error')}</p>"
+                f"<p><a href='/dashboard{token_qs}'>← back to the dashboard</a></p>",
+                token_qs,
+            ),
+            status_code=400,
+        )
+    return _dash_saved_redirect(token_qs, "race_deleted")
 
 
 @app.get("/cache/list")
